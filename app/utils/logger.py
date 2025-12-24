@@ -2,6 +2,7 @@
 Structured logging configuration using structlog.
 """
 import structlog
+import logging
 import sys
 from app.config import settings
 
@@ -11,6 +12,9 @@ def configure_logging():
     Configure structured logging for the application.
     Sets up JSON formatting for production, console formatting for development.
     """
+    # Convert log level string to logging constant
+    log_level = getattr(logging, settings.log_level.upper(), logging.INFO)
+    
     processors = [
         structlog.contextvars.merge_contextvars,
         structlog.processors.add_log_level,
@@ -27,9 +31,7 @@ def configure_logging():
     
     structlog.configure(
         processors=processors,
-        wrapper_class=structlog.make_filtering_bound_logger(
-            getattr(structlog.stdlib, settings.log_level.upper(), structlog.stdlib.INFO)
-        ),
+        wrapper_class=structlog.make_filtering_bound_logger(log_level),
         context_class=dict,
         logger_factory=structlog.PrintLoggerFactory(),
         cache_logger_on_first_use=False,
