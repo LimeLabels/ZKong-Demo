@@ -384,9 +384,12 @@ class ZKongClient:
                     item["itemTitle"] = p.product_name  # Product title
                     item["shortTitle"] = p.product_name  # Product Name
                 
-                # Add price (selling price)
+                # Add price - use originalPrice for regular price, price for promotional
+                # ZKong interprets "price" as promotional price, so we use "originalPrice" for the regular Shopify price
                 if p.price is not None:
-                    item["price"] = float(p.price)
+                    item["originalPrice"] = float(p.price)  # Original/regular price (not promotional)
+                    # If you want to set promotional price separately, you can add:
+                    # item["price"] = float(p.price)  # Promotional price (if different)
                 
                 # Add optional fields if provided
                 if p.sku:
