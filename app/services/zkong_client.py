@@ -213,7 +213,15 @@ class ZKongClient:
                     import time
                     self._auth_token = "cookie_session"  # Mark as cookie-based auth
                     self._token_expires_at = time.time() + 3600  # Default 1 hour session
-                    logger.info("Successfully authenticated with ZKong API (cookie-based)", endpoint=endpoint)
+                    
+                    # Log cookie information for debugging
+                    cookies = dict(self.client.cookies)
+                    logger.info(
+                        "Successfully authenticated with ZKong API (cookie-based)",
+                        endpoint=endpoint,
+                        cookies_count=len(cookies),
+                        cookie_names=list(cookies.keys()) if cookies else []
+                    )
                     return "cookie_session"  # Placeholder to indicate successful auth
                     
                 except httpx.HTTPStatusError as e:
@@ -328,6 +336,14 @@ class ZKongClient:
                 headers["Authorization"] = f"Bearer {self._auth_token}"
             
             # ZKong API endpoint: /zk/item/batchImportItem
+            # Log request details for debugging
+            logger.debug(
+                "Calling ZKong import endpoint",
+                endpoint="/zk/item/batchImportItem",
+                has_auth_header=bool(headers.get("Authorization")),
+                auth_type="cookie" if self._auth_token == "cookie_session" else "token"
+            )
+            
             response = await self.client.post(
                 "/zk/item/batchImportItem",
                 json=request_data,
@@ -340,10 +356,29 @@ class ZKongClient:
             
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 401:
-                # Token expired, re-authenticate and retry once
+                # Log 401 error details for debugging
+                try:
+                    error_response = e.response.json()
+                    logger.warning(
+                        "ZKong API returned 401 Unauthorized",
+                        endpoint="/zk/item/batchImportItem",
+                        response=error_response,
+                        cookies_sent=bool(self.client.cookies)
+                    )
+                except:
+                    logger.warning(
+                        "ZKong API returned 401 Unauthorized",
+                        endpoint="/zk/item/batchImportItem",
+                        response_text=e.response.text[:200],
+                        cookies_sent=bool(self.client.cookies)
+                    )
+                
+                # Authentication failed - re-authenticate (for both token and cookie-based auth)
                 self._auth_token = None
                 await self._ensure_authenticated()
-                raise TransientError("Token expired, will retry after re-authentication")
+                # Check if this is cookie-based or token-based for better error message
+                auth_type = "cookie session" if self._auth_token == "cookie_session" else "token"
+                raise TransientError(f"Authentication expired ({auth_type}), will retry after re-authentication")
             if 500 <= e.response.status_code < 600:
                 raise TransientError(f"ZKong API error: {e.response.status_code}")
             raise PermanentError(f"ZKong API error: {e.response.status_code} - {e.response.text}")
@@ -405,9 +440,11 @@ class ZKongClient:
             
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 401:
+                # Authentication failed - re-authenticate (for both token and cookie-based auth)
                 self._auth_token = None
                 await self._ensure_authenticated()
-                raise TransientError("Token expired, will retry after re-authentication")
+                auth_type = "cookie session" if self._auth_token == "cookie_session" else "token"
+                raise TransientError(f"Authentication expired ({auth_type}), will retry after re-authentication")
             if 500 <= e.response.status_code < 600:
                 raise TransientError(f"ZKong API error: {e.response.status_code}")
             raise PermanentError(f"ZKong API error: {e.response.status_code}")
