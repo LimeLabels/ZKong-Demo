@@ -161,9 +161,18 @@ class SupabaseService:
                 return Product(**result.data)
             return None
         except Exception as e:
-            # Not found is expected in some cases
-            if "No rows" in str(e) or "Could not find" in str(e):
+            # Not found is expected for new products - don't log as error
+            error_str = str(e)
+            if any(phrase in error_str for phrase in [
+                "No rows", 
+                "Could not find", 
+                "PGRST116", 
+                "result contains 0 rows",
+                "Cannot coerce the result to a single JSON object"
+            ]):
+                # Product doesn't exist - this is normal for create operations
                 return None
+            # Only log actual errors (network issues, etc.)
             logger.error("Failed to get product by source", error=str(e))
             return None
     
