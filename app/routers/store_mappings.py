@@ -3,7 +3,7 @@ FastAPI router for store mapping management.
 Allows creating, listing, and managing store mappings without SQL.
 """
 from fastapi import APIRouter, HTTPException, status
-from typing import List
+from typing import List, Optional
 from uuid import UUID
 import structlog
 from app.models.database import StoreMapping
@@ -34,7 +34,7 @@ class StoreMappingResponse(BaseModel):
     zkong_merchant_id: str
     zkong_store_id: str
     is_active: bool
-    metadata: dict = None
+    metadata: Optional[dict] = None
     created_at: str
     updated_at: str
 
