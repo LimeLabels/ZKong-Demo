@@ -10,7 +10,7 @@ class Settings(BaseSettings):
     """Application configuration loaded from environment variables."""
     
     # ZKong API Configuration
-    zkong_api_base_url: str = "https://esl-eu.zkong.com"  # Update based on actual ZKong API URL
+    zkong_api_base_url: str = "https://esl.zkong.com"  # Update based on actual ZKong API URL
     zkong_username: str = ""  # Optional for testing, required for ZKong sync
     zkong_password: str = ""  # Optional for testing, required for ZKong sync
     zkong_rsa_public_key: str = ""  # Optional for testing, required for ZKong sync
