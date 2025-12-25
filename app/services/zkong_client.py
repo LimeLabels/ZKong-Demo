@@ -208,59 +208,65 @@ class ZKongClient:
                             )
                         continue
                     
-                    # ZKong uses cookie-based authentication
-                    # Check response headers for Set-Cookie and manually extract if needed
-                    set_cookie_headers = response.headers.get_list("Set-Cookie", [])
+                    # ZKong uses token-based authentication
+                    # Extract token from response - check multiple possible locations
                     import time
-                    self._auth_token = "cookie_session"  # Mark as cookie-based auth
-                    self._token_expires_at = time.time() + 3600  # Default 1 hour session
+                    token = None
+                    token_data = data.get("data", {})
                     
-                    # Log cookie information for debugging
-                    cookies = dict(self.client.cookies)
+                    # Check for token in response data (common field names)
+                    if isinstance(token_data, dict):
+                        token = (
+                            token_data.get("token") or
+                            token_data.get("access_token") or
+                            token_data.get("accessToken") or
+                            token_data.get("authToken") or
+                            token_data.get("sessionToken")
+                        )
+                        
+                        # Also check currentUser object if it exists
+                        if not token:
+                            current_user = token_data.get("currentUser", {})
+                            if isinstance(current_user, dict):
+                                token = (
+                                    current_user.get("token") or
+                                    current_user.get("access_token") or
+                                    current_user.get("accessToken")
+                                )
+                    
+                    # Check response headers for token
+                    if not token:
+                        for header_name in ["X-Auth-Token", "Authorization", "X-Token", "Token"]:
+                            if header_name in response.headers:
+                                token = response.headers[header_name]
+                                break
+                    
+                    # Check top-level response for token
+                    if not token:
+                        token = data.get("token") or data.get("access_token")
+                    
+                    if not token:
+                        # Log full response structure for debugging
+                        logger.error(
+                            "Token not found in ZKong login response",
+                            endpoint=endpoint,
+                            response_keys=list(data.keys()) if isinstance(data, dict) else [],
+                            data_keys=list(token_data.keys()) if isinstance(token_data, dict) else [],
+                            has_currentUser=bool(token_data.get("currentUser")) if isinstance(token_data, dict) else False
+                        )
+                        raise ZKongAuthenticationError("Token not found in authentication response")
+                    
+                    # Store token
+                    self._auth_token = token
+                    self._token_expires_at = time.time() + 3600  # Default 1 hour
+                    
                     logger.info(
-                        "Successfully authenticated with ZKong API (cookie-based)",
+                        "Successfully authenticated with ZKong API (token-based)",
                         endpoint=endpoint,
-                        cookies_count=len(cookies),
-                        cookie_names=list(cookies.keys()) if cookies else [],
-                        set_cookie_headers_count=len(set_cookie_headers),
-                        set_cookie_headers=set_cookie_headers[:2] if set_cookie_headers else []  # Log first 2 for debugging
+                        token_length=len(token)
                     )
                     
-                    # If httpx didn't store cookies automatically, manually extract from Set-Cookie headers
-                    if not cookies and set_cookie_headers:
-                        logger.warning(
-                            "Cookies not automatically stored by httpx, attempting manual extraction",
-                            set_cookie_count=len(set_cookie_headers)
-                        )
-                        # Manually parse and set cookies from Set-Cookie headers
-                        from http.cookies import SimpleCookie
-                        for cookie_header in set_cookie_headers:
-                            try:
-                                # Parse the Set-Cookie header
-                                cookie = SimpleCookie()
-                                cookie.load(cookie_header)
-                                # Set each cookie in the client's cookie jar
-                                for name, morsel in cookie.items():
-                                    # Extract domain, path, and other attributes
-                                    domain = morsel.get('domain', '').strip('"')
-                                    path = morsel.get('path', '/').strip('"')
-                                    value = morsel.value
-                                    # Set cookie in httpx client
-                                    # Note: httpx uses a CookieJar internally, we need to set it properly
-                                    self.client.cookies.set(name, value, domain=domain or None, path=path)
-                                    logger.debug(f"Manually set cookie: {name} for domain={domain}, path={path}")
-                            except Exception as e:
-                                logger.warning(f"Failed to parse cookie header: {cookie_header[:50]}...", error=str(e))
-                        
-                        # Verify cookies were set
-                        cookies_after = dict(self.client.cookies)
-                        logger.info(
-                            "After manual cookie extraction",
-                            cookies_count=len(cookies_after),
-                            cookie_names=list(cookies_after.keys()) if cookies_after else []
-                        )
-                    
-                    return "cookie_session"  # Placeholder to indicate successful auth
+                    return token
                     
                 except httpx.HTTPStatusError as e:
                     last_error = e
@@ -365,13 +371,13 @@ class ZKongClient:
                 "itemList": item_list  # Required: List of items
             }
             
-            # Build headers - only include Authorization if we have a real token
+            # Build headers - ZKong uses "Authorization: token" format (not Bearer)
             headers = {
                 "Content-Type": "application/json;charset=utf-8"
             }
-            # Add Authorization header only if we have a real token (not cookie_session placeholder)
-            if self._auth_token and self._auth_token != "cookie_session":
-                headers["Authorization"] = f"Bearer {self._auth_token}"
+            # Add Authorization header with token (ZKong format: "Authorization: token")
+            if self._auth_token:
+                headers["Authorization"] = self._auth_token
             
             # ZKong API endpoint: /zk/item/batchImportItem
             # Log request details for debugging
@@ -379,7 +385,7 @@ class ZKongClient:
                 "Calling ZKong import endpoint",
                 endpoint="/zk/item/batchImportItem",
                 has_auth_header=bool(headers.get("Authorization")),
-                auth_type="cookie" if self._auth_token == "cookie_session" else "token"
+                has_token=bool(self._auth_token)
             )
             
             response = await self.client.post(
@@ -414,9 +420,7 @@ class ZKongClient:
                 # Authentication failed - re-authenticate (for both token and cookie-based auth)
                 self._auth_token = None
                 await self._ensure_authenticated()
-                # Check if this is cookie-based or token-based for better error message
-                auth_type = "cookie session" if self._auth_token == "cookie_session" else "token"
-                raise TransientError(f"Authentication expired ({auth_type}), will retry after re-authentication")
+                raise TransientError("Authentication expired (token), will retry after re-authentication")
             if 500 <= e.response.status_code < 600:
                 raise TransientError(f"ZKong API error: {e.response.status_code}")
             raise PermanentError(f"ZKong API error: {e.response.status_code} - {e.response.text}")
@@ -458,13 +462,13 @@ class ZKongClient:
                 "image_url": image_url
             }
             
-            # Build headers - only include Authorization if we have a real token
+            # Build headers - ZKong uses "Authorization: token" format (not Bearer)
             headers = {
                 "Content-Type": "application/json"
             }
-            # Add Authorization header only if we have a real token (not cookie_session placeholder)
-            if self._auth_token and self._auth_token != "cookie_session":
-                headers["Authorization"] = f"Bearer {self._auth_token}"
+            # Add Authorization header with token (ZKong format: "Authorization: token")
+            if self._auth_token:
+                headers["Authorization"] = self._auth_token
             
             response = await self.client.post(
                 "/api/v1/products/images",
@@ -481,8 +485,7 @@ class ZKongClient:
                 # Authentication failed - re-authenticate (for both token and cookie-based auth)
                 self._auth_token = None
                 await self._ensure_authenticated()
-                auth_type = "cookie session" if self._auth_token == "cookie_session" else "token"
-                raise TransientError(f"Authentication expired ({auth_type}), will retry after re-authentication")
+                raise TransientError("Authentication expired (token), will retry after re-authentication")
             if 500 <= e.response.status_code < 600:
                 raise TransientError(f"ZKong API error: {e.response.status_code}")
             raise PermanentError(f"ZKong API error: {e.response.status_code}")
