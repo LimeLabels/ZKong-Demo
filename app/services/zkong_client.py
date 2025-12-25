@@ -208,8 +208,9 @@ class ZKongClient:
                             )
                         continue
                     
-                    # ZKong uses cookie-based authentication (httpx client maintains cookies automatically)
-                    # The login response doesn't contain a token - authentication is handled via session cookies
+                    # ZKong uses cookie-based authentication
+                    # Check response headers for Set-Cookie and manually extract if needed
+                    set_cookie_headers = response.headers.get_list("Set-Cookie", [])
                     import time
                     self._auth_token = "cookie_session"  # Mark as cookie-based auth
                     self._token_expires_at = time.time() + 3600  # Default 1 hour session
@@ -220,8 +221,45 @@ class ZKongClient:
                         "Successfully authenticated with ZKong API (cookie-based)",
                         endpoint=endpoint,
                         cookies_count=len(cookies),
-                        cookie_names=list(cookies.keys()) if cookies else []
+                        cookie_names=list(cookies.keys()) if cookies else [],
+                        set_cookie_headers_count=len(set_cookie_headers),
+                        set_cookie_headers=set_cookie_headers[:2] if set_cookie_headers else []  # Log first 2 for debugging
                     )
+                    
+                    # If httpx didn't store cookies automatically, manually extract from Set-Cookie headers
+                    if not cookies and set_cookie_headers:
+                        logger.warning(
+                            "Cookies not automatically stored by httpx, attempting manual extraction",
+                            set_cookie_count=len(set_cookie_headers)
+                        )
+                        # Manually parse and set cookies from Set-Cookie headers
+                        from http.cookies import SimpleCookie
+                        for cookie_header in set_cookie_headers:
+                            try:
+                                # Parse the Set-Cookie header
+                                cookie = SimpleCookie()
+                                cookie.load(cookie_header)
+                                # Set each cookie in the client's cookie jar
+                                for name, morsel in cookie.items():
+                                    # Extract domain, path, and other attributes
+                                    domain = morsel.get('domain', '').strip('"')
+                                    path = morsel.get('path', '/').strip('"')
+                                    value = morsel.value
+                                    # Set cookie in httpx client
+                                    # Note: httpx uses a CookieJar internally, we need to set it properly
+                                    self.client.cookies.set(name, value, domain=domain or None, path=path)
+                                    logger.debug(f"Manually set cookie: {name} for domain={domain}, path={path}")
+                            except Exception as e:
+                                logger.warning(f"Failed to parse cookie header: {cookie_header[:50]}...", error=str(e))
+                        
+                        # Verify cookies were set
+                        cookies_after = dict(self.client.cookies)
+                        logger.info(
+                            "After manual cookie extraction",
+                            cookies_count=len(cookies_after),
+                            cookie_names=list(cookies_after.keys()) if cookies_after else []
+                        )
+                    
                     return "cookie_session"  # Placeholder to indicate successful auth
                     
                 except httpx.HTTPStatusError as e:
