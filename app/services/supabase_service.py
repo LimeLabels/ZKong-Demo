@@ -208,8 +208,13 @@ class SupabaseService:
                 status="pending"
             )
             
+            # Convert UUIDs to strings for JSON serialization
+            insert_data = queue_item.dict(exclude_none=True, exclude={"id"})
+            insert_data["product_id"] = str(insert_data["product_id"])
+            insert_data["store_mapping_id"] = str(insert_data["store_mapping_id"])
+            
             result = self.client.table("sync_queue").insert(
-                queue_item.dict(exclude_none=True, exclude={"id"})
+                insert_data
             ).execute()
             
             if result.data:
@@ -278,8 +283,17 @@ class SupabaseService:
     def create_sync_log(self, log_entry: SyncLog) -> SyncLog:
         """Create sync log entry for audit trail."""
         try:
+            # Convert UUIDs to strings for JSON serialization
+            insert_data = log_entry.dict(exclude_none=True, exclude={"id"})
+            if insert_data.get("sync_queue_id"):
+                insert_data["sync_queue_id"] = str(insert_data["sync_queue_id"])
+            if insert_data.get("product_id"):
+                insert_data["product_id"] = str(insert_data["product_id"])
+            if insert_data.get("store_mapping_id"):
+                insert_data["store_mapping_id"] = str(insert_data["store_mapping_id"])
+            
             result = self.client.table("sync_log").insert(
-                log_entry.dict(exclude_none=True, exclude={"id"})
+                insert_data
             ).execute()
             
             if result.data:
@@ -305,6 +319,12 @@ class SupabaseService:
                     exclude_none=True,
                     exclude={"id", "created_at"}
                 )
+                # Convert UUIDs to strings
+                if update_data.get("product_id"):
+                    update_data["product_id"] = str(update_data["product_id"])
+                if update_data.get("store_mapping_id"):
+                    update_data["store_mapping_id"] = str(update_data["store_mapping_id"])
+                
                 result = self.client.table("zkong_products").update(update_data).eq(
                     "id", result.data[0]["id"]
                 ).execute()
@@ -313,8 +333,15 @@ class SupabaseService:
                     return ZKongProduct(**result.data[0])
             else:
                 # Create new
+                insert_data = zkong_product.dict(exclude_none=True, exclude={"id"})
+                # Convert UUIDs to strings
+                if insert_data.get("product_id"):
+                    insert_data["product_id"] = str(insert_data["product_id"])
+                if insert_data.get("store_mapping_id"):
+                    insert_data["store_mapping_id"] = str(insert_data["store_mapping_id"])
+                
                 result = self.client.table("zkong_products").insert(
-                    zkong_product.dict(exclude_none=True, exclude={"id"})
+                    insert_data
                 ).execute()
                 
                 if result.data:
