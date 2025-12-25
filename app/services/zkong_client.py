@@ -44,6 +44,7 @@ class ZKongClient:
         self._auth_token: Optional[str] = None
         self._token_expires_at: Optional[float] = None
         self._agency_id: Optional[int] = None  # Will be extracted from login response
+        self._merchant_id: Optional[int] = None  # Will be extracted from login response
         
         # HTTP client with timeout and cookie support
         # ZKong uses cookie-based authentication, so we need to maintain cookies
@@ -261,20 +262,28 @@ class ZKongClient:
                     self._auth_token = token
                     self._token_expires_at = time.time() + 3600  # Default 1 hour
                     
-                    # Extract agencyId from login response (required for product import)
-                    # agencyId is in data.currentUser.agencyId
-                    agency_id = None
+                    # Extract agencyId and merchantId from login response (required for product import)
+                    # Both are in data.currentUser
                     if isinstance(token_data, dict):
                         current_user = token_data.get("currentUser", {})
                         if isinstance(current_user, dict):
+                            # Extract agencyId
                             agency_id = current_user.get("agencyId")
                             if agency_id:
-                                # Convert to int if it's a string or number
                                 try:
                                     self._agency_id = int(agency_id)
                                 except (ValueError, TypeError):
                                     logger.warning(f"Could not convert agencyId to int: {agency_id}")
                                     self._agency_id = None
+                            
+                            # Extract merchantId
+                            merchant_id = current_user.get("merchantId")
+                            if merchant_id:
+                                try:
+                                    self._merchant_id = int(merchant_id)
+                                except (ValueError, TypeError):
+                                    logger.warning(f"Could not convert merchantId to int: {merchant_id}")
+                                    self._merchant_id = None
                     
                     # Fallback to config if not found in response
                     if self._agency_id is None:
@@ -289,7 +298,8 @@ class ZKongClient:
                         "Successfully authenticated with ZKong API (token-based)",
                         endpoint=endpoint,
                         token_length=len(token),
-                        agency_id=self._agency_id
+                        agency_id=self._agency_id,
+                        merchant_id=self._merchant_id
                     )
                     
                     return token
@@ -389,12 +399,23 @@ class ZKongClient:
                 item_list.append(item)
             
             # Build request payload
-            # Use agencyId from login response if available, otherwise fallback to config
+            # Use agencyId and merchantId from login response if available
+            # ZKong requires these to match the authenticated user
             agency_id = self._agency_id if self._agency_id is not None else settings.zkong_agency_id
+            # Use merchantId from login response (it must match the authenticated user)
+            # If store mapping has a different merchantId, log a warning but use the one from login
+            merchant_id_to_use = self._merchant_id if self._merchant_id is not None else int(merchant_id)
+            
+            if self._merchant_id is not None and str(self._merchant_id) != str(merchant_id):
+                logger.warning(
+                    "Merchant ID mismatch - using merchantId from login response instead of store mapping",
+                    login_merchant_id=self._merchant_id,
+                    store_mapping_merchant_id=merchant_id
+                )
             
             request_data = {
                 "storeId": int(store_id),  # Required: Integer
-                "merchantId": int(merchant_id),  # Required: Integer
+                "merchantId": int(merchant_id_to_use),  # Required: Integer (from login response, must match authenticated user)
                 "agencyId": int(agency_id),  # Required: Integer (from login response or config)
                 "unitName": 1,  # Optional: 0=Points, 1=Yuan (default to Yuan)
                 "itemList": item_list  # Required: List of items
