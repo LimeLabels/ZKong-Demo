@@ -170,7 +170,7 @@ class ZKongClient:
             # Login request
             # Try /zk/user/login first (as shown in Postman testing), fallback to /api/v1/login
             login_data = {
-                "username": self.username,
+                "account": self.username,  # ZKong API uses "account" field, not "username"
                 "loginType": 3,  # Login type (3 seems to be for API login)
                 "password": encrypted_password
             }
