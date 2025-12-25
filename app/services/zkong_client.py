@@ -43,6 +43,7 @@ class ZKongClient:
         self.rsa_public_key = settings.zkong_rsa_public_key
         self._auth_token: Optional[str] = None
         self._token_expires_at: Optional[float] = None
+        self._agency_id: Optional[int] = None  # Will be extracted from login response
         
         # HTTP client with timeout and cookie support
         # ZKong uses cookie-based authentication, so we need to maintain cookies
@@ -260,10 +261,35 @@ class ZKongClient:
                     self._auth_token = token
                     self._token_expires_at = time.time() + 3600  # Default 1 hour
                     
+                    # Extract agencyId from login response (required for product import)
+                    # agencyId is in data.currentUser.agencyId
+                    agency_id = None
+                    if isinstance(token_data, dict):
+                        current_user = token_data.get("currentUser", {})
+                        if isinstance(current_user, dict):
+                            agency_id = current_user.get("agencyId")
+                            if agency_id:
+                                # Convert to int if it's a string or number
+                                try:
+                                    self._agency_id = int(agency_id)
+                                except (ValueError, TypeError):
+                                    logger.warning(f"Could not convert agencyId to int: {agency_id}")
+                                    self._agency_id = None
+                    
+                    # Fallback to config if not found in response
+                    if self._agency_id is None:
+                        self._agency_id = settings.zkong_agency_id
+                        if self._agency_id == 0:
+                            logger.warning(
+                                "agencyId not found in login response and config is 0. Product import may fail.",
+                                current_user_keys=list(current_user.keys()) if isinstance(current_user, dict) else []
+                            )
+                    
                     logger.info(
                         "Successfully authenticated with ZKong API (token-based)",
                         endpoint=endpoint,
-                        token_length=len(token)
+                        token_length=len(token),
+                        agency_id=self._agency_id
                     )
                     
                     return token
@@ -363,10 +389,13 @@ class ZKongClient:
                 item_list.append(item)
             
             # Build request payload
+            # Use agencyId from login response if available, otherwise fallback to config
+            agency_id = self._agency_id if self._agency_id is not None else settings.zkong_agency_id
+            
             request_data = {
                 "storeId": int(store_id),  # Required: Integer
                 "merchantId": int(merchant_id),  # Required: Integer
-                "agencyId": settings.zkong_agency_id,  # Required: Integer (from config, default 0)
+                "agencyId": int(agency_id),  # Required: Integer (from login response or config)
                 "unitName": 1,  # Optional: 0=Points, 1=Yuan (default to Yuan)
                 "itemList": item_list  # Required: List of items
             }
