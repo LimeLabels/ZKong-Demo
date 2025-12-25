@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     zkong_username: str = ""  # Optional for testing, required for ZKong sync
     zkong_password: str = ""  # Optional for testing, required for ZKong sync
     zkong_rsa_public_key: str = ""  # Optional for testing, required for ZKong sync
+    zkong_agency_id: int = 0  # Agent ID (required for product import, default 0 if not used)
     
     # Supabase Configuration
     supabase_url: str

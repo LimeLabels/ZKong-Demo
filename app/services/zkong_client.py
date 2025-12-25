@@ -242,31 +242,57 @@ class ZKongClient:
         await self._ensure_authenticated()
         
         try:
-            # Prepare request payload
+            # Prepare request payload according to ZKong API 3.2 section 3.1
+            # Required fields: storeId, merchantId, agencyId, itemList
+            # Each item needs: barCode, attrCategory, attrName (required)
+            # Note: agencyId might need to be provided - check if it's in store mapping
+            
+            # Build item list according to ZKong API spec
+            # Required fields: barCode, attrCategory, attrName
+            item_list = []
+            for p in products:
+                item = {
+                    "barCode": p.barcode,  # Required: barcode (Unique product identifier)
+                    "attrCategory": "default",  # Required: Template Classification (using default)
+                    "attrName": "default",  # Required: Template properties (using default)
+                }
+                
+                # Add product name/title
+                if p.product_name:
+                    item["itemTitle"] = p.product_name  # Product title
+                    item["shortTitle"] = p.product_name  # Product Name
+                
+                # Add price (selling price)
+                if p.price is not None:
+                    item["price"] = float(p.price)
+                
+                # Add optional fields if provided
+                if p.sku:
+                    item["productSku"] = p.sku
+                if p.external_id:
+                    item["productCode"] = p.external_id
+                if p.image_url:
+                    item["qrCode"] = p.image_url  # QR code URL field
+                
+                item_list.append(item)
+            
+            # Build request payload
             request_data = {
-                "products": [
-                    {
-                        "barcode": p.barcode,
-                        "merchant_id": merchant_id,
-                        "store_id": store_id,
-                        "product_name": p.product_name,
-                        "price": p.price,
-                        "currency": p.currency,
-                        **({k: v for k, v in p.dict().items() if v is not None and k not in [
-                            "barcode", "merchant_id", "store_id", "product_name", "price", "currency"
-                        ]})
-                    }
-                    for p in products
-                ]
+                "storeId": int(store_id),  # Required: Integer
+                "merchantId": int(merchant_id),  # Required: Integer
+                "agencyId": settings.zkong_agency_id,  # Required: Integer (from config, default 0)
+                "unitName": 1,  # Optional: 0=Points, 1=Yuan (default to Yuan)
+                "itemList": item_list  # Required: List of items
             }
             
             headers = {
                 "Authorization": f"Bearer {self._auth_token}",
-                "Content-Type": "application/json"
+                "Content-Type": "application/json;charset=utf-8"
             }
             
+            # ZKong API endpoint: /zk/item/batchImportItem
             response = await self.client.post(
-                "/api/v1/products/import",
+                "/zk/item/batchImportItem",
                 json=request_data,
                 headers=headers
             )

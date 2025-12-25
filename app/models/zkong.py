@@ -17,6 +17,7 @@ class ZKongProductImportItem(BaseModel):
     image_url: Optional[str] = Field(None, description="Product image URL")
     # Additional fields based on API 3.1 expansion (up to 25 fields)
     external_id: Optional[str] = None
+    sku: Optional[str] = Field(None, description="Product SKU")
     category: Optional[str] = None
     description: Optional[str] = None
     brand: Optional[str] = None
