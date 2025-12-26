@@ -626,19 +626,25 @@ class ZKongClient:
                 headers["Authorization"] = self._auth_token
             
             # ZKong API endpoint: /zk/item/batchDeleteltem (note: typo in API docs)
-            logger.debug(
+            endpoint_path = "/zk/item/batchDeleteltem"
+            full_url = f"{self.base_url}{endpoint_path}"
+            
+            logger.info(
                 "Calling ZKong delete endpoint",
-                endpoint="/zk/item/batchDeleteltem",
+                endpoint=endpoint_path,
+                full_url=full_url,
                 barcode_count=len(barcodes),
-                store_id=store_id
+                store_id=store_id,
+                barcodes=barcodes[:5]  # Log first 5 barcodes for debugging
             )
             
             # Use DELETE method as specified in API docs
             # httpx.delete() doesn't support json parameter, so use request() method
+            # Note: request() method does support json parameter
             response = await self.client.request(
                 method="DELETE",
-                url="/zk/item/batchDeleteltem",
-                content=json.dumps(request_data).encode('utf-8'),
+                url=endpoint_path,
+                json=request_data,
                 headers=headers
             )
             response.raise_for_status()
