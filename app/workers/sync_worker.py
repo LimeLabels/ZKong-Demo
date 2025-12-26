@@ -383,8 +383,9 @@ class SyncWorker:
         )
         
         # Check if deletion was successful
-        # ZKong uses various success codes (200, 14014, 10000, etc.)
+        # ZKong returns success: true, code: 10000 for successful deletion
         is_success = (
+            (response.success is True) or
             response.code == 200 or
             response.code == 14014 or
             response.code == 10000 or

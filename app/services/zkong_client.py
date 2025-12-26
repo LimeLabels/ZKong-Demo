@@ -600,16 +600,22 @@ class ZKongClient:
             # API expects: storeId (Integer, required) and list (List<String>, required)
             # If storeId is empty/null, deletes from all stores under the merchant
             
+            # Build request payload - must match Postman working request exactly
+            # API expects: storeId (Integer, required) and list (List<String>, required)
             request_data = {
                 "list": barcodes  # List of barcodes to delete (max 500)
             }
             
-            # Add storeId - required field according to API docs
-            # If not provided, API will delete from all stores under merchant
+            # Always include storeId - required field (API works with it included)
             if store_id:
                 request_data["storeId"] = int(store_id)
-            # Note: API docs say storeId is required, but also say "if empty, deletes from all stores"
-            # We'll only include it if provided - API should handle missing storeId
+            else:
+                # If no store_id provided, this might delete from all stores
+                # But API docs say it's required, so log a warning
+                logger.warning(
+                    "No store_id provided for delete - may delete from all stores",
+                    barcodes=barcodes
+                )
             
             # Build headers - ZKong uses "Authorization: token" format
             headers = {

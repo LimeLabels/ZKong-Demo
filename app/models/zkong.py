@@ -61,7 +61,10 @@ class ZKongImageUploadResponse(BaseModel):
 
 class ZKongProductDeleteResponse(BaseModel):
     """Response from bulk product delete (section 3.2)."""
+    success: Optional[bool] = None
     code: int
     message: str
     data: Optional[Dict[str, Any]] = None
+    translate: Optional[bool] = None
+    originalMessage: Optional[str] = None
 
