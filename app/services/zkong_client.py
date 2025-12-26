@@ -399,10 +399,15 @@ class ZKongClient:
                 if p.image_url:
                     item["qrCode"] = p.image_url  # QR code URL field
                 
-                # Add origin field with source system (e.g., "shopify", "amazon", etc.)
-                # This helps track where the product came from in the ESL system
+                # Add productArea field with source system (e.g., "shopify", "amazon", etc.)
+                # This populates the "Origin" column in the ESL system
                 if p.source_system:
-                    item["origin"] = p.source_system
+                    item["productArea"] = p.source_system
+                    logger.debug(
+                        "Setting productArea field for product",
+                        barcode=p.barcode,
+                        source_system=p.source_system
+                    )
                 
                 item_list.append(item)
             
@@ -419,6 +424,14 @@ class ZKongClient:
                     "Merchant ID mismatch - using merchantId from login response instead of store mapping",
                     login_merchant_id=self._merchant_id,
                     store_mapping_merchant_id=merchant_id
+                )
+            
+            # Log item list to debug productArea field
+            if item_list:
+                logger.debug(
+                    "ZKong import item list",
+                    first_item_keys=list(item_list[0].keys()) if item_list else [],
+                    first_item_productArea=item_list[0].get("productArea") if item_list else None
                 )
             
             request_data = {
