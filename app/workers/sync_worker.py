@@ -240,9 +240,28 @@ class SyncWorker:
             store_id=store_mapping.zkong_store_id
         )
         
-        if response.code != 200:
+        # ZKong uses various success codes (200, 14014, 10000, etc.)
+        # Check if the response indicates success by checking the message or code
+        # "商品导入成功" means "Product import successful" in Chinese
+        is_success = (
+            response.code == 200 or
+            response.code == 14014 or
+            response.code == 10000 or
+            (response.message and "成功" in str(response.message)) or  # "成功" means "success" in Chinese
+            (response.message and "success" in str(response.message).lower())
+        )
+        
+        if not is_success:
             raise ZKongAPIError(
-                f"ZKong import failed: {response.message}"
+                f"ZKong import failed: {response.message} (code: {response.code})"
+            )
+        
+        # Log success even if code isn't 200
+        if response.code != 200:
+            logger.info(
+                "ZKong import successful with non-200 code",
+                code=response.code,
+                message=response.message
             )
         
         # Extract ZKong product ID from response
