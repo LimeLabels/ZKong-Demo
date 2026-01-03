@@ -16,6 +16,8 @@ from app.models.zkong import (
     ZKongProductImportResponse,
     ZKongImageUploadResponse,
     ZKongProductDeleteResponse,
+    ZKongStrategyRequest,
+    ZKongStrategyResponse,
 )
 from app.utils.retry import retry_with_backoff, TransientError, PermanentError
 
@@ -599,6 +601,76 @@ class ZKongClient:
             )
         except Exception as e:
             raise ZKongAPIError(f"Failed to delete products: {str(e)}")
+
+    @retry_with_backoff(max_attempts=3, initial_delay=1.0, multiplier=2.0)
+    async def create_strategy(
+        self,
+        strategy: ZKongStrategyRequest,
+        use_external_store_id: bool = False,
+        external_store_id: Optional[str] = None,
+    ) -> ZKongStrategyResponse:
+        """
+        Create a new activity strategy in ZKong (section 8.1).
+
+        Args:
+            strategy: Strategy request model with all configuration
+            use_external_store_id: Whether to use external store ID
+            external_store_id: External store ID if use_external_store_id is True
+
+        Returns:
+            Strategy creation response from ZKong API
+        """
+        await self._ensure_authenticated()
+
+        try:
+            # Build query parameters
+            query_params = {}
+            if use_external_store_id:
+                query_params["useExternalStoreId"] = 1
+                if external_store_id:
+                    query_params["externalStoreId"] = external_store_id
+
+            # Build headers
+            headers = {"Content-Type": "application/json;charset=utf-8"}
+            if self._auth_token:
+                headers["Authorization"] = self._auth_token
+
+            # Convert strategy to dict, using aliases for API
+            strategy_dict = strategy.model_dump(by_alias=True, exclude_none=True)
+
+            logger.info(
+                "Creating ZKong strategy",
+                strategy_name=strategy.name,
+                store_id=strategy.store_id,
+                item_count=len(strategy.item_actions),
+            )
+
+            # Call ZKong strategy creation endpoint
+            endpoint = "/zk/strategy/create"
+            response = await self.client.post(
+                endpoint, json=strategy_dict, headers=headers, params=query_params
+            )
+            response.raise_for_status()
+
+            data = response.json()
+            # Use parse_response to handle different data formats
+            return ZKongStrategyResponse.parse_response(data)
+
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 401:
+                # Authentication failed - re-authenticate
+                self._auth_token = None
+                await self._ensure_authenticated()
+                raise TransientError(
+                    "Authentication expired (token), will retry after re-authentication"
+                )
+            if 500 <= e.response.status_code < 600:
+                raise TransientError(f"ZKong API error: {e.response.status_code}")
+            raise PermanentError(
+                f"ZKong API error: {e.response.status_code} - {e.response.text}"
+            )
+        except Exception as e:
+            raise ZKongAPIError(f"Failed to create strategy: {str(e)}")
 
     async def close(self):
         """Close HTTP client."""

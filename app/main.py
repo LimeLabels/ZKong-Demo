@@ -6,7 +6,7 @@ Initializes the FastAPI app, configures logging, and includes webhook routes.
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.utils.logger import configure_logging
-from app.routers import webhooks, store_mappings, webhooks_new
+from app.routers import webhooks, store_mappings, webhooks_new, strategies, shopify_auth
 import structlog
 
 # Configure logging first
@@ -33,6 +33,8 @@ app.add_middleware(
 app.include_router(webhooks.router)  # Legacy routes for backward compatibility
 app.include_router(webhooks_new.router)  # New generic integration router
 app.include_router(store_mappings.router)
+app.include_router(strategies.router)  # Strategy management endpoints
+app.include_router(shopify_auth.router)  # Shopify OAuth endpoints
 
 
 @app.on_event("startup")

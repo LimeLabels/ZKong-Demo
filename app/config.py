@@ -28,6 +28,9 @@ class Settings(BaseSettings):
     shopify_webhook_secret: str = (
         ""  # Optional for testing, required for webhook verification
     )
+    shopify_api_key: str = ""  # Shopify app API key (for OAuth)
+    shopify_api_secret: str = ""  # Shopify app API secret (for OAuth)
+    app_base_url: str = "http://localhost:8000"  # Base URL for OAuth redirects
 
     # Application Configuration
     app_environment: str = "development"
