@@ -292,6 +292,100 @@ class HipoinkClient:
         except Exception as e:
             raise HipoinkAPIError(f"Product creation failed: {str(e)}")
 
+    async def create_price_adjustment_order(
+        self,
+        store_code: str,
+        order_number: str,
+        order_name: str,
+        products: List[Dict[str, Any]],  # List of {"pc": "product_code", "pp": price}
+        trigger_stores: Optional[List[str]] = None,
+        trigger_days: Optional[List[str]] = None,  # ['1','3','5'] = Mon, Wed, Fri
+        start_time: Optional[str] = None,  # "15:00"
+        end_time: Optional[str] = None,  # "16:00"
+        is_base64: str = "0"
+    ) -> Dict[str, Any]:
+        """
+        Create a product price adjustment order.
+        Uses endpoint: POST /api/{i_client_id}/productadjust/create_order
+        
+        This allows scheduling price changes for specific days of the week and times.
+        
+        Args:
+            store_code: Store code (required)
+            order_number: Price adjustment order number (required)
+            order_name: Price adjustment order name (required)
+            products: List of products with pc (product code) and pp (price) (required)
+            trigger_stores: Array of store codes to trigger (optional)
+            trigger_days: Array of day numbers ['1','3','5'] = Mon, Wed, Fri (optional)
+            start_time: Price adjustment start time in HH:MM format (optional)
+            end_time: Price adjustment end time in HH:MM format (optional)
+            is_base64: Whether data is base64 encoded (default "0")
+            
+        Returns:
+            Response data from Hipoink API
+        """
+        try:
+            # Build request payload
+            request_data = {
+                "store_code": store_code,
+                "f1": order_number,  # Order number
+                "f2": order_name,  # Order name
+                "f7": products,  # Product data array
+                "is_base64": is_base64,
+            }
+            
+            # Add optional fields
+            if trigger_stores:
+                request_data["f3"] = trigger_stores
+            if trigger_days:
+                request_data["f4"] = trigger_days
+            if start_time:
+                request_data["f5"] = start_time
+            if end_time:
+                request_data["f6"] = end_time
+            
+            # Generate sign
+            sign = self._generate_sign(request_data)
+            request_data["sign"] = sign
+
+            # API endpoint
+            endpoint = f"/api/{self.client_id}/productadjust/create_order"
+            
+            logger.info(
+                "Creating price adjustment order in Hipoink",
+                order_number=order_number,
+                order_name=order_name,
+                product_count=len(products),
+                store_code=store_code,
+                endpoint=endpoint,
+            )
+
+            response = await self.client.post(endpoint, json=request_data)
+            response.raise_for_status()
+            
+            response_data = response.json()
+            
+            # Check for errors
+            error_code = response_data.get("error_code")
+            if error_code != 0:
+                error_msg = response_data.get("error_msg", "Unknown error")
+                raise HipoinkAPIError(f"Hipoink API error: {error_msg} (code: {error_code})")
+
+            logger.info(
+                "Successfully created price adjustment order in Hipoink",
+                order_number=order_number,
+                store_code=store_code,
+            )
+
+            return response_data
+
+        except httpx.HTTPStatusError as e:
+            if 500 <= e.response.status_code < 600:
+                raise TransientError(f"Hipoink API error: {e.response.status_code}")
+            raise PermanentError(f"Hipoink API error: {e.response.status_code}")
+        except Exception as e:
+            raise HipoinkAPIError(f"Price adjustment order creation failed: {str(e)}")
+
     async def close(self):
         """Close the HTTP client."""
         await self.client.aclose()
