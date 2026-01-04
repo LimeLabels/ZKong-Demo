@@ -7,7 +7,6 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "start": "vite preview --host 0.0.0.0 --port $PORT",
     "shopify:dev": "shopify app dev"
   },
   "dependencies": {
@@ -15,13 +14,13 @@
     "@shopify/app": "^3.0.0",
     "@shopify/polaris": "^12.0.0",
     "react": "^18.2.0",
-    "react-dom": "^18.2.0",
-    "vite": "^5.0.0"
+    "react-dom": "^18.2.0"
   },
   "devDependencies": {
     "@types/react": "^18.2.0",
     "@types/react-dom": "^18.2.0",
     "@vitejs/plugin-react": "^4.0.0",
-    "typescript": "^5.0.0"
+    "typescript": "^5.0.0",
+    "vite": "^5.0.0"
   }
 }
