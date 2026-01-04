@@ -22,8 +22,7 @@ class CreateStoreMappingRequest(BaseModel):
 
     source_system: str  # e.g., 'shopify'
     source_store_id: str  # e.g., 'your-shop.myshopify.com'
-    zkong_merchant_id: str
-    zkong_store_id: str
+    hipoink_store_code: str  # Store code for Hipoink API (required)
     is_active: bool = True
     metadata: dict = None
 
@@ -34,8 +33,7 @@ class StoreMappingResponse(BaseModel):
     id: str
     source_system: str
     source_store_id: str
-    zkong_merchant_id: str
-    zkong_store_id: str
+    hipoink_store_code: str
     is_active: bool
     metadata: Optional[dict] = None
     created_at: str
@@ -50,7 +48,7 @@ async def create_store_mapping(request: CreateStoreMappingRequest):
     Create a new store mapping.
 
     This allows onboarding new stores without SQL queries.
-    Example: Create a mapping for your Shopify store to ZKong store.
+    Example: Create a mapping for your Shopify store to Hipoink ESL store.
     """
     try:
         # Check if mapping already exists
@@ -68,8 +66,7 @@ async def create_store_mapping(request: CreateStoreMappingRequest):
         mapping = StoreMapping(
             source_system=request.source_system,
             source_store_id=request.source_store_id,
-            zkong_merchant_id=request.zkong_merchant_id,
-            zkong_store_id=request.zkong_store_id,
+            hipoink_store_code=request.hipoink_store_code,
             is_active=request.is_active,
             metadata=request.metadata,
         )
@@ -87,8 +84,7 @@ async def create_store_mapping(request: CreateStoreMappingRequest):
             id=str(created.id),
             source_system=created.source_system,
             source_store_id=created.source_store_id,
-            zkong_merchant_id=created.zkong_merchant_id,
-            zkong_store_id=created.zkong_store_id,
+            hipoink_store_code=created.hipoink_store_code,
             is_active=created.is_active,
             metadata=created.metadata,
             created_at=created.created_at.isoformat() if created.created_at else "",
@@ -130,8 +126,7 @@ async def list_store_mappings(source_system: str = None, is_active: bool = None)
                 id=str(item["id"]),
                 source_system=item["source_system"],
                 source_store_id=item["source_store_id"],
-                zkong_merchant_id=item["zkong_merchant_id"],
-                zkong_store_id=item["zkong_store_id"],
+                hipoink_store_code=item.get("hipoink_store_code", ""),
                 is_active=item["is_active"],
                 metadata=item.get("metadata"),
                 created_at=item["created_at"],
@@ -166,8 +161,7 @@ async def get_store_mapping(mapping_id: UUID):
             id=str(mapping.id),
             source_system=mapping.source_system,
             source_store_id=mapping.source_store_id,
-            zkong_merchant_id=mapping.zkong_merchant_id,
-            zkong_store_id=mapping.zkong_store_id,
+            hipoink_store_code=mapping.hipoink_store_code,
             is_active=mapping.is_active,
             metadata=mapping.metadata,
             created_at=mapping.created_at.isoformat() if mapping.created_at else "",
@@ -217,8 +211,7 @@ async def update_store_mapping(mapping_id: UUID, request: CreateStoreMappingRequ
             id=str(updated.id),
             source_system=updated.source_system,
             source_store_id=updated.source_store_id,
-            zkong_merchant_id=updated.zkong_merchant_id,
-            zkong_store_id=updated.zkong_store_id,
+            hipoink_store_code=updated.hipoink_store_code,
             is_active=updated.is_active,
             metadata=updated.metadata,
             created_at=updated.created_at.isoformat() if updated.created_at else "",

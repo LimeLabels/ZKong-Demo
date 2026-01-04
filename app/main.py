@@ -6,7 +6,7 @@ Initializes the FastAPI app, configures logging, and includes webhook routes.
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.utils.logger import configure_logging
-from app.routers import webhooks, store_mappings, webhooks_new, strategies, shopify_auth
+from app.routers import webhooks, store_mappings, webhooks_new, shopify_auth
 import structlog
 
 # Configure logging first
@@ -15,8 +15,8 @@ logger = structlog.get_logger()
 
 # Create FastAPI app
 app = FastAPI(
-    title="ZKong ESL Integration Middleware",
-    description="Middleware for syncing Shopify products to ZKong ESL system",
+    title="Hipoink ESL Integration Middleware",
+    description="Middleware for syncing Shopify products to Hipoink ESL system",
     version="1.0.0",
 )
 
@@ -33,27 +33,26 @@ app.add_middleware(
 app.include_router(webhooks.router)  # Legacy routes for backward compatibility
 app.include_router(webhooks_new.router)  # New generic integration router
 app.include_router(store_mappings.router)
-app.include_router(strategies.router)  # Strategy management endpoints
 app.include_router(shopify_auth.router)  # Shopify OAuth endpoints
 
 
 @app.on_event("startup")
 async def startup_event():
     """Application startup event."""
-    logger.info("ZKong ESL Integration Middleware started")
+    logger.info("Hipoink ESL Integration Middleware started")
 
 
 @app.on_event("shutdown")
 async def shutdown_event():
     """Application shutdown event."""
-    logger.info("ZKong ESL Integration Middleware shutting down")
+    logger.info("Hipoink ESL Integration Middleware shutting down")
 
 
 @app.get("/")
 async def root():
     """Root endpoint."""
     return {
-        "service": "ZKong ESL Integration Middleware",
+        "service": "Hipoink ESL Integration Middleware",
         "version": "1.0.0",
         "status": "running",
     }

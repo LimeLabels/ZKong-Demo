@@ -38,7 +38,7 @@ interface StrategyFormData {
   storeMappingId: string; // UUID for store mapping
   originalPrice: string;
   barcode: string; // For single product entry
-  itemId: string; // Optional ZKong item ID
+  itemId: string; // Optional Hipoink item ID
 }
 
 export function StrategyCalendar() {
@@ -316,10 +316,10 @@ export function StrategyCalendar() {
         />
 
         <TextField
-          label="ZKong Item ID (Optional)"
+          label="Hipoink Item ID (Optional)"
           value={formData.itemId}
           onChange={(value) => setFormData({ ...formData, itemId: value })}
-          placeholder="ZKong internal item ID"
+          placeholder="Hipoink internal item ID"
           autoComplete="off"
           helpText="Leave empty if using barcode lookup"
         />

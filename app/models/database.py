@@ -15,8 +15,8 @@ class StoreMapping(BaseModel):
     id: Optional[UUID] = None
     source_system: str
     source_store_id: str
-    zkong_merchant_id: str
-    zkong_store_id: str
+    # Hipoink ESL System Configuration
+    hipoink_store_code: str  # Store code for Hipoink API (required)
     is_active: bool = True
     metadata: Optional[Dict[str, Any]] = None
     created_at: Optional[datetime] = None
@@ -71,7 +71,7 @@ class SyncLog(BaseModel):
     store_mapping_id: Optional[UUID] = None
     operation: str
     status: str  # succeeded, failed
-    zkong_product_id: Optional[str] = None
+    hipoink_product_code: Optional[str] = None  # Hipoink product code (pc field)
     request_payload: Optional[Dict[str, Any]] = None
     response_payload: Optional[Dict[str, Any]] = None
     error_code: Optional[str] = None
@@ -80,14 +80,13 @@ class SyncLog(BaseModel):
     created_at: Optional[datetime] = None
 
 
-class ZKongProduct(BaseModel):
-    """Model for zkong_products table."""
+class HipoinkProduct(BaseModel):
+    """Model for hipoink_products table - tracks product mappings."""
 
     id: Optional[UUID] = None
     product_id: UUID
     store_mapping_id: UUID
-    zkong_product_id: str
-    zkong_barcode: Optional[str] = None
+    hipoink_product_code: str  # Product code (pc) in Hipoink
     last_synced_at: Optional[datetime] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None

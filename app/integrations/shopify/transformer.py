@@ -1,7 +1,7 @@
 """
 Shopify data transformation service.
-Transforms Shopify product data into normalized format for ZKong API.
-Each Shopify variant becomes a separate ZKong product.
+Transforms Shopify product data into normalized format for Hipoink ESL API.
+Each Shopify variant becomes a separate Hipoink product.
 """
 
 from typing import List, Dict, Any, Optional, Tuple
@@ -83,7 +83,7 @@ class ShopifyTransformer:
         variant: ShopifyVariant | Dict[str, Any],
     ) -> NormalizedProduct:
         """
-        Normalize a single Shopify variant to ZKong-compatible format.
+        Normalize a single Shopify variant to Hipoink-compatible format.
 
         Args:
             product: Shopify product containing the variant
@@ -159,7 +159,7 @@ class ShopifyTransformer:
         product: NormalizedProduct,
     ) -> Tuple[bool, List[str]]:
         """
-        Validate normalized product data before syncing to ZKong.
+        Validate normalized product data before syncing to Hipoink.
 
         Args:
             product: Normalized product object

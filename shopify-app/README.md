@@ -1,6 +1,6 @@
-# ZKong ESL Shopify App
+# Hipoink ESL Shopify App
 
-Shopify embedded app for managing time-based pricing strategies on ZKong ESL displays.
+Shopify embedded app for managing time-based pricing strategies on Hipoink ESL displays.
 
 ## Setup
 

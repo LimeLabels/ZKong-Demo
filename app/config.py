@@ -1,6 +1,6 @@
 """
 Configuration management using Pydantic settings.
-Loads environment variables for ZKong API, Supabase, and Shopify webhook secrets.
+Loads environment variables for Hipoink ESL API, Supabase, and Shopify webhook secrets.
 """
 
 from pydantic_settings import BaseSettings
@@ -9,16 +9,12 @@ from pydantic_settings import BaseSettings
 class Settings(BaseSettings):
     """Application configuration loaded from environment variables."""
 
-    # ZKong API Configuration
-    zkong_api_base_url: str = (
-        "https://esl-eu.zkong.com"  # ZKong ESL API base URL (EU region)
-    )
-    zkong_username: str = ""  # Optional for testing, required for ZKong sync
-    zkong_password: str = ""  # Optional for testing, required for ZKong sync
-    zkong_rsa_public_key: str = ""  # Optional for testing, required for ZKong sync
-    zkong_agency_id: int = (
-        0  # Agent ID (required for product import, default 0 if not used)
-    )
+    # Hipoink ESL API Configuration
+    hipoink_api_base_url: str = "http://208.167.248.129"  # Hipoink ESL server URL
+    hipoink_username: str = ""  # Hipoink admin username
+    hipoink_password: str = ""  # Hipoink admin password
+    hipoink_api_secret: str = ""  # API secret for signing requests (optional)
+    hipoink_client_id: str = "default"  # Client ID for API endpoint
 
     # Supabase Configuration
     supabase_url: str
@@ -43,7 +39,7 @@ class Settings(BaseSettings):
     retry_initial_delay_seconds: float = 1.0
 
     # Rate Limiting
-    zkong_rate_limit_per_second: int = 10
+    hipoink_rate_limit_per_second: int = 10
 
     class Config:
         env_file = ".env"

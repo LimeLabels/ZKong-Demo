@@ -1,7 +1,7 @@
 {
-  "name": "zkong-esl-shopify-app",
+  "name": "hipoink-esl-shopify-app",
   "version": "1.0.0",
-  "description": "Shopify embedded app for ZKong ESL time-based pricing",
+  "description": "Shopify embedded app for Hipoink ESL time-based pricing",
   "type": "module",
   "scripts": {
     "dev": "vite",

@@ -13,7 +13,7 @@ from app.models.database import (
     SyncQueueItem,
     SyncLog,
     StoreMapping,
-    ZKongProduct,
+    HipoinkProduct,
 )
 
 logger = structlog.get_logger()
@@ -374,25 +374,25 @@ class SupabaseService:
             logger.error("Failed to create sync log", error=str(e))
             raise
 
-    # ZKong Products
+    # Hipoink Products
 
-    def create_or_update_zkong_product(
-        self, zkong_product: ZKongProduct
-    ) -> ZKongProduct:
-        """Create or update ZKong product mapping."""
+    def create_or_update_hipoink_product(
+        self, hipoink_product: HipoinkProduct
+    ) -> HipoinkProduct:
+        """Create or update Hipoink product mapping."""
         try:
             # Check if mapping exists
             result = (
-                self.client.table("zkong_products")
+                self.client.table("hipoink_products")
                 .select("*")
-                .eq("product_id", str(zkong_product.product_id))
-                .eq("store_mapping_id", str(zkong_product.store_mapping_id))
+                .eq("product_id", str(hipoink_product.product_id))
+                .eq("store_mapping_id", str(hipoink_product.store_mapping_id))
                 .execute()
             )
 
             if result.data and len(result.data) > 0:
                 # Update existing
-                update_data = zkong_product.dict(
+                update_data = hipoink_product.dict(
                     exclude_none=True, exclude={"id", "created_at"}
                 )
                 # Convert UUIDs to strings
@@ -404,17 +404,17 @@ class SupabaseService:
                     )
 
                 result = (
-                    self.client.table("zkong_products")
+                    self.client.table("hipoink_products")
                     .update(update_data)
                     .eq("id", result.data[0]["id"])
                     .execute()
                 )
 
                 if result.data:
-                    return ZKongProduct(**result.data[0])
+                    return HipoinkProduct(**result.data[0])
             else:
                 # Create new
-                insert_data = zkong_product.dict(exclude_none=True, exclude={"id"})
+                insert_data = hipoink_product.dict(exclude_none=True, exclude={"id"})
                 # Convert UUIDs to strings
                 if insert_data.get("product_id"):
                     insert_data["product_id"] = str(insert_data["product_id"])
@@ -424,24 +424,24 @@ class SupabaseService:
                     )
 
                 result = (
-                    self.client.table("zkong_products").insert(insert_data).execute()
+                    self.client.table("hipoink_products").insert(insert_data).execute()
                 )
 
                 if result.data:
-                    return ZKongProduct(**result.data[0])
+                    return HipoinkProduct(**result.data[0])
 
             raise Exception("No data returned from upsert")
         except Exception as e:
-            logger.error("Failed to create/update ZKong product", error=str(e))
+            logger.error("Failed to create/update Hipoink product", error=str(e))
             raise
 
-    def get_zkong_product_by_product_id(
+    def get_hipoink_product_by_product_id(
         self, product_id: UUID, store_mapping_id: UUID
-    ) -> Optional[ZKongProduct]:
-        """Get ZKong product mapping by product ID and store mapping."""
+    ) -> Optional[HipoinkProduct]:
+        """Get Hipoink product mapping by product ID and store mapping."""
         try:
             result = (
-                self.client.table("zkong_products")
+                self.client.table("hipoink_products")
                 .select("*")
                 .eq("product_id", str(product_id))
                 .eq("store_mapping_id", str(store_mapping_id))
@@ -450,10 +450,10 @@ class SupabaseService:
             )
 
             if result.data:
-                return ZKongProduct(**result.data)
+                return HipoinkProduct(**result.data)
             return None
         except Exception as e:
             if "No rows" in str(e) or "Could not find" in str(e):
                 return None
-            logger.error("Failed to get ZKong product", error=str(e))
+            logger.error("Failed to get Hipoink product", error=str(e))
             return None

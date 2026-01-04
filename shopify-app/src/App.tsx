@@ -60,7 +60,7 @@ function App() {
         },
       }}
     >
-      <Page title="ZKong ESL Pricing Strategies" fullWidth>
+      <Page title="Hipoink ESL Pricing Strategies" fullWidth>
         <Tabs tabs={tabs} selected={selectedTab} onSelect={setSelectedTab}>
           <Layout>
             <Layout.Section>

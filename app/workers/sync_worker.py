@@ -1,6 +1,6 @@
 """
 Background worker that processes sync queue items.
-Polls Supabase sync_queue, transforms data to ZKong format, and syncs to ZKong API.
+Polls Supabase sync_queue, transforms data to Hipoink format, and syncs to Hipoink ESL API.
 """
 
 import asyncio
@@ -9,21 +9,24 @@ import structlog
 
 from app.config import settings
 from app.services.supabase_service import SupabaseService
-from app.services.zkong_client import ZKongClient, ZKongAPIError
+from app.services.hipoink_client import HipoinkClient, HipoinkAPIError, HipoinkProductItem
 from app.models.database import SyncQueueItem, Product, StoreMapping
-from app.models.zkong import ZKongProductImportItem
 from app.utils.retry import PermanentError, TransientError
 
 logger = structlog.get_logger()
 
 
 class SyncWorker:
-    """Worker that processes sync queue and syncs products to ZKong."""
+    """
+    Worker that processes sync queue and syncs products to Hipoink ESL system.
+    """
 
     def __init__(self):
         """Initialize sync worker."""
         self.supabase_service = SupabaseService()
-        self.zkong_client = ZKongClient()
+        self.hipoink_client = HipoinkClient(
+            client_id=getattr(settings, 'hipoink_client_id', 'default')
+        )
         self.running = False
 
     async def start(self):
@@ -43,75 +46,63 @@ class SyncWorker:
     async def stop(self):
         """Stop the sync worker."""
         self.running = False
-        await self.zkong_client.close()
+        await self.hipoink_client.close()
         logger.info("Sync worker stopped")
 
     async def process_sync_queue(self):
         """
-        Process pending items from sync queue.
-        Fetches pending items, processes them, and updates status.
+        Process pending items in sync queue.
+        Fetches items with status 'pending' and processes them.
         """
-        # Get pending queue items
-        queue_items = self.supabase_service.get_pending_sync_queue_items(limit=10)
+        try:
+            # Get pending queue items
+            queue_items = self.supabase_service.get_pending_sync_queue_items(
+                limit=10  # Process up to 10 items at a time
+            )
 
-        if not queue_items:
-            return
+            if not queue_items:
+                return  # No items to process
 
-        logger.info("Processing sync queue items", count=len(queue_items))
+            logger.info("Processing sync queue", item_count=len(queue_items))
 
-        for queue_item in queue_items:
-            try:
-                # Mark as syncing
-                self.supabase_service.update_sync_queue_status(
-                    queue_item.id,  # type: ignore
-                    "syncing",
-                )
-
-                # Process the item
-                await self.process_queue_item(queue_item)
-
-            except Exception as e:
-                logger.error(
-                    "Failed to process queue item",
-                    queue_item_id=str(queue_item.id),
-                    error=str(e),
-                )
-                # Update status to failed if max retries reached
-                retry_count = queue_item.retry_count + 1
-                if retry_count >= queue_item.max_retries:
-                    self.supabase_service.update_sync_queue_status(
-                        queue_item.id,  # type: ignore
-                        "failed",
-                        error_message=str(e),
-                        error_details={"exception_type": type(e).__name__},
-                        retry_count=retry_count,
+            # Process each item
+            for queue_item in queue_items:
+                try:
+                    await self.process_queue_item(queue_item)
+                except Exception as e:
+                    logger.error(
+                        "Failed to process queue item",
+                        queue_item_id=str(queue_item.id),
+                        error=str(e),
                     )
-                else:
-                    # Reset to pending for retry
-                    self.supabase_service.update_sync_queue_status(
-                        queue_item.id,  # type: ignore
-                        "pending",
-                        retry_count=retry_count,
-                    )
+
+        except Exception as e:
+            logger.error("Error processing sync queue", error=str(e))
 
     async def process_queue_item(self, queue_item: SyncQueueItem):
         """
         Process a single sync queue item.
 
         Args:
-            queue_item: SyncQueueItem to process
+            queue_item: Queue item to process
         """
         start_time = time.time()
 
         try:
-            # Get product and store mapping
-            product = self.supabase_service.get_product(queue_item.product_id)
+            # Mark as syncing
+            self.supabase_service.update_sync_queue_status(
+                queue_item.id,  # type: ignore
+                "syncing",
+            )
+
+            # Get product
+            product = self.supabase_service.get_product_by_id(queue_item.product_id)  # type: ignore
             if not product:
                 raise Exception(f"Product not found: {queue_item.product_id}")
 
-            # Get store mapping by ID from queue item
+            # Get store mapping
             store_mapping = self.supabase_service.get_store_mapping_by_id(
-                queue_item.store_mapping_id
+                queue_item.store_mapping_id  # type: ignore
             )
             if not store_mapping:
                 raise Exception(
@@ -119,10 +110,13 @@ class SyncWorker:
                 )
 
             # Handle different operations
+            hipoink_product_code = None
             if queue_item.operation == "delete":
                 await self._handle_delete(product, store_mapping, queue_item)
             else:
-                await self._handle_create_or_update(product, store_mapping, queue_item)
+                hipoink_product_code = await self._handle_create_or_update(
+                    product, store_mapping, queue_item
+                )
 
             # Mark as succeeded
             duration_ms = int((time.time() - start_time) * 1000)
@@ -140,6 +134,7 @@ class SyncWorker:
                 store_mapping_id=store_mapping.id,
                 operation=queue_item.operation,
                 status="succeeded",
+                hipoink_product_code=hipoink_product_code,
                 duration_ms=duration_ms,
             )
             self.supabase_service.create_sync_log(log_entry)
@@ -178,156 +173,151 @@ class SyncWorker:
 
             raise
 
-        except (TransientError, ZKongAPIError) as e:
+        except (TransientError, HipoinkAPIError) as e:
             # Transient error - will be retried
             duration_ms = int((time.time() - start_time) * 1000)
 
-            # Log attempt
-            from app.models.database import SyncLog
+            # Increment retry count
+            retry_count = queue_item.retry_count + 1
+            if retry_count >= queue_item.max_retries:
+                # Max retries reached - mark as failed
+                self.supabase_service.update_sync_queue_status(
+                    queue_item.id,  # type: ignore
+                    "failed",
+                    error_message=str(e),
+                    error_details={"error_type": "transient", "retry_count": retry_count},
+                )
 
-            log_entry = SyncLog(
-                sync_queue_id=queue_item.id,
-                product_id=queue_item.product_id,
-                store_mapping_id=queue_item.store_mapping_id,
-                operation=queue_item.operation,
-                status="failed",
-                error_message=str(e),
-                error_code="TRANSIENT_ERROR",
-                duration_ms=duration_ms,
-            )
-            self.supabase_service.create_sync_log(log_entry)
+                # Log failure
+                from app.models.database import SyncLog
+
+                log_entry = SyncLog(
+                    sync_queue_id=queue_item.id,
+                    product_id=queue_item.product_id,
+                    store_mapping_id=queue_item.store_mapping_id,
+                    operation=queue_item.operation,
+                    status="failed",
+                    error_message=str(e),
+                    error_code="MAX_RETRIES_EXCEEDED",
+                    duration_ms=duration_ms,
+                )
+                self.supabase_service.create_sync_log(log_entry)
+
+                raise PermanentError(f"Max retries exceeded: {str(e)}")
+            else:
+                # Update retry count and reschedule
+                self.supabase_service.update_sync_queue_status(
+                    queue_item.id,  # type: ignore
+                    "pending",
+                    retry_count=retry_count,
+                )
+
+                # Log attempt
+                from app.models.database import SyncLog
+
+                log_entry = SyncLog(
+                    sync_queue_id=queue_item.id,
+                    product_id=queue_item.product_id,
+                    store_mapping_id=queue_item.store_mapping_id,
+                    operation=queue_item.operation,
+                    status="failed",
+                    error_message=str(e),
+                    error_code="TRANSIENT_ERROR",
+                    duration_ms=duration_ms,
+                )
+                self.supabase_service.create_sync_log(log_entry)
 
             raise
 
     async def _handle_create_or_update(
         self, product: Product, store_mapping: StoreMapping, queue_item: SyncQueueItem
-    ):
+    ) -> Optional[str]:
         """
         Handle create or update operation.
+        Syncs product to Hipoink ESL system.
 
         Args:
             product: Product to sync
             store_mapping: Store mapping configuration
             queue_item: Queue item being processed
+            
+        Returns:
+            Hipoink product code (pc) if successful
         """
-        # Build ZKong product import item
         if not product.normalized_data:
             raise Exception("Product normalized_data is missing")
 
         normalized = product.normalized_data
 
-        # Get barcode - required by ZKong
+        # Get barcode - required for Hipoink (used as product code)
         barcode = normalized.get("barcode") or product.barcode
         if not barcode:
-            raise Exception("Barcode is required for ZKong import")
+            raise Exception("Barcode is required for Hipoink import")
 
-        zkong_product = ZKongProductImportItem(
-            barcode=barcode,
-            merchant_id=store_mapping.zkong_merchant_id,
-            store_id=store_mapping.zkong_store_id,
-            product_name=normalized.get("title") or product.title,
-            price=float(normalized.get("price") or product.price or 0.0),
-            currency=normalized.get("currency") or product.currency or "USD",
-            image_url=normalized.get("image_url") or product.image_url,
-            external_id=product.source_id,
-            sku=normalized.get("sku") or product.sku,
-            source_system=product.source_system,  # Pass source system for origin field
+        # Build Hipoink product item
+        # Map Shopify fields to Hipoink API fields
+        hipoink_product = HipoinkProductItem(
+            product_code=barcode,  # pc - required (barcode)
+            product_name=normalized.get("title") or product.title,  # pn - required
+            product_price=str(normalized.get("price") or product.price or 0.0),  # pp - required (as string)
+            product_inner_code=normalized.get("sku") or product.sku,  # pi - optional (using SKU)
+            product_image_url=normalized.get("image_url") or product.image_url,  # pim - optional
+            product_qrcode_url=normalized.get("image_url") or product.image_url,  # pqr - optional (using image URL)
+            # Add source system to a custom field if needed
+            f1=product.source_system,  # Store source system in f1
         )
 
-        # Import to ZKong (bulk import with single item)
-        response = await self.zkong_client.import_products_bulk(
-            products=[zkong_product],
-            merchant_id=store_mapping.zkong_merchant_id,
-            store_id=store_mapping.zkong_store_id,
+        # Create product in Hipoink
+        response = await self.hipoink_client.create_product(
+            store_code=store_mapping.hipoink_store_code,
+            product=hipoink_product,
         )
 
-        # ZKong uses various success codes (200, 14014, 10000, etc.)
-        # Check if the response indicates success by checking the message or code
-        # "商品导入成功" means "Product import successful" in Chinese
-        is_success = (
-            response.code == 200
-            or response.code == 14014
-            or response.code == 10000
-            or (
-                response.message and "成功" in str(response.message)
-            )  # "成功" means "success" in Chinese
-            or (response.message and "success" in str(response.message).lower())
+        # Check response
+        error_code = response.get("error_code")
+        if error_code != 0:
+            error_msg = response.get("error_msg", "Unknown error")
+            raise HipoinkAPIError(f"Hipoink import failed: {error_msg} (code: {error_code})")
+
+        logger.info(
+            "Hipoink product created/updated successfully",
+            product_code=barcode,
+            store_code=store_mapping.hipoink_store_code,
         )
 
-        if not is_success:
-            raise ZKongAPIError(
-                f"ZKong import failed: {response.message} (code: {response.code})"
-            )
+        # Store Hipoink product mapping
+        from app.models.database import HipoinkProduct
 
-        # Log success even if code isn't 200
-        if response.code != 200:
-            logger.info(
-                "ZKong import successful with non-200 code",
-                code=response.code,
-                message=response.message,
-            )
+        hipoink_mapping = HipoinkProduct(
+            product_id=product.id,  # type: ignore
+            store_mapping_id=store_mapping.id,  # type: ignore
+            hipoink_product_code=barcode,
+        )
+        self.supabase_service.create_or_update_hipoink_product(hipoink_mapping)
 
-        # Extract ZKong product ID from response
-        zkong_product_id = None
-        if response.data:
-            # Response structure may vary - check common fields
-            zkong_product_id = (
-                response.data.get("product_id")
-                or response.data.get("id")
-                or response.data.get("barcode")
-            )
-
-        # Store ZKong product mapping
-        if zkong_product_id:
-            from app.models.database import ZKongProduct
-
-            zkong_mapping = ZKongProduct(
-                product_id=product.id,  # type: ignore
-                store_mapping_id=store_mapping.id,  # type: ignore
-                zkong_product_id=str(zkong_product_id),
-                zkong_barcode=barcode,
-            )
-            self.supabase_service.create_or_update_zkong_product(zkong_mapping)
-
-        # Upload image if available
-        image_url = normalized.get("image_url") or product.image_url
-        if image_url and zkong_product_id:
-            try:
-                await self.zkong_client.upload_product_image(
-                    barcode=barcode,
-                    image_url=image_url,
-                    merchant_id=store_mapping.zkong_merchant_id,
-                    store_id=store_mapping.zkong_store_id,
-                )
-            except Exception as e:
-                # Image upload failure shouldn't fail the whole sync
-                logger.warning(
-                    "Failed to upload product image",
-                    product_id=str(product.id),
-                    error=str(e),
-                )
+        return barcode
 
     async def _handle_delete(
         self, product: Product, store_mapping: StoreMapping, queue_item: SyncQueueItem
     ):
         """
         Handle delete operation.
-        Attempts to delete product from ZKong using barcode.
+        Note: Hipoink API may not have a delete endpoint - implement when available.
 
         Args:
             product: Product to delete
             store_mapping: Store mapping configuration
             queue_item: Queue item being processed
         """
-        # Get barcode for deletion - try multiple sources
+        # Get product code for deletion
         barcode = None
-        zkong_mapping = self.supabase_service.get_zkong_product_by_product_id(
+        hipoink_mapping = self.supabase_service.get_hipoink_product_by_product_id(
             product.id,  # type: ignore
             store_mapping.id,  # type: ignore
         )
 
-        if zkong_mapping:
-            barcode = zkong_mapping.zkong_barcode
+        if hipoink_mapping:
+            barcode = hipoink_mapping.hipoink_product_code
 
         # Fallback to product fields if no mapping
         if not barcode:
@@ -335,80 +325,17 @@ class SyncWorker:
                 barcode = product.normalized_data.get("barcode")
             if not barcode:
                 barcode = product.barcode
-            if not barcode:
-                if product.normalized_data:
-                    barcode = product.normalized_data.get("sku")
-                if not barcode:
-                    barcode = product.sku
 
         if not barcode:
             logger.warning(
-                "No barcode found for product deletion",
+                "Cannot delete product - no barcode found",
                 product_id=str(product.id),
-                source_id=product.source_id,
             )
-            raise PermanentError("Barcode is required for ZKong product deletion")
+            return
 
-        logger.info(
-            "Deleting product from ZKong",
-            product_id=str(product.id),
-            barcode=barcode,
-            source_id=product.source_id,
+        # TODO: Implement Hipoink product delete when API endpoint is available
+        logger.warning(
+            "Hipoink product delete not yet implemented",
+            product_code=barcode,
+            store_code=store_mapping.hipoink_store_code,
         )
-
-        # Call ZKong delete API
-        response = await self.zkong_client.delete_products_bulk(
-            barcodes=[barcode],
-            merchant_id=store_mapping.zkong_merchant_id,
-            store_id=store_mapping.zkong_store_id,
-        )
-
-        # Check if deletion was successful
-        is_success = (
-            (response.success is True)
-            or response.code == 10000
-            or response.code == 200
-            or (response.message and "成功" in str(response.message))
-            or (response.message and "success" in str(response.message).lower())
-        )
-
-        if not is_success:
-            # Check if product doesn't exist (already deleted)
-            error_message = str(response.message or "").lower()
-            if any(
-                phrase in error_message
-                for phrase in [
-                    "not found",
-                    "不存在",
-                    "未找到",
-                    "no such",
-                    "does not exist",
-                ]
-            ):
-                logger.info(
-                    "Product not found in ZKong (already deleted)",
-                    product_id=str(product.id),
-                    barcode=barcode,
-                )
-                return
-
-            raise ZKongAPIError(
-                f"ZKong delete failed: {response.message} (code: {response.code})"
-            )
-
-        logger.info(
-            "Product successfully deleted from ZKong",
-            product_id=str(product.id),
-            barcode=barcode,
-        )
-
-
-async def run_worker():
-    """Run the sync worker."""
-    worker = SyncWorker()
-    try:
-        await worker.start()
-    except KeyboardInterrupt:
-        logger.info("Received shutdown signal")
-    finally:
-        await worker.stop()
