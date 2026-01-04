@@ -6,6 +6,7 @@ Polls Supabase sync_queue, transforms data to Hipoink format, and syncs to Hipoi
 import asyncio
 import time
 import structlog
+from typing import Optional
 
 from app.config import settings
 from app.services.supabase_service import SupabaseService
