@@ -133,7 +133,7 @@ export function StrategyCalendar() {
       };
 
       // Call backend API (proxied through Vite to FastAPI backend)
-      const response = await fetch("/api/strategies/", {
+      const response = await fetch("/api/strategies/create", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
