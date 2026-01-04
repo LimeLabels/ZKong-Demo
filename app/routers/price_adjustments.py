@@ -73,10 +73,29 @@ async def create_price_adjustment(request: CreatePriceAdjustmentRequest):
                 detail=f"Store mapping not found: {request.store_mapping_id}",
             )
         
+        # Validate and convert products to Hipoink format
+        if not request.products or len(request.products) == 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="At least one product is required",
+            )
+        
         # Convert products to Hipoink format
-        hipoink_products = [
-            {"pc": p.pc, "pp": p.pp} for p in request.products
-        ]
+        # Ensure pp is converted to float (API expects number, not string)
+        hipoink_products = []
+        for p in request.products:
+            try:
+                # Convert price to float
+                price = float(p.pp) if isinstance(p.pp, str) else p.pp
+                hipoink_products.append({
+                    "pc": str(p.pc),
+                    "pp": price
+                })
+            except (ValueError, TypeError) as e:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Invalid price format for product {p.pc}: {p.pp}",
+                )
         
         # Create price adjustment order
         response = await hipoink_client.create_price_adjustment_order(

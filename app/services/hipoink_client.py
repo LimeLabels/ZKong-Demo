@@ -325,16 +325,42 @@ class HipoinkClient:
             Response data from Hipoink API
         """
         try:
+            # Validate products array
+            if not products or not isinstance(products, list):
+                raise HipoinkAPIError("Products must be a non-empty list")
+            
+            if len(products) == 0:
+                raise HipoinkAPIError("At least one product is required")
+            
+            # Ensure all products have required fields and convert pp to number
+            validated_products = []
+            for product in products:
+                if not isinstance(product, dict):
+                    raise HipoinkAPIError(f"Product must be a dictionary, got {type(product)}")
+                if "pc" not in product or "pp" not in product:
+                    raise HipoinkAPIError("Product must have 'pc' (product code) and 'pp' (price) fields")
+                # Convert pp to float if it's a string
+                pp_value = product["pp"]
+                if isinstance(pp_value, str):
+                    try:
+                        pp_value = float(pp_value)
+                    except ValueError:
+                        raise HipoinkAPIError(f"Price 'pp' must be a valid number, got: {pp_value}")
+                validated_products.append({
+                    "pc": str(product["pc"]),
+                    "pp": float(pp_value)
+                })
+            
             # Build request payload
             request_data = {
                 "store_code": store_code,
                 "f1": order_number,  # Order number
                 "f2": order_name,  # Order name
-                "f7": products,  # Product data array
+                "f7": validated_products,  # Product data array (validated)
                 "is_base64": is_base64,
             }
             
-            # Add optional fields
+            # Add optional fields (only if they have values)
             if trigger_stores:
                 request_data["f3"] = trigger_stores
             if trigger_days:
@@ -344,8 +370,9 @@ class HipoinkClient:
             if end_time:
                 request_data["f6"] = end_time
             
-            # Generate sign
-            sign = self._generate_sign(request_data)
+            # Generate sign (create copy to avoid modifying original)
+            sign_data = dict(request_data)  # Shallow copy
+            sign = self._generate_sign(sign_data)
             request_data["sign"] = sign
 
             # API endpoint
@@ -355,9 +382,16 @@ class HipoinkClient:
                 "Creating price adjustment order in Hipoink",
                 order_number=order_number,
                 order_name=order_name,
-                product_count=len(products),
+                product_count=len(validated_products),
                 store_code=store_code,
                 endpoint=endpoint,
+                products=validated_products,
+            )
+            
+            # Log full request payload for debugging
+            logger.debug(
+                "Price adjustment request payload",
+                payload=request_data,
             )
 
             response = await self.client.post(endpoint, json=request_data)
