@@ -340,3 +340,17 @@ class SyncWorker:
             product_code=barcode,
             store_code=store_mapping.hipoink_store_code,
         )
+
+
+async def run_worker():
+    """
+    Main entry point for running the sync worker.
+    Creates a SyncWorker instance and starts it.
+    """
+    worker = SyncWorker()
+    try:
+        await worker.start()
+    except KeyboardInterrupt:
+        logger.info("Received interrupt signal, shutting down worker")
+    finally:
+        await worker.stop()
