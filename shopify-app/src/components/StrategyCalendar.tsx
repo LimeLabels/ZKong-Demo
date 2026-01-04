@@ -85,63 +85,75 @@ export function StrategyCalendar() {
     setSubmitSuccess(false);
 
     try {
-      // Convert form data to API format
-      const payload = {
+      // Convert form data to Hipoink price adjustment format
+      // Generate unique order number
+      const orderNumber = `PA-${Date.now()}`;
+
+      // Map selectedDays to Hipoink format
+      // Frontend: 1=Sun, 2=Mon, 3=Tue, 4=Wed, 5=Thu, 6=Fri, 7=Sat
+      // Hipoink: 1=Mon, 2=Tue, 3=Wed, 4=Thu, 5=Fri, 6=Sat, 7=Sun
+      let triggerDays: string[] | undefined = undefined;
+      if (
+        formData.repeatType === "weekly" &&
+        formData.selectedDays.length > 0
+      ) {
+        triggerDays = formData.selectedDays.map((d) => {
+          // Convert frontend day to Hipoink day
+          // Frontend 1 (Sun) -> Hipoink 7
+          // Frontend 2 (Mon) -> Hipoink 1
+          // Frontend 3 (Tue) -> Hipoink 2, etc.
+          const hipoinkDay = d === 1 ? 7 : d - 1;
+          return hipoinkDay.toString();
+        });
+      } else if (formData.repeatType === "daily") {
+        // Daily = all days (Mon-Sun in Hipoink format)
+        triggerDays = ["1", "2", "3", "4", "5", "6", "7"];
+      }
+
+      // Get start and end times from first time slot
+      let startTime: string | undefined = undefined;
+      let endTime: string | undefined = undefined;
+      if (formData.timeSlots.length > 0) {
+        startTime = formData.timeSlots[0].startTime;
+        endTime = formData.timeSlots[0].endTime;
+      }
+
+      // Build products array
+      const products =
+        formData.products.length > 0
+          ? formData.products.map((product) => ({
+              pc: product.barcode,
+              pp: formData.priceOverride.toString(),
+            }))
+          : [
+              {
+                pc: formData.barcode,
+                pp: formData.priceOverride.toString(),
+              },
+            ];
+
+      const hipoinkPayload = {
         store_mapping_id: formData.storeMappingId,
-        name: formData.name,
-        start_date: formData.startDate.toISOString(),
-        end_date: formData.endDate.toISOString(),
-        trigger_type: 1, // Fixed period
-        period_type:
-          formData.repeatType === "none" || formData.repeatType === "daily"
-            ? 0
-            : formData.repeatType === "weekly"
-            ? 1
-            : 2,
-        period_value:
-          formData.repeatType === "weekly" ? formData.selectedDays : [],
-        period_times: formData.timeSlots.flatMap((slot) => [
-          `${slot.startTime}:00`,
-          `${slot.endTime}:00`,
-        ]),
-        products:
-          formData.products.length > 0
-            ? formData.products.map((product) => ({
-                barcode: product.barcode,
-                item_id: formData.itemId
-                  ? parseInt(formData.itemId)
-                  : undefined,
-                price: formData.priceOverride.toString(),
-                original_price: formData.originalPrice || undefined,
-                promotion_text: formData.promotionText || undefined,
-              }))
-            : [
-                {
-                  barcode: formData.barcode,
-                  item_id: formData.itemId
-                    ? parseInt(formData.itemId)
-                    : undefined,
-                  price: formData.priceOverride.toString(),
-                  original_price: formData.originalPrice || undefined,
-                  promotion_text: formData.promotionText || undefined,
-                },
-              ],
-        template_attr_category: "default",
-        template_attr: "default",
-        select_field_name_num: [3, 4], // Original price and promotion text
-        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone, // Client's local timezone
+        order_number: orderNumber,
+        order_name: formData.name,
+        products: products,
+        trigger_days: triggerDays,
+        start_time: startTime,
+        end_time: endTime,
       };
 
-      // Call backend API (proxied through Vite to FastAPI backend)
-      const response = await fetch("/api/strategies/create", {
+      // Call Hipoink price adjustment API
+      const response = await fetch("/api/price-adjustments/create", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
+        body: JSON.stringify(hipoinkPayload),
       });
 
       if (!response.ok) {
         const error = await response.json();
-        throw new Error(error.detail || "Failed to create strategy");
+        throw new Error(
+          error.detail || "Failed to create price adjustment order"
+        );
       }
 
       setSubmitSuccess(true);
