@@ -97,7 +97,7 @@ class SyncWorker:
             )
 
             # Get product
-            product = self.supabase_service.get_product_by_id(queue_item.product_id)  # type: ignore
+            product = self.supabase_service.get_product(queue_item.product_id)  # type: ignore
             if not product:
                 raise Exception(f"Product not found: {queue_item.product_id}")
 
