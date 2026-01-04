@@ -389,9 +389,17 @@ class HipoinkClient:
             )
             
             # Log full request payload for debugging
-            logger.debug(
+            logger.info(
                 "Price adjustment request payload",
-                payload=request_data,
+                endpoint=endpoint,
+                store_code=store_code,
+                order_number=order_number,
+                products_count=len(validated_products),
+                products=validated_products,
+                has_trigger_days=bool(trigger_days),
+                has_start_time=bool(start_time),
+                has_end_time=bool(end_time),
+                full_payload=request_data,
             )
 
             response = await self.client.post(endpoint, json=request_data)

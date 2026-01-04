@@ -41,6 +41,33 @@ interface StrategyFormData {
   itemId: string; // Optional Hipoink item ID
 }
 
+// Helper function to convert 12-hour time to 24-hour format
+function convertTo24Hour(timeStr: string): string {
+  // If already in 24-hour format (HH:MM), return as is
+  if (/^\d{2}:\d{2}$/.test(timeStr)) {
+    return timeStr;
+  }
+
+  // Handle 12-hour format with AM/PM
+  const match = timeStr.match(/(\d{1,2}):(\d{2})\s*(AM|PM)/i);
+  if (match) {
+    let hours = parseInt(match[1]);
+    const minutes = match[2];
+    const period = match[3].toUpperCase();
+
+    if (period === "PM" && hours !== 12) {
+      hours += 12;
+    } else if (period === "AM" && hours === 12) {
+      hours = 0;
+    }
+
+    return `${hours.toString().padStart(2, "0")}:${minutes}`;
+  }
+
+  // Return as-is if format is unrecognized
+  return timeStr;
+}
+
 export function StrategyCalendar() {
   const [formData, setFormData] = useState<StrategyFormData>({
     name: "",
@@ -111,36 +138,70 @@ export function StrategyCalendar() {
       }
 
       // Get start and end times from first time slot
+      // Convert to 24-hour format (HH:MM) - remove AM/PM if present
       let startTime: string | undefined = undefined;
       let endTime: string | undefined = undefined;
       if (formData.timeSlots.length > 0) {
-        startTime = formData.timeSlots[0].startTime;
-        endTime = formData.timeSlots[0].endTime;
+        const start = formData.timeSlots[0].startTime;
+        const end = formData.timeSlots[0].endTime;
+
+        // Convert from 12-hour to 24-hour format if needed
+        startTime = convertTo24Hour(start);
+        endTime = convertTo24Hour(end);
       }
 
-      // Build products array
+      // Validate barcode is provided
+      if (!formData.barcode || formData.barcode.trim() === "") {
+        throw new Error("Product barcode is required");
+      }
+
+      // Validate and clean price (priceOverride is always a number)
+      if (formData.priceOverride <= 0 || isNaN(formData.priceOverride)) {
+        throw new Error("Promotional price must be greater than 0");
+      }
+      const cleanPrice = formData.priceOverride.toFixed(2);
+
+      // Build products array - always ensure it's a non-empty array
       const products =
         formData.products.length > 0
-          ? formData.products.map((product) => ({
-              pc: product.barcode,
-              pp: formData.priceOverride.toString(),
-            }))
+          ? formData.products
+              .filter((p) => p.barcode && p.barcode.trim() !== "")
+              .map((product) => ({
+                pc: product.barcode.trim(),
+                pp: cleanPrice,
+              }))
           : [
               {
-                pc: formData.barcode,
-                pp: formData.priceOverride.toString(),
+                pc: formData.barcode.trim(),
+                pp: cleanPrice,
               },
             ];
 
-      const hipoinkPayload = {
+      // Final validation - ensure we have at least one product
+      if (products.length === 0) {
+        throw new Error(
+          "At least one product with a valid barcode is required"
+        );
+      }
+
+      // Build payload - only include fields that have values
+      const hipoinkPayload: any = {
         store_mapping_id: formData.storeMappingId,
         order_number: orderNumber,
         order_name: formData.name,
-        products: products,
-        trigger_days: triggerDays,
-        start_time: startTime,
-        end_time: endTime,
+        products: products, // Always required and non-empty
       };
+
+      // Only add optional fields if they have values
+      if (triggerDays && triggerDays.length > 0) {
+        hipoinkPayload.trigger_days = triggerDays;
+      }
+      if (startTime) {
+        hipoinkPayload.start_time = startTime;
+      }
+      if (endTime) {
+        hipoinkPayload.end_time = endTime;
+      }
 
       // Call Hipoink price adjustment API
       const response = await fetch("/api/price-adjustments/create", {
