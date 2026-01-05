@@ -358,7 +358,7 @@ class HipoinkClient:
                     raise HipoinkAPIError(
                         "Product must have 'pc' (product code) and 'pp' (price) fields"
                     )
-                # Convert pp to float (API expects number, per API docs example: {"pc": "010901", "pp": 5.68})
+                # Convert pp to string (API expects string, not number)
                 pp_value = product["pp"]
                 if isinstance(pp_value, str):
                     try:
@@ -375,9 +375,7 @@ class HipoinkClient:
                 validated_products.append(
                     {
                         "pc": str(product["pc"]),
-                        "pp": float(
-                            pp_value
-                        ),  # API expects number (float) per documentation
+                        "pp": f"{float(pp_value):.2f}",  # Send as string
                     }
                 )
 
