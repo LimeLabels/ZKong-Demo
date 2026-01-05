@@ -13,6 +13,8 @@ API Documentation (Version V1.0.0):
 import httpx
 import structlog
 import hashlib
+import base64
+import json as json_lib
 from typing import Optional, List, Dict, Any
 from app.config import settings
 from app.utils.retry import retry_with_backoff, TransientError, PermanentError
@@ -379,45 +381,50 @@ class HipoinkClient:
                     }
                 )
 
-            # Build request payload in strict order matching API documentation
-            # Order: store_code, f1, f2, f3, f4, f5, f6, f7, is_base64, sign
-            request_data = {
-                "store_code": store_code,
-                "f1": order_number,
-                "f2": order_name,
-            }
-
-            # f3: Triggered store array (Optional, but send [] if empty to avoid backend errors)
-            request_data["f3"] = trigger_stores if trigger_stores else []
-
-            # f4: Trigger cycle/days (Optional, but send [] if empty)
-            request_data["f4"] = trigger_days if trigger_days else []
-
-            # f5: Start time (Optional)
-            if start_time:
-                request_data["f5"] = start_time
+            # Build request payload - ALL values must be base64 encoded strings per API docs
+            # Per API documentation example, all field values are base64 encoded
             
-            # f6: End time (Optional)
+            # f3: Triggered stores - comma-separated string, then base64 encode
+            f3_value = None
+            if trigger_stores and len(trigger_stores) > 0:
+                f3_value = ",".join(trigger_stores)
+            
+            # f4: Trigger days - comma-separated string, then base64 encode
+            f4_value = None
+            if trigger_days and len(trigger_days) > 0:
+                f4_value = ",".join(trigger_days)
+            
+            # f7: Product data - JSON string, then base64 encode
+            f7_json = json_lib.dumps(validated_products, separators=(',', ':'))
+            
+            # Build request payload with base64 encoded values
+            request_data = {
+                "store_code": base64.b64encode(store_code.encode('utf-8')).decode('utf-8'),
+                "f1": base64.b64encode(order_number.encode('utf-8')).decode('utf-8'),
+                "f2": base64.b64encode(order_name.encode('utf-8')).decode('utf-8'),
+            }
+            
+            # Add optional fields (base64 encoded)
+            if f3_value:
+                request_data["f3"] = base64.b64encode(f3_value.encode('utf-8')).decode('utf-8')
+            if f4_value:
+                request_data["f4"] = base64.b64encode(f4_value.encode('utf-8')).decode('utf-8')
+            if start_time:
+                request_data["f5"] = base64.b64encode(start_time.encode('utf-8')).decode('utf-8')
             if end_time:
-                request_data["f6"] = end_time
-
-            # f7: Product data (Required)
-            request_data["f7"] = validated_products
+                request_data["f6"] = base64.b64encode(end_time.encode('utf-8')).decode('utf-8')
+            
+            # f7: Required - JSON string, base64 encoded
+            request_data["f7"] = base64.b64encode(f7_json.encode('utf-8')).decode('utf-8')
             
             # is_base64
-            request_data["is_base64"] = is_base64
+            request_data["is_base64"] = base64.b64encode(is_base64.encode('utf-8')).decode('utf-8')
 
-            # Generate sign (create copy to avoid modifying original, though we just built it)
+            # Generate sign BEFORE adding it to request_data
+            # The sign should be calculated on the data WITHOUT the sign field
             sign_data = dict(request_data)
             sign = self._generate_sign(sign_data)
-            
-            # Add sign at the end
-            request_data["sign"] = sign
-
-            # Generate sign (create copy to avoid modifying original)
-            sign_data = dict(request_data)  # Shallow copy
-            sign = self._generate_sign(sign_data)
-            request_data["sign"] = sign
+            request_data["sign"] = base64.b64encode(sign.encode('utf-8')).decode('utf-8')
 
             # API endpoint
             endpoint = f"/api/{self.client_id}/productadjust/create_order"
