@@ -381,28 +381,28 @@ class HipoinkClient:
                     }
                 )
 
-            # Build request payload
+            # Build request payload in the correct order (matching API documentation)
+            # Order: store_code, f1, f2, f3, f4, f5, f6, f7, is_base64, sign
             request_data = {
                 "store_code": store_code,
                 "f1": order_number,  # Order number
                 "f2": order_name,  # Order name
-                "f7": validated_products,  # Product data array (validated)
-                "is_base64": is_base64,
             }
 
-            # Add optional fields
-            # Only include f3 and f4 if they have actual values (not empty arrays)
-            # The API may not handle empty arrays well, so we omit them entirely
+            # Add optional fields in order (f3, f4, f5, f6) before f7
+            # Only include if they have actual values (not empty arrays)
             if trigger_stores and len(trigger_stores) > 0:
                 request_data["f3"] = trigger_stores
             if trigger_days and len(trigger_days) > 0:
                 request_data["f4"] = trigger_days
-
-            # String fields can be omitted if not provided
             if start_time:
                 request_data["f5"] = start_time
             if end_time:
                 request_data["f6"] = end_time
+
+            # Add required fields after optional ones
+            request_data["f7"] = validated_products  # Product data array (validated)
+            request_data["is_base64"] = is_base64
 
             # Generate sign (create copy to avoid modifying original)
             sign_data = dict(request_data)  # Shallow copy
