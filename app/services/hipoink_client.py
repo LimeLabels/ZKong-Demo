@@ -339,16 +339,19 @@ class HipoinkClient:
                     raise HipoinkAPIError(f"Product must be a dictionary, got {type(product)}")
                 if "pc" not in product or "pp" not in product:
                     raise HipoinkAPIError("Product must have 'pc' (product code) and 'pp' (price) fields")
-                # Convert pp to float if it's a string
+                # Convert pp to float (API expects number, per API docs example: {"pc": "010901", "pp": 5.68})
                 pp_value = product["pp"]
                 if isinstance(pp_value, str):
                     try:
                         pp_value = float(pp_value)
                     except ValueError:
                         raise HipoinkAPIError(f"Price 'pp' must be a valid number, got: {pp_value}")
+                elif not isinstance(pp_value, (int, float)):
+                    raise HipoinkAPIError(f"Price 'pp' must be a number or string, got: {type(pp_value)}")
+                
                 validated_products.append({
                     "pc": str(product["pc"]),
-                    "pp": float(pp_value)
+                    "pp": float(pp_value)  # API expects number (float) per documentation
                 })
             
             # Build request payload

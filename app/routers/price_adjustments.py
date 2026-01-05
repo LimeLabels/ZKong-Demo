@@ -81,15 +81,21 @@ async def create_price_adjustment(request: CreatePriceAdjustmentRequest):
             )
         
         # Convert products to Hipoink format
-        # Ensure pp is converted to float (API expects number, not string)
+        # API expects pp (price) as a NUMBER (float) per API docs example: {"pc": "010901", "pp": 5.68}
         hipoink_products = []
         for p in request.products:
             try:
-                # Convert price to float
-                price = float(p.pp) if isinstance(p.pp, str) else p.pp
+                # Convert price to float (number)
+                if isinstance(p.pp, str):
+                    price = float(p.pp)
+                elif isinstance(p.pp, (int, float)):
+                    price = float(p.pp)
+                else:
+                    raise ValueError(f"Price must be a number or string, got {type(p.pp)}")
+                
                 hipoink_products.append({
                     "pc": str(p.pc),
-                    "pp": price
+                    "pp": price  # Number (float), not string - per API docs
                 })
             except (ValueError, TypeError) as e:
                 raise HTTPException(
