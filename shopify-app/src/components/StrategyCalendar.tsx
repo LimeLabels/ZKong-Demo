@@ -39,6 +39,7 @@ interface StrategyFormData {
   originalPrice: string;
   barcode: string; // For single product entry
   itemId: string; // Optional Hipoink item ID
+  triggerStores: string[]; // Array of store codes for f3 (trigger_stores)
 }
 
 // Helper function to convert 12-hour time to 24-hour format
@@ -83,6 +84,7 @@ export function StrategyCalendar() {
     originalPrice: "",
     barcode: "",
     itemId: "",
+    triggerStores: [], // Array of store codes for f3
   });
 
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -196,6 +198,15 @@ export function StrategyCalendar() {
       if (triggerDays && triggerDays.length > 0) {
         hipoinkPayload.trigger_days = triggerDays;
       }
+      if (formData.triggerStores && formData.triggerStores.length > 0) {
+        // Filter out empty strings and trim store codes
+        const validStores = formData.triggerStores
+          .map((s) => s.trim())
+          .filter((s) => s.length > 0);
+        if (validStores.length > 0) {
+          hipoinkPayload.trigger_stores = validStores;
+        }
+      }
       if (startTime) {
         hipoinkPayload.start_time = startTime;
       }
@@ -233,6 +244,7 @@ export function StrategyCalendar() {
         originalPrice: "",
         barcode: "",
         itemId: "",
+        triggerStores: [], // Reset trigger stores
       }));
     } catch (error: any) {
       setSubmitError(error.message || "An error occurred");
@@ -353,6 +365,22 @@ export function StrategyCalendar() {
             ))}
           </FormLayout.Group>
         )}
+
+        <TextField
+          label="Trigger Stores (Optional)"
+          value={formData.triggerStores.join(", ")}
+          onChange={(value) => {
+            // Parse comma-separated store codes
+            const stores = value
+              .split(",")
+              .map((s) => s.trim())
+              .filter((s) => s.length > 0);
+            setFormData({ ...formData, triggerStores: stores });
+          }}
+          placeholder="e.g., 001, 002, 003"
+          helpText="Enter store codes separated by commas. Leave empty to use the default store from store mapping."
+          autoComplete="off"
+        />
 
         <Text variant="headingSm" as="h3">
           Time Windows
