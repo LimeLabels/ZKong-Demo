@@ -377,7 +377,7 @@ class HipoinkClient:
                 validated_products.append(
                     {
                         "pc": str(product["pc"]),
-                        "pp": f"{float(pp_value):.2f}",  # Send as string
+                        "pp": float(pp_value),  # Send as number (per API docs example)
                     }
                 )
 
@@ -397,7 +397,7 @@ class HipoinkClient:
             # f7: Product data - JSON string, then base64 encode
             f7_json = json_lib.dumps(validated_products, separators=(',', ':'))
             
-            # Build request payload with base64 encoded values
+            # Build request payload - ALL values base64 encoded (matching API docs example exactly)
             request_data = {
                 "store_code": base64.b64encode(store_code.encode('utf-8')).decode('utf-8'),
                 "f1": base64.b64encode(order_number.encode('utf-8')).decode('utf-8'),
@@ -414,14 +414,15 @@ class HipoinkClient:
             if end_time:
                 request_data["f6"] = base64.b64encode(end_time.encode('utf-8')).decode('utf-8')
             
-            # f7: Required - JSON string, base64 encoded
-            request_data["f7"] = base64.b64encode(f7_json.encode('utf-8')).decode('utf-8')
+            # f7: Required - JSON string with HTML entities, then base64 encoded
+            # Convert JSON quotes to HTML entities to match API docs example
+            f7_with_entities = f7_json.replace('"', '&quot;')
+            request_data["f7"] = base64.b64encode(f7_with_entities.encode('utf-8')).decode('utf-8')
             
             # is_base64
             request_data["is_base64"] = base64.b64encode(is_base64.encode('utf-8')).decode('utf-8')
 
-            # Generate sign BEFORE adding it to request_data
-            # The sign should be calculated on the data WITHOUT the sign field
+            # Generate sign on the base64-encoded values (as they appear in payload)
             sign_data = dict(request_data)
             sign = self._generate_sign(sign_data)
             request_data["sign"] = base64.b64encode(sign.encode('utf-8')).decode('utf-8')

@@ -10,7 +10,7 @@ class Settings(BaseSettings):
     """Application configuration loaded from environment variables."""
 
     # Hipoink ESL API Configuration
-    hipoink_api_base_url: str = "http://208.167.248.129"  # Hipoink ESL server URL
+    hipoink_api_base_url: str = "http://43.153.107.21"  # Hipoink ESL server URL
     hipoink_username: str = ""  # Hipoink admin username
     hipoink_password: str = ""  # Hipoink admin password
     hipoink_api_secret: str = ""  # API secret for signing requests (optional)
