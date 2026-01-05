@@ -10,7 +10,11 @@ from typing import Optional
 
 from app.config import settings
 from app.services.supabase_service import SupabaseService
-from app.services.hipoink_client import HipoinkClient, HipoinkAPIError, HipoinkProductItem
+from app.services.hipoink_client import (
+    HipoinkClient,
+    HipoinkAPIError,
+    HipoinkProductItem,
+)
 from app.models.database import SyncQueueItem, Product, StoreMapping
 from app.utils.retry import PermanentError, TransientError
 
@@ -26,7 +30,7 @@ class SyncWorker:
         """Initialize sync worker."""
         self.supabase_service = SupabaseService()
         self.hipoink_client = HipoinkClient(
-            client_id=getattr(settings, 'hipoink_client_id', 'default')
+            client_id=getattr(settings, "hipoink_client_id", "default")
         )
         self.running = False
 
@@ -186,7 +190,10 @@ class SyncWorker:
                     queue_item.id,  # type: ignore
                     "failed",
                     error_message=str(e),
-                    error_details={"error_type": "transient", "retry_count": retry_count},
+                    error_details={
+                        "error_type": "transient",
+                        "retry_count": retry_count,
+                    },
                 )
 
                 # Log failure
@@ -241,7 +248,7 @@ class SyncWorker:
             product: Product to sync
             store_mapping: Store mapping configuration
             queue_item: Queue item being processed
-            
+
         Returns:
             Hipoink product code (pc) if successful
         """
@@ -260,10 +267,15 @@ class SyncWorker:
         hipoink_product = HipoinkProductItem(
             product_code=barcode,  # pc - required (barcode)
             product_name=normalized.get("title") or product.title,  # pn - required
-            product_price=str(normalized.get("price") or product.price or 0.0),  # pp - required (as string)
-            product_inner_code=normalized.get("sku") or product.sku,  # pi - optional (using SKU)
-            product_image_url=normalized.get("image_url") or product.image_url,  # pim - optional
-            product_qrcode_url=normalized.get("image_url") or product.image_url,  # pqr - optional (using image URL)
+            product_price=str(
+                normalized.get("price") or product.price or 0.0
+            ),  # pp - required (as string)
+            product_inner_code=normalized.get("sku")
+            or product.sku,  # pi - optional (using SKU)
+            product_image_url=normalized.get("image_url")
+            or product.image_url,  # pim - optional
+            product_qrcode_url=normalized.get("image_url")
+            or product.image_url,  # pqr - optional (using image URL)
             # Add source system to a custom field if needed
             f1=product.source_system,  # Store source system in f1
         )
@@ -278,7 +290,9 @@ class SyncWorker:
         error_code = response.get("error_code")
         if error_code != 0:
             error_msg = response.get("error_msg", "Unknown error")
-            raise HipoinkAPIError(f"Hipoink import failed: {error_msg} (code: {error_code})")
+            raise HipoinkAPIError(
+                f"Hipoink import failed: {error_msg} (code: {error_code})"
+            )
 
         logger.info(
             "Hipoink product created/updated successfully",
