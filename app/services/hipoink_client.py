@@ -170,7 +170,7 @@ class HipoinkClient:
             store_code: Store code (required)
             products: List of HipoinkProductItem objects
             is_base64: Whether images are base64 encoded (default "0")
-            
+        
         Returns:
             Response data from Hipoink API
         """
@@ -353,7 +353,7 @@ class HipoinkClient:
                     "pc": str(product["pc"]),
                     "pp": float(pp_value)  # API expects number (float) per documentation
                 })
-            
+
             # Build request payload
             request_data = {
                 "store_code": store_code,
@@ -363,11 +363,12 @@ class HipoinkClient:
                 "is_base64": is_base64,
             }
             
-            # Add optional fields (only if they have values)
-            if trigger_stores:
-                request_data["f3"] = trigger_stores
-            if trigger_days:
-                request_data["f4"] = trigger_days
+            # Add optional fields
+            # For array fields (f3, f4), send empty array if not provided to avoid PHP foreach() errors
+            request_data["f3"] = trigger_stores if trigger_stores else []
+            request_data["f4"] = trigger_days if trigger_days else []
+            
+            # String fields can be omitted if not provided
             if start_time:
                 request_data["f5"] = start_time
             if end_time:
@@ -381,13 +382,13 @@ class HipoinkClient:
             # API endpoint
             endpoint = f"/api/{self.client_id}/productadjust/create_order"
             
-            logger.info(
+                    logger.info(
                 "Creating price adjustment order in Hipoink",
                 order_number=order_number,
                 order_name=order_name,
                 product_count=len(validated_products),
                 store_code=store_code,
-                endpoint=endpoint,
+                        endpoint=endpoint,
                 products=validated_products,
             )
             
@@ -406,9 +407,9 @@ class HipoinkClient:
             )
 
             response = await self.client.post(endpoint, json=request_data)
-            response.raise_for_status()
+                    response.raise_for_status()
             
-            response_data = response.json()
+                    response_data = response.json()
             
             # Check for errors
             error_code = response_data.get("error_code")
