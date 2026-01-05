@@ -381,28 +381,40 @@ class HipoinkClient:
                     }
                 )
 
-            # Build request payload in the correct order (matching API documentation)
+            # Build request payload in strict order matching API documentation
             # Order: store_code, f1, f2, f3, f4, f5, f6, f7, is_base64, sign
             request_data = {
                 "store_code": store_code,
-                "f1": order_number,  # Order number
-                "f2": order_name,  # Order name
+                "f1": order_number,
+                "f2": order_name,
             }
 
-            # Add optional fields in order (f3, f4, f5, f6) before f7
-            # Only include if they have actual values (not empty arrays)
-            if trigger_stores and len(trigger_stores) > 0:
-                request_data["f3"] = trigger_stores
-            if trigger_days and len(trigger_days) > 0:
-                request_data["f4"] = trigger_days
+            # f3: Triggered store array (Optional, but send [] if empty to avoid backend errors)
+            request_data["f3"] = trigger_stores if trigger_stores else []
+
+            # f4: Trigger cycle/days (Optional, but send [] if empty)
+            request_data["f4"] = trigger_days if trigger_days else []
+
+            # f5: Start time (Optional)
             if start_time:
                 request_data["f5"] = start_time
+            
+            # f6: End time (Optional)
             if end_time:
                 request_data["f6"] = end_time
 
-            # Add required fields after optional ones
-            request_data["f7"] = validated_products  # Product data array (validated)
+            # f7: Product data (Required)
+            request_data["f7"] = validated_products
+            
+            # is_base64
             request_data["is_base64"] = is_base64
+
+            # Generate sign (create copy to avoid modifying original, though we just built it)
+            sign_data = dict(request_data)
+            sign = self._generate_sign(sign_data)
+            
+            # Add sign at the end
+            request_data["sign"] = sign
 
             # Generate sign (create copy to avoid modifying original)
             sign_data = dict(request_data)  # Shallow copy
