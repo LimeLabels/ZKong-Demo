@@ -112,10 +112,12 @@ async def create_price_adjustment(request: CreatePriceAdjustmentRequest):
                         f"Price must be a number or string, got {type(p.pp)}"
                     )
 
+                # Convert to string - PHP API may expect string despite JSON example
+                price_str = f"{price:.2f}"
                 hipoink_products.append(
                     {
                         "pc": str(p.pc),
-                        "pp": price,  # Number (float), not string - per API docs
+                        "pp": price_str,  # Send as string to avoid PHP type issues
                     }
                 )
             except (ValueError, TypeError):
