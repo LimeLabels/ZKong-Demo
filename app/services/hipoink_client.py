@@ -391,9 +391,12 @@ class HipoinkClient:
             }
 
             # Add optional fields
-            # For array fields (f3, f4), send empty array if not provided to avoid PHP foreach() errors
-            request_data["f3"] = trigger_stores if trigger_stores else []
-            request_data["f4"] = trigger_days if trigger_days else []
+            # Only include f3 and f4 if they have actual values (not empty arrays)
+            # The API may not handle empty arrays well, so we omit them entirely
+            if trigger_stores and len(trigger_stores) > 0:
+                request_data["f3"] = trigger_stores
+            if trigger_days and len(trigger_days) > 0:
+                request_data["f4"] = trigger_days
 
             # String fields can be omitted if not provided
             if start_time:
