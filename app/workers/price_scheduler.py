@@ -181,11 +181,12 @@ class PriceScheduler:
                     end_time = datetime.strptime(slot["end_time"], "%H:%M").time()
                     if start_time <= current_time_only <= end_time:
                         # Found the current slot, set next trigger to its end time
-                        next_trigger = current_time.replace(
-                            hour=int(slot["end_time"].split(":")[0]),
-                            minute=int(slot["end_time"].split(":")[1]),
-                            second=0,
-                            microsecond=0,
+                        # Use store timezone to ensure correct datetime
+                        current_date = current_time.date()
+                        end_hour = int(slot["end_time"].split(":")[0])
+                        end_minute = int(slot["end_time"].split(":")[1])
+                        next_trigger = store_timezone.localize(
+                            datetime.combine(current_date, datetime.min.time().replace(hour=end_hour, minute=end_minute))
                         )
                         break
                 else:
