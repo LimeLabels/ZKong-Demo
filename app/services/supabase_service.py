@@ -5,6 +5,7 @@ Handles CRUD operations for products, sync_queue, sync_log, and store_mappings.
 
 from typing import List, Optional, Dict, Any
 from uuid import UUID
+from datetime import datetime
 from supabase import create_client, Client
 import structlog
 from app.config import settings
