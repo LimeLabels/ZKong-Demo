@@ -165,11 +165,11 @@ def calculate_next_trigger_time(
         # Find first time slot on start date
         if schedule.time_slots:
             first_slot = schedule.time_slots[0]
-            start_datetime = start_date.replace(
-                hour=int(first_slot["start_time"].split(":")[0]),
-                minute=int(first_slot["start_time"].split(":")[1]),
-                second=0,
-                microsecond=0,
+            start_date_only = start_date.date()
+            slot_hour = int(first_slot["start_time"].split(":")[0])
+            slot_minute = int(first_slot["start_time"].split(":")[1])
+            start_datetime = store_timezone.localize(
+                datetime.combine(start_date_only, datetime.min.time().replace(hour=slot_hour, minute=slot_minute))
             )
             return start_datetime
         return start_date
@@ -180,39 +180,36 @@ def calculate_next_trigger_time(
         if schedule.time_slots:
             last_slot = schedule.time_slots[-1]
             # Use start_date's date for the last trigger time
-            last_trigger = start_date.replace(
-                hour=int(last_slot["end_time"].split(":")[0]),
-                minute=int(last_slot["end_time"].split(":")[1]),
-                second=0,
-                microsecond=0,
+            start_date_only = start_date.date()
+            last_trigger_hour = int(last_slot["end_time"].split(":")[0])
+            last_trigger_minute = int(last_slot["end_time"].split(":")[1])
+            last_trigger = store_timezone.localize(
+                datetime.combine(start_date_only, datetime.min.time().replace(hour=last_trigger_hour, minute=last_trigger_minute))
             )
             if current_time > last_trigger:
                 return None
             # Find next time slot on start_date
             # Use start_date's date, not current_time's date
             for slot in schedule.time_slots:
-                slot_time = start_date.replace(
-                    hour=int(slot["start_time"].split(":")[0]),
-                    minute=int(slot["start_time"].split(":")[1]),
-                    second=0,
-                    microsecond=0,
+                slot_hour = int(slot["start_time"].split(":")[0])
+                slot_minute = int(slot["start_time"].split(":")[1])
+                slot_time = store_timezone.localize(
+                    datetime.combine(start_date_only, datetime.min.time().replace(hour=slot_hour, minute=slot_minute))
                 )
                 if slot_time > current_time:
                     return slot_time
             # If we're in the middle of a time slot, return the start of the current slot
             # This handles the case where schedule is created during an active time slot
             for slot in schedule.time_slots:
-                slot_start = start_date.replace(
-                    hour=int(slot["start_time"].split(":")[0]),
-                    minute=int(slot["start_time"].split(":")[1]),
-                    second=0,
-                    microsecond=0,
+                slot_start_hour = int(slot["start_time"].split(":")[0])
+                slot_start_minute = int(slot["start_time"].split(":")[1])
+                slot_end_hour = int(slot["end_time"].split(":")[0])
+                slot_end_minute = int(slot["end_time"].split(":")[1])
+                slot_start = store_timezone.localize(
+                    datetime.combine(start_date_only, datetime.min.time().replace(hour=slot_start_hour, minute=slot_start_minute))
                 )
-                slot_end = start_date.replace(
-                    hour=int(slot["end_time"].split(":")[0]),
-                    minute=int(slot["end_time"].split(":")[1]),
-                    second=0,
-                    microsecond=0,
+                slot_end = store_timezone.localize(
+                    datetime.combine(start_date_only, datetime.min.time().replace(hour=slot_end_hour, minute=slot_end_minute))
                 )
                 if slot_start <= current_time <= slot_end:
                     return slot_start
