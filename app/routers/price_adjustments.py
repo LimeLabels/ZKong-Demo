@@ -374,23 +374,20 @@ async def create_price_adjustment(request: CreatePriceAdjustmentRequest):
             else:
                 end_date = end_date.astimezone(store_timezone)
 
-        # Calculate next trigger time
-        next_trigger = calculate_next_trigger_time(
-            PriceAdjustmentSchedule(
-                store_mapping_id=request.store_mapping_id,
-                name=request.name,
-                order_number=order_number,
-                products={"products": products_data},
-                start_date=start_date,
-                end_date=end_date,
-                repeat_type=request.repeat_type,
-                trigger_days=request.trigger_days,
-                trigger_stores=request.trigger_stores,
-                time_slots=time_slots_data,
-            ),
-            current_time,
-            store_timezone,
-        )
+        # Calculate next trigger time - always set to first time slot on start_date
+        # We assume the user creates the schedule before it needs to trigger
+        next_trigger = None
+        if time_slots_data:
+            first_slot = time_slots_data[0]
+            start_date_only = start_date.date()
+            slot_hour = int(first_slot["start_time"].split(":")[0])
+            slot_minute = int(first_slot["start_time"].split(":")[1])
+            next_trigger = store_timezone.localize(
+                datetime.combine(start_date_only, datetime.min.time().replace(hour=slot_hour, minute=slot_minute))
+            )
+        else:
+            # No time slots, use start_date
+            next_trigger = start_date
 
         # Create schedule
         schedule = PriceAdjustmentSchedule(
