@@ -170,6 +170,7 @@ def calculate_next_trigger_time(
         # No repeat - check if we're past the last time slot
         if schedule.time_slots:
             last_slot = schedule.time_slots[-1]
+            # Use start_date's date for the last trigger time
             last_trigger = start_date.replace(
                 hour=int(last_slot["end_time"].split(":")[0]),
                 minute=int(last_slot["end_time"].split(":")[1]),
@@ -178,9 +179,10 @@ def calculate_next_trigger_time(
             )
             if current_time > last_trigger:
                 return None
-            # Find next time slot today
+            # Find next time slot on start_date
+            # Use start_date's date, not current_time's date
             for slot in schedule.time_slots:
-                slot_time = current_time.replace(
+                slot_time = start_date.replace(
                     hour=int(slot["start_time"].split(":")[0]),
                     minute=int(slot["start_time"].split(":")[1]),
                     second=0,
@@ -188,6 +190,23 @@ def calculate_next_trigger_time(
                 )
                 if slot_time > current_time:
                     return slot_time
+            # If we're in the middle of a time slot, return the start of the current slot
+            # This handles the case where schedule is created during an active time slot
+            for slot in schedule.time_slots:
+                slot_start = start_date.replace(
+                    hour=int(slot["start_time"].split(":")[0]),
+                    minute=int(slot["start_time"].split(":")[1]),
+                    second=0,
+                    microsecond=0,
+                )
+                slot_end = start_date.replace(
+                    hour=int(slot["end_time"].split(":")[0]),
+                    minute=int(slot["end_time"].split(":")[1]),
+                    second=0,
+                    microsecond=0,
+                )
+                if slot_start <= current_time <= slot_end:
+                    return slot_start
         return None
 
     elif schedule.repeat_type == "daily":
