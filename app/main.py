@@ -40,7 +40,7 @@ app.include_router(webhooks.router)  # Legacy routes for backward compatibility
 app.include_router(webhooks_new.router)  # New generic integration router
 app.include_router(store_mappings.router)
 app.include_router(shopify_auth.router)  # Shopify OAuth endpoints
-app.include_router(price_adjustments.router)  # Hipoink price adjustment orders
+app.include_router(price_adjustments.router)  # Time-based price adjustment schedules
 
 
 @app.on_event("startup")

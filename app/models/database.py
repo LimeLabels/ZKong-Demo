@@ -90,3 +90,25 @@ class HipoinkProduct(BaseModel):
     last_synced_at: Optional[datetime] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
+
+
+class PriceAdjustmentSchedule(BaseModel):
+    """Model for price_adjustment_schedules table - time-based pricing schedules."""
+
+    id: Optional[UUID] = None
+    store_mapping_id: UUID
+    name: str  # Schedule name
+    order_number: str  # Unique order number for tracking
+    products: Dict[str, Any]  # JSON: List of {"pc": "barcode", "pp": price, "original_price": price}
+    start_date: datetime  # Schedule start date
+    end_date: Optional[datetime] = None  # Schedule end date (optional)
+    repeat_type: str = "none"  # none, daily, weekly, monthly
+    trigger_days: Optional[list] = None  # Days of week: [1,2,3] = Mon, Tue, Wed (1=Mon, 7=Sun)
+    trigger_stores: Optional[list] = None  # Store codes to trigger
+    time_slots: list  # List of {"start_time": "09:00", "end_time": "17:00"}
+    is_active: bool = True
+    last_triggered_at: Optional[datetime] = None
+    next_trigger_at: Optional[datetime] = None
+    metadata: Optional[Dict[str, Any]] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None

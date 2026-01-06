@@ -14,6 +14,7 @@ from app.models.database import (
     SyncLog,
     StoreMapping,
     HipoinkProduct,
+    PriceAdjustmentSchedule,
 )
 
 logger = structlog.get_logger()
@@ -457,3 +458,131 @@ class SupabaseService:
                 return None
             logger.error("Failed to get Hipoink product", error=str(e))
             return None
+
+    # Price Adjustment Schedules
+
+    def create_price_adjustment_schedule(
+        self, schedule: PriceAdjustmentSchedule
+    ) -> PriceAdjustmentSchedule:
+        """Create a new price adjustment schedule."""
+        try:
+            insert_data = schedule.dict(exclude_none=True, exclude={"id"})
+            # Convert UUIDs to strings
+            if insert_data.get("store_mapping_id"):
+                insert_data["store_mapping_id"] = str(insert_data["store_mapping_id"])
+
+            result = (
+                self.client.table("price_adjustment_schedules")
+                .insert(insert_data)
+                .execute()
+            )
+
+            if result.data:
+                return PriceAdjustmentSchedule(**result.data[0])
+            raise Exception("No data returned from insert")
+        except Exception as e:
+            logger.error("Failed to create price adjustment schedule", error=str(e))
+            raise
+
+    def get_price_adjustment_schedule(
+        self, schedule_id: UUID
+    ) -> Optional[PriceAdjustmentSchedule]:
+        """Get price adjustment schedule by ID."""
+        try:
+            result = (
+                self.client.table("price_adjustment_schedules")
+                .select("*")
+                .eq("id", str(schedule_id))
+                .single()
+                .execute()
+            )
+
+            if result.data:
+                return PriceAdjustmentSchedule(**result.data)
+            return None
+        except Exception as e:
+            if "No rows" in str(e) or "Could not find" in str(e):
+                return None
+            logger.error("Failed to get price adjustment schedule", error=str(e))
+            return None
+
+    def get_active_price_adjustment_schedules(
+        self, limit: int = 100
+    ) -> List[PriceAdjustmentSchedule]:
+        """Get all active price adjustment schedules."""
+        try:
+            result = (
+                self.client.table("price_adjustment_schedules")
+                .select("*")
+                .eq("is_active", True)
+                .order("next_trigger_at", desc=False)
+                .limit(limit)
+                .execute()
+            )
+
+            return [PriceAdjustmentSchedule(**item) for item in result.data]
+        except Exception as e:
+            logger.error(
+                "Failed to get active price adjustment schedules", error=str(e)
+            )
+            return []
+
+    def get_schedules_due_for_trigger(
+        self, current_time: datetime
+    ) -> List[PriceAdjustmentSchedule]:
+        """
+        Get schedules that are due to be triggered.
+        Returns schedules where next_trigger_at <= current_time and is_active=True.
+        """
+        try:
+            result = (
+                self.client.table("price_adjustment_schedules")
+                .select("*")
+                .eq("is_active", True)
+                .lte("next_trigger_at", current_time.isoformat())
+                .order("next_trigger_at", desc=False)
+                .execute()
+            )
+
+            return [PriceAdjustmentSchedule(**item) for item in result.data]
+        except Exception as e:
+            logger.error("Failed to get schedules due for trigger", error=str(e))
+            return []
+
+    def update_price_adjustment_schedule(
+        self, schedule_id: UUID, update_data: Dict[str, Any]
+    ) -> Optional[PriceAdjustmentSchedule]:
+        """Update a price adjustment schedule."""
+        try:
+            # Convert UUIDs to strings if present
+            if update_data.get("store_mapping_id"):
+                update_data["store_mapping_id"] = str(update_data["store_mapping_id"])
+
+            result = (
+                self.client.table("price_adjustment_schedules")
+                .update(update_data)
+                .eq("id", str(schedule_id))
+                .execute()
+            )
+
+            if result.data:
+                return PriceAdjustmentSchedule(**result.data[0])
+            return None
+        except Exception as e:
+            logger.error("Failed to update price adjustment schedule", error=str(e))
+            return None
+
+    def delete_price_adjustment_schedule(self, schedule_id: UUID) -> bool:
+        """Delete a price adjustment schedule (soft delete by setting is_active=False)."""
+        try:
+            result = (
+                self.client.table("price_adjustment_schedules")
+                .update({"is_active": False})
+                .eq("id", str(schedule_id))
+                .execute()
+            )
+
+            return result.data is not None and len(result.data) > 0
+        except Exception as e:
+            logger.error("Failed to delete price adjustment schedule", error=str(e))
+            return False

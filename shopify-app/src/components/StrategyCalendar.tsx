@@ -114,44 +114,6 @@ export function StrategyCalendar() {
     setSubmitSuccess(false);
 
     try {
-      // Convert form data to Hipoink price adjustment format
-      // Generate unique order number
-      const orderNumber = `PA-${Date.now()}`;
-
-      // Map selectedDays to Hipoink format
-      // Frontend: 1=Sun, 2=Mon, 3=Tue, 4=Wed, 5=Thu, 6=Fri, 7=Sat
-      // Hipoink: 1=Mon, 2=Tue, 3=Wed, 4=Thu, 5=Fri, 6=Sat, 7=Sun
-      let triggerDays: string[] | undefined = undefined;
-      if (
-        formData.repeatType === "weekly" &&
-        formData.selectedDays.length > 0
-      ) {
-        triggerDays = formData.selectedDays.map((d) => {
-          // Convert frontend day to Hipoink day
-          // Frontend 1 (Sun) -> Hipoink 7
-          // Frontend 2 (Mon) -> Hipoink 1
-          // Frontend 3 (Tue) -> Hipoink 2, etc.
-          const hipoinkDay = d === 1 ? 7 : d - 1;
-          return hipoinkDay.toString();
-        });
-      } else if (formData.repeatType === "daily") {
-        // Daily = all days (Mon-Sun in Hipoink format)
-        triggerDays = ["1", "2", "3", "4", "5", "6", "7"];
-      }
-
-      // Get start and end times from first time slot
-      // Convert to 24-hour format (HH:MM) - remove AM/PM if present
-      let startTime: string | undefined = undefined;
-      let endTime: string | undefined = undefined;
-      if (formData.timeSlots.length > 0) {
-        const start = formData.timeSlots[0].startTime;
-        const end = formData.timeSlots[0].endTime;
-
-        // Convert from 12-hour to 24-hour format if needed
-        startTime = convertTo24Hour(start);
-        endTime = convertTo24Hour(end);
-      }
-
       // Validate barcode is provided
       if (!formData.barcode || formData.barcode.trim() === "") {
         throw new Error("Product barcode is required");
@@ -163,6 +125,11 @@ export function StrategyCalendar() {
       }
       const cleanPrice = formData.priceOverride.toFixed(2);
 
+      // Get original price if available
+      const originalPrice = formData.originalPrice
+        ? parseFloat(formData.originalPrice)
+        : null;
+
       // Build products array - always ensure it's a non-empty array
       const products =
         formData.products.length > 0
@@ -171,11 +138,13 @@ export function StrategyCalendar() {
               .map((product) => ({
                 pc: product.barcode.trim(),
                 pp: cleanPrice,
+                original_price: product.price || originalPrice,
               }))
           : [
               {
                 pc: formData.barcode.trim(),
                 pp: cleanPrice,
+                original_price: originalPrice,
               },
             ];
 
@@ -186,17 +155,46 @@ export function StrategyCalendar() {
         );
       }
 
-      // Build payload - only include fields that have values
-      const hipoinkPayload: any = {
+      // Map selectedDays to backend format
+      // Frontend: 1=Sun, 2=Mon, 3=Tue, 4=Wed, 5=Thu, 6=Fri, 7=Sat
+      // Backend: 1=Mon, 2=Tue, 3=Wed, 4=Thu, 5=Fri, 6=Sat, 7=Sun
+      let triggerDays: string[] | undefined = undefined;
+      if (
+        formData.repeatType === "weekly" &&
+        formData.selectedDays.length > 0
+      ) {
+        triggerDays = formData.selectedDays.map((d) => {
+          // Convert frontend day to backend day
+          // Frontend 1 (Sun) -> Backend 7
+          // Frontend 2 (Mon) -> Backend 1
+          // Frontend 3 (Tue) -> Backend 2, etc.
+          const backendDay = d === 1 ? 7 : d - 1;
+          return backendDay.toString();
+        });
+      }
+
+      // Convert time slots to 24-hour format
+      const timeSlots = formData.timeSlots.map((slot) => ({
+        start_time: convertTo24Hour(slot.startTime),
+        end_time: convertTo24Hour(slot.endTime),
+      }));
+
+      // Build payload for new API
+      const payload: any = {
         store_mapping_id: formData.storeMappingId,
-        order_number: orderNumber,
-        order_name: formData.name,
-        products: products, // Always required and non-empty
+        name: formData.name,
+        products: products,
+        start_date: formData.startDate.toISOString(),
+        repeat_type: formData.repeatType,
+        time_slots: timeSlots,
       };
 
-      // Only add optional fields if they have values
+      // Add optional fields
+      if (formData.endDate) {
+        payload.end_date = formData.endDate.toISOString();
+      }
       if (triggerDays && triggerDays.length > 0) {
-        hipoinkPayload.trigger_days = triggerDays;
+        payload.trigger_days = triggerDays;
       }
       if (formData.triggerStores && formData.triggerStores.length > 0) {
         // Filter out empty strings and trim store codes
@@ -204,21 +202,15 @@ export function StrategyCalendar() {
           .map((s) => s.trim())
           .filter((s) => s.length > 0);
         if (validStores.length > 0) {
-          hipoinkPayload.trigger_stores = validStores;
+          payload.trigger_stores = validStores;
         }
       }
-      if (startTime) {
-        hipoinkPayload.start_time = startTime;
-      }
-      if (endTime) {
-        hipoinkPayload.end_time = endTime;
-      }
 
-      // Call Hipoink price adjustment API
+      // Call new price adjustment schedule API
       const response = await fetch("/api/price-adjustments/create", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(hipoinkPayload),
+        body: JSON.stringify(payload),
       });
 
       if (!response.ok) {
