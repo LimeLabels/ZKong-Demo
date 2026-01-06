@@ -8,11 +8,12 @@ from typing import List, Optional
 from uuid import UUID
 from datetime import datetime, timedelta
 import structlog
+import pytz
 from pydantic import BaseModel, Field
 
-from app.services.hipoink_client import HipoinkClient, HipoinkAPIError
+from app.services.hipoink_client import HipoinkClient
 from app.services.supabase_service import SupabaseService
-from app.models.database import PriceAdjustmentSchedule
+from app.models.database import PriceAdjustmentSchedule, StoreMapping
 from app.config import settings
 
 logger = structlog.get_logger()
@@ -27,6 +28,7 @@ supabase_service = SupabaseService()
 
 
 # Request/Response Models
+
 
 class PriceAdjustmentProduct(BaseModel):
     """Product data for price adjustment."""
@@ -84,43 +86,91 @@ class PriceAdjustmentResponse(BaseModel):
     created_at: datetime
 
 
+def get_store_timezone(store_mapping: StoreMapping) -> pytz.BaseTzInfo:
+    """
+    Get timezone for a store mapping.
+    Checks metadata for 'timezone' field, defaults to UTC if not found.
+
+    Args:
+        store_mapping: Store mapping object
+
+    Returns:
+        pytz timezone object
+    """
+    if store_mapping.metadata and "timezone" in store_mapping.metadata:
+        try:
+            return pytz.timezone(store_mapping.metadata["timezone"])
+        except pytz.exceptions.UnknownTimeZoneError:
+            logger.warning(
+                "Unknown timezone in store mapping, using UTC",
+                timezone=store_mapping.metadata["timezone"],
+                store_mapping_id=str(store_mapping.id),
+            )
+    # Default to UTC if no timezone specified
+    return pytz.UTC
+
+
 def calculate_next_trigger_time(
-    schedule: PriceAdjustmentSchedule, current_time: datetime
+    schedule: PriceAdjustmentSchedule,
+    current_time: datetime,
+    store_timezone: pytz.BaseTzInfo,
 ) -> Optional[datetime]:
     """
     Calculate the next trigger time for a schedule based on current time.
-    
+    All datetime operations are performed in the store's timezone.
+
     Args:
         schedule: Price adjustment schedule
-        current_time: Current datetime
-        
+        current_time: Current datetime (timezone-aware)
+        store_timezone: Store's timezone
+
     Returns:
-        Next trigger datetime or None if schedule is expired
+        Next trigger datetime (timezone-aware) or None if schedule is expired
     """
+    # Ensure current_time is timezone-aware
+    if current_time.tzinfo is None:
+        current_time = store_timezone.localize(current_time)
+    else:
+        current_time = current_time.astimezone(store_timezone)
+
+    # Ensure schedule dates are in store timezone
+    start_date = schedule.start_date
+    if start_date.tzinfo is None:
+        start_date = store_timezone.localize(start_date)
+    else:
+        start_date = start_date.astimezone(store_timezone)
+
+    end_date = schedule.end_date
+    if end_date is not None:
+        if end_date.tzinfo is None:
+            end_date = store_timezone.localize(end_date)
+        else:
+            end_date = end_date.astimezone(store_timezone)
+
     # Check if schedule has ended
-    if schedule.end_date and current_time > schedule.end_date:
+    if end_date and current_time > end_date:
         return None
-    
+
     # Check if schedule hasn't started yet
-    if current_time < schedule.start_date:
+    if current_time < start_date:
         # Find first time slot on start date
         if schedule.time_slots:
             first_slot = schedule.time_slots[0]
-            start_datetime = schedule.start_date.replace(
+            start_datetime = start_date.replace(
                 hour=int(first_slot["start_time"].split(":")[0]),
                 minute=int(first_slot["start_time"].split(":")[1]),
                 second=0,
                 microsecond=0,
             )
             return start_datetime
-        return schedule.start_date
-    
+        return start_date
+
     # For repeat schedules, calculate next occurrence
     if schedule.repeat_type == "none":
         # No repeat - check if we're past the last time slot
         if schedule.time_slots:
             last_slot = schedule.time_slots[-1]
-            last_trigger = schedule.start_date.replace(
+            last_trigger = start_date.replace(
                 hour=int(last_slot["end_time"].split(":")[0]),
                 minute=int(last_slot["end_time"].split(":")[1]),
                 second=0,
@@ -139,7 +189,7 @@ def calculate_next_trigger_time(
                 if slot_time > current_time:
                     return slot_time
         return None
-    
+
     elif schedule.repeat_type == "daily":
         # Daily repeat - find next time slot today or tomorrow
         for slot in schedule.time_slots:
@@ -151,7 +201,7 @@ def calculate_next_trigger_time(
             )
             if slot_time > current_time:
                 return slot_time
-        
+
         # No more slots today, use first slot tomorrow
         if schedule.time_slots:
             first_slot = schedule.time_slots[0]
@@ -162,21 +212,21 @@ def calculate_next_trigger_time(
                 second=0,
                 microsecond=0,
             )
-    
+
     elif schedule.repeat_type == "weekly":
         # Weekly repeat - find next occurrence based on trigger_days
         if not schedule.trigger_days:
             return None
-        
+
         # Get current day of week (0=Monday, 6=Sunday)
         current_weekday = current_time.weekday()  # 0=Mon, 6=Sun
         # Convert to Hipoink format (1=Mon, 7=Sun)
         current_day = str(current_weekday + 1)
-        
+
         # Find next day in trigger_days
         trigger_days_int = [int(d) for d in schedule.trigger_days]
         trigger_days_int.sort()
-        
+
         # Check if today is a trigger day and there's a future time slot
         if current_day in schedule.trigger_days:
             for slot in schedule.time_slots:
@@ -188,7 +238,7 @@ def calculate_next_trigger_time(
                 )
                 if slot_time > current_time:
                     return slot_time
-        
+
         # Find next trigger day
         days_ahead = None
         for day in trigger_days_int:
@@ -196,11 +246,11 @@ def calculate_next_trigger_time(
             if day_index > current_weekday:
                 days_ahead = day_index - current_weekday
                 break
-        
+
         if days_ahead is None:
             # Next occurrence is next week
             days_ahead = (7 - current_weekday) + (trigger_days_int[0] - 1)
-        
+
         next_date = current_time + timedelta(days=days_ahead)
         if schedule.time_slots:
             first_slot = schedule.time_slots[0]
@@ -210,7 +260,7 @@ def calculate_next_trigger_time(
                 second=0,
                 microsecond=0,
             )
-    
+
     return None
 
 
@@ -222,7 +272,7 @@ def calculate_next_trigger_time(
 async def create_price_adjustment(request: CreatePriceAdjustmentRequest):
     """
     Create a price adjustment schedule.
-    
+
     This creates a schedule that will trigger price changes at specified times.
     A background worker will check schedules and apply price changes via the product update endpoint.
     """
@@ -245,36 +295,65 @@ async def create_price_adjustment(request: CreatePriceAdjustmentRequest):
             )
 
         # Generate order number if not provided
-        order_number = request.order_number or f"PA-{int(datetime.utcnow().timestamp() * 1000)}"
+        order_number = (
+            request.order_number or f"PA-{int(datetime.utcnow().timestamp() * 1000)}"
+        )
 
         # Prepare products data
         products_data = []
         for p in request.products:
-            products_data.append({
-                "pc": str(p.pc),
-                "pp": str(p.pp),
-                "original_price": p.original_price,
-            })
+            products_data.append(
+                {
+                    "pc": str(p.pc),
+                    "pp": str(p.pp),
+                    "original_price": p.original_price,
+                }
+            )
 
         # Prepare time slots
-        time_slots_data = [{"start_time": ts.start_time, "end_time": ts.end_time} for ts in request.time_slots]
+        time_slots_data = [
+            {"start_time": ts.start_time, "end_time": ts.end_time}
+            for ts in request.time_slots
+        ]
+
+        # Get store timezone
+        store_timezone = get_store_timezone(store_mapping)
+
+        # Get current time in store's timezone
+        current_time = datetime.now(store_timezone)
+
+        # Normalize request datetimes to store timezone
+        start_date = request.start_date
+        if start_date.tzinfo is None:
+            # If naive, assume it's in store timezone
+            start_date = store_timezone.localize(start_date)
+        else:
+            # Convert to store timezone
+            start_date = start_date.astimezone(store_timezone)
+
+        end_date = request.end_date
+        if end_date is not None:
+            if end_date.tzinfo is None:
+                end_date = store_timezone.localize(end_date)
+            else:
+                end_date = end_date.astimezone(store_timezone)
 
         # Calculate next trigger time
-        current_time = datetime.utcnow()
         next_trigger = calculate_next_trigger_time(
             PriceAdjustmentSchedule(
                 store_mapping_id=request.store_mapping_id,
                 name=request.name,
                 order_number=order_number,
                 products={"products": products_data},
-                start_date=request.start_date,
-                end_date=request.end_date,
+                start_date=start_date,
+                end_date=end_date,
                 repeat_type=request.repeat_type,
                 trigger_days=request.trigger_days,
                 trigger_stores=request.trigger_stores,
                 time_slots=time_slots_data,
             ),
             current_time,
+            store_timezone,
         )
 
         # Create schedule
@@ -283,8 +362,8 @@ async def create_price_adjustment(request: CreatePriceAdjustmentRequest):
             name=request.name,
             order_number=order_number,
             products={"products": products_data},
-            start_date=request.start_date,
-            end_date=request.end_date,
+            start_date=start_date,
+            end_date=end_date,
             repeat_type=request.repeat_type,
             trigger_days=request.trigger_days,
             trigger_stores=request.trigger_stores,
@@ -342,4 +421,3 @@ async def delete_price_adjustment(schedule_id: UUID):
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Price adjustment schedule not found: {schedule_id}",
         )
-

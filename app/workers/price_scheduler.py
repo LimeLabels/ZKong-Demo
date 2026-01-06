@@ -1,6 +1,6 @@
 import asyncio
-import time
 import structlog
+import pytz
 from datetime import datetime, timedelta
 from typing import Optional, Tuple
 
@@ -12,6 +12,33 @@ from app.services.hipoink_client import (
     HipoinkProductItem,
 )
 from app.models.database import PriceAdjustmentSchedule, StoreMapping
+
+logger = structlog.get_logger()
+
+
+def get_store_timezone(store_mapping: StoreMapping) -> pytz.BaseTzInfo:
+    """
+    Get timezone for a store mapping.
+    Checks metadata for 'timezone' field, defaults to UTC if not found.
+
+    Args:
+        store_mapping: Store mapping object
+
+    Returns:
+        pytz timezone object
+    """
+    if store_mapping.metadata and "timezone" in store_mapping.metadata:
+        try:
+            return pytz.timezone(store_mapping.metadata["timezone"])
+        except pytz.exceptions.UnknownTimeZoneError:
+            logger.warning(
+                "Unknown timezone in store mapping, using UTC",
+                timezone=store_mapping.metadata["timezone"],
+                store_mapping_id=str(store_mapping.id),
+            )
+    # Default to UTC if no timezone specified
+    return pytz.UTC
+
 
 logger = structlog.get_logger()
 
@@ -56,11 +83,10 @@ class PriceScheduler:
         Checks for schedules where next_trigger_at <= current_time.
         """
         try:
-            current_time = datetime.utcnow()
-            
-            # Get schedules due for trigger
+            # Get schedules due for trigger (stored in UTC)
+            current_time_utc = datetime.now(pytz.UTC)
             schedules = self.supabase_service.get_schedules_due_for_trigger(
-                current_time
+                current_time_utc
             )
 
             if not schedules:
@@ -74,7 +100,7 @@ class PriceScheduler:
             # Process each schedule
             for schedule in schedules:
                 try:
-                    await self.process_schedule(schedule, current_time)
+                    await self.process_schedule(schedule, current_time_utc)
                 except Exception as e:
                     logger.error(
                         "Failed to process schedule",
@@ -86,14 +112,14 @@ class PriceScheduler:
             logger.error("Error processing schedules", error=str(e))
 
     async def process_schedule(
-        self, schedule: PriceAdjustmentSchedule, current_time: datetime
+        self, schedule: PriceAdjustmentSchedule, current_time_utc: datetime
     ):
         """
         Process a single schedule - apply price changes and calculate next trigger.
-        
+
         Args:
             schedule: Schedule to process
-            current_time: Current datetime
+            current_time_utc: Current datetime in UTC
         """
         try:
             # Get store mapping
@@ -108,13 +134,27 @@ class PriceScheduler:
                 )
                 return
 
+            # Get store timezone
+            store_timezone = get_store_timezone(store_mapping)
+
+            # Convert current time to store timezone
+            current_time = current_time_utc.astimezone(store_timezone)
+
             # Check if we're in a time slot
-            in_time_slot, is_start = self._check_time_slot(schedule, current_time)
-            
+            in_time_slot, is_start = self._check_time_slot(
+                schedule, current_time, store_timezone
+            )
+
             if not in_time_slot:
                 # Not in a time slot - calculate next trigger and skip
-                next_trigger = self._calculate_next_trigger(schedule, current_time)
-                self._update_schedule_next_trigger(schedule, next_trigger)
+                next_trigger = self._calculate_next_trigger(
+                    schedule, current_time, store_timezone
+                )
+                # Convert to UTC for storage
+                next_trigger_utc = (
+                    next_trigger.astimezone(pytz.UTC) if next_trigger else None
+                )
+                self._update_schedule_next_trigger(schedule, next_trigger_utc)
                 return
 
             # Get products from schedule
@@ -138,12 +178,19 @@ class PriceScheduler:
                     schedule, store_mapping, products_data
                 )
 
-            # Calculate next trigger time
-            next_trigger = self._calculate_next_trigger(schedule, current_time)
-            
-            # Update schedule
+            # Calculate next trigger time (returns in store timezone)
+            next_trigger = self._calculate_next_trigger(
+                schedule, current_time, store_timezone
+            )
+
+            # Convert next trigger to UTC for storage
+            next_trigger_utc = (
+                next_trigger.astimezone(pytz.UTC) if next_trigger else None
+            )
+
+            # Update schedule (store times in UTC)
             self._update_schedule_next_trigger(
-                schedule, next_trigger, last_triggered_at=current_time
+                schedule, next_trigger_utc, last_triggered_at=current_time_utc
             )
 
             logger.info(
@@ -163,62 +210,86 @@ class PriceScheduler:
             raise
 
     def _check_time_slot(
-        self, schedule: PriceAdjustmentSchedule, current_time: datetime
+        self,
+        schedule: PriceAdjustmentSchedule,
+        current_time: datetime,
+        store_timezone: pytz.BaseTzInfo,
     ) -> Tuple[bool, bool]:
         """
         Check if current time is within any time slot.
-        
+
         Returns:
             (in_slot, is_start) - True if in slot, True if at start of slot
         """
         current_time_str = current_time.strftime("%H:%M")
         current_time_only = datetime.strptime(current_time_str, "%H:%M").time()
-        
+
         for slot in schedule.time_slots:
             start_time = datetime.strptime(slot["start_time"], "%H:%M").time()
             end_time = datetime.strptime(slot["end_time"], "%H:%M").time()
-            
+
             # Check if we're at the start time (within 1 minute)
-            start_datetime = datetime.combine(current_time.date(), start_time)
+            start_datetime = store_timezone.localize(
+                datetime.combine(current_time.date(), start_time)
+            )
             time_diff = abs((current_time - start_datetime).total_seconds())
             if time_diff <= 60:  # Within 1 minute of start
                 return (True, True)
-            
+
             # Check if we're at the end time (within 1 minute)
-            end_datetime = datetime.combine(current_time.date(), end_time)
+            end_datetime = store_timezone.localize(
+                datetime.combine(current_time.date(), end_time)
+            )
             time_diff = abs((current_time - end_datetime).total_seconds())
             if time_diff <= 60:  # Within 1 minute of end
                 return (True, False)
-            
+
             # Check if we're within the time slot
             if start_time <= current_time_only <= end_time:
                 return (True, False)
-        
+
         return (False, False)
 
     def _calculate_next_trigger(
-        self, schedule: PriceAdjustmentSchedule, current_time: datetime
+        self,
+        schedule: PriceAdjustmentSchedule,
+        current_time: datetime,
+        store_timezone: pytz.BaseTzInfo,
     ) -> Optional[datetime]:
         """
         Calculate the next trigger time for a schedule.
-        Simplified version - can be enhanced with more sophisticated logic.
+        All datetime operations are performed in the store's timezone.
         """
+        # Ensure schedule dates are in store timezone
+        start_date = schedule.start_date
+        if start_date.tzinfo is None:
+            start_date = store_timezone.localize(start_date)
+        else:
+            start_date = start_date.astimezone(store_timezone)
+
+        end_date = schedule.end_date
+        if end_date is not None:
+            if end_date.tzinfo is None:
+                end_date = store_timezone.localize(end_date)
+            else:
+                end_date = end_date.astimezone(store_timezone)
+
         # Check if schedule has ended
-        if schedule.end_date and current_time > schedule.end_date:
+        if end_date and current_time > end_date:
             return None
 
         # Check if schedule hasn't started yet
-        if current_time < schedule.start_date:
+        if current_time < start_date:
             if schedule.time_slots:
                 first_slot = schedule.time_slots[0]
-                start_datetime = schedule.start_date.replace(
+                start_datetime = start_date.replace(
                     hour=int(first_slot["start_time"].split(":")[0]),
                     minute=int(first_slot["start_time"].split(":")[1]),
                     second=0,
                     microsecond=0,
                 )
                 return start_datetime
-            return schedule.start_date
+            return start_date
 
         # For daily repeat, next trigger is tomorrow at first time slot
         if schedule.repeat_type == "daily":
@@ -235,10 +306,9 @@ class PriceScheduler:
         # For weekly repeat, find next trigger day
         if schedule.repeat_type == "weekly" and schedule.trigger_days:
             current_weekday = current_time.weekday()  # 0=Mon, 6=Sun
-            current_day = str(current_weekday + 1)  # Convert to 1-7
-            
+
             trigger_days_int = sorted([int(d) for d in schedule.trigger_days])
-            
+
             # Find next day
             days_ahead = None
             for day in trigger_days_int:
@@ -246,11 +316,11 @@ class PriceScheduler:
                 if day_index > current_weekday:
                     days_ahead = day_index - current_weekday
                     break
-            
+
             if days_ahead is None:
                 # Next week
                 days_ahead = (7 - current_weekday) + (trigger_days_int[0] - 1)
-            
+
             next_date = current_time + timedelta(days=days_ahead)
             if schedule.time_slots:
                 first_slot = schedule.time_slots[0]
@@ -273,7 +343,7 @@ class PriceScheduler:
                     )
                     if slot_time > current_time:
                         return slot_time
-                
+
                 # Check end time of last slot
                 last_slot = schedule.time_slots[-1]
                 last_end = current_time.replace(
@@ -301,7 +371,7 @@ class PriceScheduler:
             # No more triggers - deactivate schedule
             update_data["is_active"] = False
             update_data["next_trigger_at"] = None
-        
+
         if last_triggered_at:
             update_data["last_triggered_at"] = last_triggered_at.isoformat()
 
@@ -432,4 +502,3 @@ async def run_price_scheduler():
         logger.info("Received interrupt signal, shutting down price scheduler")
     finally:
         await scheduler.stop()
-

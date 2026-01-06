@@ -13,8 +13,6 @@ API Documentation (Version V1.0.0):
 import httpx
 import structlog
 import hashlib
-import base64
-import json as json_lib
 from typing import Optional, List, Dict, Any
 from app.config import settings
 from app.utils.retry import retry_with_backoff, TransientError, PermanentError
