@@ -291,9 +291,28 @@ class PriceScheduler:
                 return start_datetime
             return start_date
 
-        # For daily repeat, next trigger is tomorrow at first time slot
+        # For daily repeat, check if we need to trigger at end of current slot first
         if schedule.repeat_type == "daily":
             if schedule.time_slots:
+                # Check if we're currently in a time slot and need to trigger at end
+                current_time_str = current_time.strftime("%H:%M")
+                current_time_only = datetime.strptime(current_time_str, "%H:%M").time()
+
+                for slot in schedule.time_slots:
+                    start_time = datetime.strptime(slot["start_time"], "%H:%M").time()
+                    end_time = datetime.strptime(slot["end_time"], "%H:%M").time()
+
+                    # If we're within the time slot but not at the end yet, trigger at end
+                    if start_time <= current_time_only < end_time:
+                        end_datetime = current_time.replace(
+                            hour=int(slot["end_time"].split(":")[0]),
+                            minute=int(slot["end_time"].split(":")[1]),
+                            second=0,
+                            microsecond=0,
+                        )
+                        return end_datetime
+
+                # Otherwise, next trigger is tomorrow at first time slot
                 first_slot = schedule.time_slots[0]
                 tomorrow = current_time + timedelta(days=1)
                 return tomorrow.replace(
@@ -400,21 +419,28 @@ class PriceScheduler:
             for product_data in products_data:
                 barcode = product_data["pc"]
                 new_price = str(product_data["pp"])
-                
+
                 # Get existing product from database to preserve all fields
                 existing_product = self.supabase_service.get_product_by_barcode(barcode)
-                
+
                 if existing_product and existing_product.normalized_data:
                     # Use existing product data, only update price
                     normalized = existing_product.normalized_data
                     hipoink_product = HipoinkProductItem(
                         product_code=barcode,
-                        product_name=normalized.get("title") or existing_product.title or "",
+                        product_name=normalized.get("title")
+                        or existing_product.title
+                        or "",
                         product_price=new_price,  # Updated price
-                        product_inner_code=normalized.get("sku") or existing_product.sku,
-                        product_image_url=normalized.get("image_url") or existing_product.image_url,
-                        product_qrcode_url=normalized.get("image_url") or existing_product.image_url,
-                        f1=existing_product.source_system if existing_product.source_system else None,
+                        product_inner_code=normalized.get("sku")
+                        or existing_product.sku,
+                        product_image_url=normalized.get("image_url")
+                        or existing_product.image_url,
+                        product_qrcode_url=normalized.get("image_url")
+                        or existing_product.image_url,
+                        f1=existing_product.source_system
+                        if existing_product.source_system
+                        else None,
                     )
                 else:
                     # Product not in database - create minimal product with just price
@@ -429,7 +455,7 @@ class PriceScheduler:
                         product_name="",  # Will be empty if product doesn't exist
                         product_price=new_price,
                     )
-                
+
                 hipoink_products.append(hipoink_product)
 
             # Apply price changes to all specified stores
@@ -483,7 +509,7 @@ class PriceScheduler:
             for product_data in products_data:
                 barcode = product_data["pc"]
                 original_price = product_data.get("original_price")
-                
+
                 if original_price is None:
                     logger.warning(
                         "No original price found for product",
@@ -494,18 +520,25 @@ class PriceScheduler:
 
                 # Get existing product from database to preserve all fields
                 existing_product = self.supabase_service.get_product_by_barcode(barcode)
-                
+
                 if existing_product and existing_product.normalized_data:
                     # Use existing product data, only update price
                     normalized = existing_product.normalized_data
                     hipoink_product = HipoinkProductItem(
                         product_code=barcode,
-                        product_name=normalized.get("title") or existing_product.title or "",
+                        product_name=normalized.get("title")
+                        or existing_product.title
+                        or "",
                         product_price=str(original_price),  # Restored original price
-                        product_inner_code=normalized.get("sku") or existing_product.sku,
-                        product_image_url=normalized.get("image_url") or existing_product.image_url,
-                        product_qrcode_url=normalized.get("image_url") or existing_product.image_url,
-                        f1=existing_product.source_system if existing_product.source_system else None,
+                        product_inner_code=normalized.get("sku")
+                        or existing_product.sku,
+                        product_image_url=normalized.get("image_url")
+                        or existing_product.image_url,
+                        product_qrcode_url=normalized.get("image_url")
+                        or existing_product.image_url,
+                        f1=existing_product.source_system
+                        if existing_product.source_system
+                        else None,
                     )
                 else:
                     # Product not in database - create minimal product with just price
@@ -519,7 +552,7 @@ class PriceScheduler:
                         product_name="",
                         product_price=str(original_price),
                     )
-                
+
                 hipoink_products.append(hipoink_product)
 
             if not hipoink_products:

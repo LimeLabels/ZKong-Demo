@@ -258,28 +258,30 @@ class SupabaseService:
         """
         Get product by barcode.
         Optionally filter by store_mapping_id if multiple stores have same barcode.
-        
+
         Args:
             barcode: Product barcode
             store_mapping_id: Optional store mapping ID to filter results
-            
+
         Returns:
             Product if found, None otherwise
         """
         try:
             query = self.client.table("products").select("*").eq("barcode", barcode)
-            
+
             # If store_mapping_id provided, we need to join with hipoink_products
             # For now, just get the first product with this barcode
             # In the future, we could join with hipoink_products to filter by store
-            
+
             result = query.limit(1).execute()
-            
+
             if result.data and len(result.data) > 0:
                 return Product(**result.data[0])
             return None
         except Exception as e:
-            logger.error("Failed to get product by barcode", barcode=barcode, error=str(e))
+            logger.error(
+                "Failed to get product by barcode", barcode=barcode, error=str(e)
+            )
             return None
 
     # Sync Queue
@@ -501,9 +503,16 @@ class SupabaseService:
             # Convert UUIDs to strings
             if insert_data.get("store_mapping_id"):
                 insert_data["store_mapping_id"] = str(insert_data["store_mapping_id"])
-            
+
             # Convert datetime objects to ISO format strings for JSON serialization
-            datetime_fields = ["start_date", "end_date", "last_triggered_at", "next_trigger_at", "created_at", "updated_at"]
+            datetime_fields = [
+                "start_date",
+                "end_date",
+                "last_triggered_at",
+                "next_trigger_at",
+                "created_at",
+                "updated_at",
+            ]
             for field in datetime_fields:
                 if field in insert_data and insert_data[field] is not None:
                     if isinstance(insert_data[field], datetime):
@@ -595,9 +604,16 @@ class SupabaseService:
             # Convert UUIDs to strings if present
             if update_data.get("store_mapping_id"):
                 update_data["store_mapping_id"] = str(update_data["store_mapping_id"])
-            
+
             # Convert datetime objects to ISO format strings for JSON serialization
-            datetime_fields = ["start_date", "end_date", "last_triggered_at", "next_trigger_at", "created_at", "updated_at"]
+            datetime_fields = [
+                "start_date",
+                "end_date",
+                "last_triggered_at",
+                "next_trigger_at",
+                "created_at",
+                "updated_at",
+            ]
             for field in datetime_fields:
                 if field in update_data and update_data[field] is not None:
                     if isinstance(update_data[field], datetime):
