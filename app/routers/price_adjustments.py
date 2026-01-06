@@ -147,11 +147,20 @@ def calculate_next_trigger_time(
         else:
             end_date = end_date.astimezone(store_timezone)
 
-    # Check if schedule has ended
-    if end_date and current_time > end_date:
+    # For repeat schedules (daily, weekly, monthly), ignore end_date if it's the same as start_date
+    # This allows the schedule to repeat indefinitely
+    # The frontend often sets end_date = start_date as a placeholder
+    effective_end_date = end_date
+    if schedule.repeat_type in ["daily", "weekly", "monthly"]:
+        if end_date and abs((end_date - start_date).total_seconds()) < 60:
+            # end_date is same as start_date (within 1 minute) - treat as no end date for repeats
+            effective_end_date = None
+    
+    # Check if schedule has ended (only for non-repeat or if end_date is actually set)
+    if effective_end_date and current_time > effective_end_date:
         return None
 
-    # Check if schedule hasn't started yet
+    # Check if schedule hasn't started yet - always return first time slot on start date
     if current_time < start_date:
         # Find first time slot on start date
         if schedule.time_slots:
@@ -211,6 +220,7 @@ def calculate_next_trigger_time(
 
     elif schedule.repeat_type == "daily":
         # Daily repeat - find next time slot today or tomorrow
+        # First, try to find a time slot today that's in the future
         for slot in schedule.time_slots:
             slot_time = current_time.replace(
                 hour=int(slot["start_time"].split(":")[0]),
@@ -231,6 +241,9 @@ def calculate_next_trigger_time(
                 second=0,
                 microsecond=0,
             )
+        
+        # Fallback: if no time slots, return None
+        return None
 
     elif schedule.repeat_type == "weekly":
         # Weekly repeat - find next occurrence based on trigger_days
