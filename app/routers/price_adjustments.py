@@ -219,27 +219,34 @@ def calculate_next_trigger_time(
         return None
 
     elif schedule.repeat_type == "daily":
-        # Daily repeat - find next time slot today or tomorrow
-        # First, try to find a time slot today that's in the future
+        # Daily repeat - find next time slot
+        # If we're on or after start_date, check today's time slots first
+        # Use start_date's date if we're on the start date, otherwise use current_time's date
+        if current_time.date() == start_date.date():
+            # On start date - use start_date's date
+            check_date = start_date.date()
+        else:
+            # After start date - use current_time's date
+            check_date = current_time.date()
+        
+        # First, try to find a time slot on check_date that's in the future
         for slot in schedule.time_slots:
-            slot_time = current_time.replace(
-                hour=int(slot["start_time"].split(":")[0]),
-                minute=int(slot["start_time"].split(":")[1]),
-                second=0,
-                microsecond=0,
+            slot_hour = int(slot["start_time"].split(":")[0])
+            slot_minute = int(slot["start_time"].split(":")[1])
+            slot_time = store_timezone.localize(
+                datetime.combine(check_date, datetime.min.time().replace(hour=slot_hour, minute=slot_minute))
             )
             if slot_time > current_time:
                 return slot_time
 
-        # No more slots today, use first slot tomorrow
+        # No more slots on check_date, use first slot tomorrow
         if schedule.time_slots:
             first_slot = schedule.time_slots[0]
-            tomorrow = current_time + timedelta(days=1)
-            return tomorrow.replace(
-                hour=int(first_slot["start_time"].split(":")[0]),
-                minute=int(first_slot["start_time"].split(":")[1]),
-                second=0,
-                microsecond=0,
+            tomorrow = check_date + timedelta(days=1)
+            slot_hour = int(first_slot["start_time"].split(":")[0])
+            slot_minute = int(first_slot["start_time"].split(":")[1])
+            return store_timezone.localize(
+                datetime.combine(tomorrow, datetime.min.time().replace(hour=slot_hour, minute=slot_minute))
             )
         
         # Fallback: if no time slots, return None
