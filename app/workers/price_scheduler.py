@@ -386,38 +386,74 @@ class PriceScheduler:
         store_mapping: StoreMapping,
         products_data: list,
     ):
-        """Apply promotional prices to products."""
+        """Apply promotional prices to products - preserves all existing product data."""
         try:
-            # Build Hipoink product items with promotional prices
+            # Determine which store codes to use
+            store_codes = []
+            if schedule.trigger_stores and len(schedule.trigger_stores) > 0:
+                store_codes = schedule.trigger_stores
+            else:
+                store_codes = [store_mapping.hipoink_store_code]
+
+            # Build Hipoink product items with full product data, only updating price
             hipoink_products = []
             for product_data in products_data:
-                hipoink_product = HipoinkProductItem(
-                    product_code=product_data["pc"],
-                    product_name="",  # Name not needed for price update
-                    product_price=str(product_data["pp"]),  # Promotional price
-                )
+                barcode = product_data["pc"]
+                new_price = str(product_data["pp"])
+                
+                # Get existing product from database to preserve all fields
+                existing_product = self.supabase_service.get_product_by_barcode(barcode)
+                
+                if existing_product and existing_product.normalized_data:
+                    # Use existing product data, only update price
+                    normalized = existing_product.normalized_data
+                    hipoink_product = HipoinkProductItem(
+                        product_code=barcode,
+                        product_name=normalized.get("title") or existing_product.title or "",
+                        product_price=new_price,  # Updated price
+                        product_inner_code=normalized.get("sku") or existing_product.sku,
+                        product_image_url=normalized.get("image_url") or existing_product.image_url,
+                        product_qrcode_url=normalized.get("image_url") or existing_product.image_url,
+                        f1=existing_product.source_system if existing_product.source_system else None,
+                    )
+                else:
+                    # Product not in database - create minimal product with just price
+                    # This shouldn't happen normally, but handle gracefully
+                    logger.warning(
+                        "Product not found in database, creating minimal product",
+                        barcode=barcode,
+                        schedule_id=str(schedule.id),
+                    )
+                    hipoink_product = HipoinkProductItem(
+                        product_code=barcode,
+                        product_name="",  # Will be empty if product doesn't exist
+                        product_price=new_price,
+                    )
+                
                 hipoink_products.append(hipoink_product)
 
-            # Update products in Hipoink
-            response = await self.hipoink_client.create_products_multiple(
-                store_code=store_mapping.hipoink_store_code,
-                products=hipoink_products,
-            )
-
-            # Check response
-            error_code = response.get("error_code")
-            if error_code != 0:
-                error_msg = response.get("error_msg", "Unknown error")
-                raise HipoinkAPIError(
-                    f"Hipoink price update failed: {error_msg} (code: {error_code})"
+            # Apply price changes to all specified stores
+            for store_code in store_codes:
+                # Update products in Hipoink (same as Shopify update - preserves all fields)
+                response = await self.hipoink_client.create_products_multiple(
+                    store_code=str(store_code),
+                    products=hipoink_products,
                 )
 
-            logger.info(
-                "Applied promotional prices",
-                schedule_id=str(schedule.id),
-                product_count=len(hipoink_products),
-                store_code=store_mapping.hipoink_store_code,
-            )
+                # Check response
+                error_code = response.get("error_code")
+                if error_code != 0:
+                    error_msg = response.get("error_msg", "Unknown error")
+                    raise HipoinkAPIError(
+                        f"Hipoink price update failed for store {store_code}: {error_msg} (code: {error_code})"
+                    )
+
+                logger.info(
+                    "Applied promotional prices",
+                    schedule_id=str(schedule.id),
+                    product_count=len(hipoink_products),
+                    store_code=str(store_code),
+                )
 
         except Exception as e:
             logger.error(
@@ -433,24 +469,57 @@ class PriceScheduler:
         store_mapping: StoreMapping,
         products_data: list,
     ):
-        """Restore original prices to products."""
+        """Restore original prices to products - preserves all existing product data."""
         try:
-            # Build Hipoink product items with original prices
+            # Determine which store codes to use
+            store_codes = []
+            if schedule.trigger_stores and len(schedule.trigger_stores) > 0:
+                store_codes = schedule.trigger_stores
+            else:
+                store_codes = [store_mapping.hipoink_store_code]
+
+            # Build Hipoink product items with full product data, only updating price
             hipoink_products = []
             for product_data in products_data:
+                barcode = product_data["pc"]
                 original_price = product_data.get("original_price")
+                
                 if original_price is None:
                     logger.warning(
                         "No original price found for product",
-                        product_code=product_data["pc"],
+                        product_code=barcode,
+                        schedule_id=str(schedule.id),
                     )
                     continue
 
-                hipoink_product = HipoinkProductItem(
-                    product_code=product_data["pc"],
-                    product_name="",  # Name not needed for price update
-                    product_price=str(original_price),  # Original price
-                )
+                # Get existing product from database to preserve all fields
+                existing_product = self.supabase_service.get_product_by_barcode(barcode)
+                
+                if existing_product and existing_product.normalized_data:
+                    # Use existing product data, only update price
+                    normalized = existing_product.normalized_data
+                    hipoink_product = HipoinkProductItem(
+                        product_code=barcode,
+                        product_name=normalized.get("title") or existing_product.title or "",
+                        product_price=str(original_price),  # Restored original price
+                        product_inner_code=normalized.get("sku") or existing_product.sku,
+                        product_image_url=normalized.get("image_url") or existing_product.image_url,
+                        product_qrcode_url=normalized.get("image_url") or existing_product.image_url,
+                        f1=existing_product.source_system if existing_product.source_system else None,
+                    )
+                else:
+                    # Product not in database - create minimal product with just price
+                    logger.warning(
+                        "Product not found in database, creating minimal product",
+                        barcode=barcode,
+                        schedule_id=str(schedule.id),
+                    )
+                    hipoink_product = HipoinkProductItem(
+                        product_code=barcode,
+                        product_name="",
+                        product_price=str(original_price),
+                    )
+                
                 hipoink_products.append(hipoink_product)
 
             if not hipoink_products:
@@ -460,26 +529,28 @@ class PriceScheduler:
                 )
                 return
 
-            # Update products in Hipoink
-            response = await self.hipoink_client.create_products_multiple(
-                store_code=store_mapping.hipoink_store_code,
-                products=hipoink_products,
-            )
-
-            # Check response
-            error_code = response.get("error_code")
-            if error_code != 0:
-                error_msg = response.get("error_msg", "Unknown error")
-                raise HipoinkAPIError(
-                    f"Hipoink price restore failed: {error_msg} (code: {error_code})"
+            # Restore prices for all specified stores
+            for store_code in store_codes:
+                # Update products in Hipoink (same as Shopify update - preserves all fields)
+                response = await self.hipoink_client.create_products_multiple(
+                    store_code=str(store_code),
+                    products=hipoink_products,
                 )
 
-            logger.info(
-                "Restored original prices",
-                schedule_id=str(schedule.id),
-                product_count=len(hipoink_products),
-                store_code=store_mapping.hipoink_store_code,
-            )
+                # Check response
+                error_code = response.get("error_code")
+                if error_code != 0:
+                    error_msg = response.get("error_msg", "Unknown error")
+                    raise HipoinkAPIError(
+                        f"Hipoink price restore failed for store {store_code}: {error_msg} (code: {error_code})"
+                    )
+
+                logger.info(
+                    "Restored original prices",
+                    schedule_id=str(schedule.id),
+                    product_count=len(hipoink_products),
+                    store_code=str(store_code),
+                )
 
         except Exception as e:
             logger.error(

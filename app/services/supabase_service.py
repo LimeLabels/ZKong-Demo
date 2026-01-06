@@ -252,6 +252,36 @@ class SupabaseService:
             )
             return []
 
+    def get_product_by_barcode(
+        self, barcode: str, store_mapping_id: Optional[UUID] = None
+    ) -> Optional[Product]:
+        """
+        Get product by barcode.
+        Optionally filter by store_mapping_id if multiple stores have same barcode.
+        
+        Args:
+            barcode: Product barcode
+            store_mapping_id: Optional store mapping ID to filter results
+            
+        Returns:
+            Product if found, None otherwise
+        """
+        try:
+            query = self.client.table("products").select("*").eq("barcode", barcode)
+            
+            # If store_mapping_id provided, we need to join with hipoink_products
+            # For now, just get the first product with this barcode
+            # In the future, we could join with hipoink_products to filter by store
+            
+            result = query.limit(1).execute()
+            
+            if result.data and len(result.data) > 0:
+                return Product(**result.data[0])
+            return None
+        except Exception as e:
+            logger.error("Failed to get product by barcode", barcode=barcode, error=str(e))
+            return None
+
     # Sync Queue
 
     def add_to_sync_queue(
