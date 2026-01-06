@@ -172,16 +172,37 @@ class PriceScheduler:
                 await self._apply_promotional_prices(
                     schedule, store_mapping, products_data
                 )
+                # After applying promotional price, next trigger should be end of current slot
+                # Find the current slot's end time
+                current_time_str = current_time.strftime("%H:%M")
+                current_time_only = datetime.strptime(current_time_str, "%H:%M").time()
+                for slot in schedule.time_slots:
+                    start_time = datetime.strptime(slot["start_time"], "%H:%M").time()
+                    end_time = datetime.strptime(slot["end_time"], "%H:%M").time()
+                    if start_time <= current_time_only <= end_time:
+                        # Found the current slot, set next trigger to its end time
+                        next_trigger = current_time.replace(
+                            hour=int(slot["end_time"].split(":")[0]),
+                            minute=int(slot["end_time"].split(":")[1]),
+                            second=0,
+                            microsecond=0,
+                        )
+                        break
+                else:
+                    # Fallback: calculate normally
+                    next_trigger = self._calculate_next_trigger(
+                        schedule, current_time, store_timezone
+                    )
             else:
                 # Restore original prices (end of time slot)
                 await self._restore_original_prices(
                     schedule, store_mapping, products_data
                 )
-
-            # Calculate next trigger time (returns in store timezone)
-            next_trigger = self._calculate_next_trigger(
-                schedule, current_time, store_timezone
-            )
+                # After restoring, next trigger is tomorrow's start time (for daily repeat)
+                # or calculate normally for other repeat types
+                next_trigger = self._calculate_next_trigger(
+                    schedule, current_time, store_timezone
+                )
 
             # Convert next trigger to UTC for storage
             next_trigger_utc = (
@@ -302,7 +323,8 @@ class PriceScheduler:
                     start_time = datetime.strptime(slot["start_time"], "%H:%M").time()
                     end_time = datetime.strptime(slot["end_time"], "%H:%M").time()
 
-                    # If we're within the time slot but not at the end yet, trigger at end
+                    # Check if we're at or past the start time but before the end time
+                    # This handles both "at start" and "in middle of slot" cases
                     if start_time <= current_time_only < end_time:
                         end_datetime = current_time.replace(
                             hour=int(slot["end_time"].split(":")[0]),
@@ -311,8 +333,14 @@ class PriceScheduler:
                             microsecond=0,
                         )
                         return end_datetime
+                    
+                    # Check if we're at or past the end time - next trigger is tomorrow
+                    if current_time_only >= end_time:
+                        # We've passed this slot, check if there are more slots today
+                        # For daily, we'll just go to tomorrow's first slot
+                        break
 
-                # Otherwise, next trigger is tomorrow at first time slot
+                # No more slots today (or we're past all slots) - next trigger is tomorrow at first time slot
                 first_slot = schedule.time_slots[0]
                 tomorrow = current_time + timedelta(days=1)
                 return tomorrow.replace(
