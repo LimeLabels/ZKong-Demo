@@ -471,6 +471,13 @@ class SupabaseService:
             # Convert UUIDs to strings
             if insert_data.get("store_mapping_id"):
                 insert_data["store_mapping_id"] = str(insert_data["store_mapping_id"])
+            
+            # Convert datetime objects to ISO format strings for JSON serialization
+            datetime_fields = ["start_date", "end_date", "last_triggered_at", "next_trigger_at", "created_at", "updated_at"]
+            for field in datetime_fields:
+                if field in insert_data and insert_data[field] is not None:
+                    if isinstance(insert_data[field], datetime):
+                        insert_data[field] = insert_data[field].isoformat()
 
             result = (
                 self.client.table("price_adjustment_schedules")
@@ -558,6 +565,13 @@ class SupabaseService:
             # Convert UUIDs to strings if present
             if update_data.get("store_mapping_id"):
                 update_data["store_mapping_id"] = str(update_data["store_mapping_id"])
+            
+            # Convert datetime objects to ISO format strings for JSON serialization
+            datetime_fields = ["start_date", "end_date", "last_triggered_at", "next_trigger_at", "created_at", "updated_at"]
+            for field in datetime_fields:
+                if field in update_data and update_data[field] is not None:
+                    if isinstance(update_data[field], datetime):
+                        update_data[field] = update_data[field].isoformat()
 
             result = (
                 self.client.table("price_adjustment_schedules")

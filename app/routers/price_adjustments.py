@@ -387,7 +387,7 @@ async def create_price_adjustment(request: CreatePriceAdjustmentRequest):
             order_number=created_schedule.order_number,
             is_active=created_schedule.is_active,
             next_trigger_at=created_schedule.next_trigger_at,
-            created_at=created_schedule.created_at or datetime.utcnow(),  # type: ignore
+            created_at=created_schedule.created_at or datetime.now(pytz.UTC),  # type: ignore
         )
 
     except HTTPException:
