@@ -155,7 +155,7 @@ def calculate_next_trigger_time(
         if end_date and abs((end_date - start_date).total_seconds()) < 60:
             # end_date is same as start_date (within 1 minute) - treat as no end date for repeats
             effective_end_date = None
-    
+
     # Check if schedule has ended (only for non-repeat or if end_date is actually set)
     if effective_end_date and current_time > effective_end_date:
         return None
@@ -169,7 +169,10 @@ def calculate_next_trigger_time(
             slot_hour = int(first_slot["start_time"].split(":")[0])
             slot_minute = int(first_slot["start_time"].split(":")[1])
             start_datetime = store_timezone.localize(
-                datetime.combine(start_date_only, datetime.min.time().replace(hour=slot_hour, minute=slot_minute))
+                datetime.combine(
+                    start_date_only,
+                    datetime.min.time().replace(hour=slot_hour, minute=slot_minute),
+                )
             )
             return start_datetime
         return start_date
@@ -184,7 +187,12 @@ def calculate_next_trigger_time(
             last_trigger_hour = int(last_slot["end_time"].split(":")[0])
             last_trigger_minute = int(last_slot["end_time"].split(":")[1])
             last_trigger = store_timezone.localize(
-                datetime.combine(start_date_only, datetime.min.time().replace(hour=last_trigger_hour, minute=last_trigger_minute))
+                datetime.combine(
+                    start_date_only,
+                    datetime.min.time().replace(
+                        hour=last_trigger_hour, minute=last_trigger_minute
+                    ),
+                )
             )
             if current_time > last_trigger:
                 return None
@@ -194,7 +202,10 @@ def calculate_next_trigger_time(
                 slot_hour = int(slot["start_time"].split(":")[0])
                 slot_minute = int(slot["start_time"].split(":")[1])
                 slot_time = store_timezone.localize(
-                    datetime.combine(start_date_only, datetime.min.time().replace(hour=slot_hour, minute=slot_minute))
+                    datetime.combine(
+                        start_date_only,
+                        datetime.min.time().replace(hour=slot_hour, minute=slot_minute),
+                    )
                 )
                 if slot_time > current_time:
                     return slot_time
@@ -206,10 +217,20 @@ def calculate_next_trigger_time(
                 slot_end_hour = int(slot["end_time"].split(":")[0])
                 slot_end_minute = int(slot["end_time"].split(":")[1])
                 slot_start = store_timezone.localize(
-                    datetime.combine(start_date_only, datetime.min.time().replace(hour=slot_start_hour, minute=slot_start_minute))
+                    datetime.combine(
+                        start_date_only,
+                        datetime.min.time().replace(
+                            hour=slot_start_hour, minute=slot_start_minute
+                        ),
+                    )
                 )
                 slot_end = store_timezone.localize(
-                    datetime.combine(start_date_only, datetime.min.time().replace(hour=slot_end_hour, minute=slot_end_minute))
+                    datetime.combine(
+                        start_date_only,
+                        datetime.min.time().replace(
+                            hour=slot_end_hour, minute=slot_end_minute
+                        ),
+                    )
                 )
                 if slot_start <= current_time <= slot_end:
                     return slot_start
@@ -225,13 +246,16 @@ def calculate_next_trigger_time(
         else:
             # After start date - use current_time's date
             check_date = current_time.date()
-        
+
         # First, try to find a time slot on check_date that's in the future
         for slot in schedule.time_slots:
             slot_hour = int(slot["start_time"].split(":")[0])
             slot_minute = int(slot["start_time"].split(":")[1])
             slot_time = store_timezone.localize(
-                datetime.combine(check_date, datetime.min.time().replace(hour=slot_hour, minute=slot_minute))
+                datetime.combine(
+                    check_date,
+                    datetime.min.time().replace(hour=slot_hour, minute=slot_minute),
+                )
             )
             if slot_time > current_time:
                 return slot_time
@@ -243,9 +267,12 @@ def calculate_next_trigger_time(
             slot_hour = int(first_slot["start_time"].split(":")[0])
             slot_minute = int(first_slot["start_time"].split(":")[1])
             return store_timezone.localize(
-                datetime.combine(tomorrow, datetime.min.time().replace(hour=slot_hour, minute=slot_minute))
+                datetime.combine(
+                    tomorrow,
+                    datetime.min.time().replace(hour=slot_hour, minute=slot_minute),
+                )
             )
-        
+
         # Fallback: if no time slots, return None
         return None
 
@@ -383,7 +410,10 @@ async def create_price_adjustment(request: CreatePriceAdjustmentRequest):
             slot_hour = int(first_slot["start_time"].split(":")[0])
             slot_minute = int(first_slot["start_time"].split(":")[1])
             next_trigger = store_timezone.localize(
-                datetime.combine(start_date_only, datetime.min.time().replace(hour=slot_hour, minute=slot_minute))
+                datetime.combine(
+                    start_date_only,
+                    datetime.min.time().replace(hour=slot_hour, minute=slot_minute),
+                )
             )
         else:
             # No time slots, use start_date

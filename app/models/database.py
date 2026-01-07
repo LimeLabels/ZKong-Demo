@@ -18,7 +18,9 @@ class StoreMapping(BaseModel):
     # Hipoink ESL System Configuration
     hipoink_store_code: str  # Store code for Hipoink API (required)
     is_active: bool = True
-    metadata: Optional[Dict[str, Any]] = None
+    metadata: Optional[Dict[str, Any]] = (
+        None  # Can store timezone, Shopify credentials, etc.
+    )
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 

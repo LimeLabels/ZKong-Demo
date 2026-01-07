@@ -11,6 +11,7 @@ from app.services.hipoink_client import (
     HipoinkAPIError,
     HipoinkProductItem,
 )
+from app.services.shopify_api_client import ShopifyAPIClient
 from app.models.database import PriceAdjustmentSchedule, StoreMapping
 
 logger = structlog.get_logger()
@@ -186,7 +187,12 @@ class PriceScheduler:
                         end_hour = int(slot["end_time"].split(":")[0])
                         end_minute = int(slot["end_time"].split(":")[1])
                         next_trigger = store_timezone.localize(
-                            datetime.combine(current_date, datetime.min.time().replace(hour=end_hour, minute=end_minute))
+                            datetime.combine(
+                                current_date,
+                                datetime.min.time().replace(
+                                    hour=end_hour, minute=end_minute
+                                ),
+                            )
                         )
                         break
                 else:
@@ -334,7 +340,7 @@ class PriceScheduler:
                             microsecond=0,
                         )
                         return end_datetime
-                    
+
                     # Check if we're at or past the end time - next trigger is tomorrow
                     if current_time_only >= end_time:
                         # We've passed this slot, check if there are more slots today
@@ -428,6 +434,135 @@ class PriceScheduler:
             update_data,
         )
 
+    def _get_shopify_credentials(
+        self, store_mapping: StoreMapping
+    ) -> Optional[Tuple[str, str]]:
+        """
+        Get Shopify credentials from store mapping metadata.
+
+        Returns:
+            Tuple of (shop_domain, access_token) if available, None otherwise
+        """
+        if not store_mapping.metadata:
+            return None
+
+        shop_domain = store_mapping.metadata.get("shopify_shop_domain")
+        access_token = store_mapping.metadata.get("shopify_access_token")
+
+        if shop_domain and access_token:
+            return (shop_domain, access_token)
+
+        return None
+
+    async def _update_shopify_prices(
+        self,
+        products_data: list,
+        new_price: Optional[str] = None,
+        use_original: bool = False,
+        shopify_credentials: Optional[Tuple[str, str]] = None,
+    ):
+        """
+        Update prices in Shopify for products.
+
+        Args:
+            products_data: List of product data dicts with 'pc' (barcode)
+            new_price: New price to set (if not using original)
+            use_original: If True, use original_price from product_data
+            shopify_credentials: Tuple of (shop_domain, access_token)
+        """
+        if not shopify_credentials:
+            logger.debug("No Shopify credentials available, skipping Shopify update")
+            return
+
+        shop_domain, access_token = shopify_credentials
+
+        try:
+            async with ShopifyAPIClient(shop_domain, access_token) as shopify_client:
+                updates = []
+
+                for product_data in products_data:
+                    barcode = product_data["pc"]
+
+                    # Get product from database to find Shopify IDs
+                    existing_product = self.supabase_service.get_product_by_barcode(
+                        barcode
+                    )
+
+                    if not existing_product:
+                        logger.warning(
+                            "Product not found in database for Shopify update",
+                            barcode=barcode,
+                        )
+                        continue
+
+                    # Check if product is from Shopify
+                    if existing_product.source_system != "shopify":
+                        logger.debug(
+                            "Product is not from Shopify, skipping",
+                            barcode=barcode,
+                            source_system=existing_product.source_system,
+                        )
+                        continue
+
+                    # Get Shopify product and variant IDs
+                    product_id = existing_product.source_id
+                    variant_id = existing_product.source_variant_id
+
+                    if not product_id or not variant_id:
+                        logger.warning(
+                            "Product missing Shopify IDs",
+                            barcode=barcode,
+                            product_id=product_id,
+                            variant_id=variant_id,
+                        )
+                        continue
+
+                    # Determine price to use
+                    if use_original:
+                        price = str(product_data.get("original_price", ""))
+                    elif new_price:
+                        price = new_price
+                    else:
+                        price = str(product_data.get("pp", ""))
+
+                    if not price:
+                        logger.warning(
+                            "No price available for Shopify update",
+                            barcode=barcode,
+                        )
+                        continue
+
+                    updates.append(
+                        {
+                            "product_id": str(product_id),
+                            "variant_id": str(variant_id),
+                            "price": price,
+                        }
+                    )
+
+                if updates:
+                    results = await shopify_client.update_multiple_variant_prices(
+                        updates
+                    )
+                    logger.info(
+                        "Updated Shopify prices",
+                        succeeded=len(results["succeeded"]),
+                        failed=len(results["failed"]),
+                    )
+
+                    if results["failed"]:
+                        logger.warning(
+                            "Some Shopify price updates failed",
+                            failed_updates=results["failed"],
+                        )
+
+        except Exception as e:
+            # Log error but don't fail the entire operation
+            logger.error(
+                "Failed to update Shopify prices (non-critical)",
+                error=str(e),
+            )
+
     async def _apply_promotional_prices(
         self,
         schedule: PriceAdjustmentSchedule,
@@ -504,10 +639,19 @@ class PriceScheduler:
                     )
 
                 logger.info(
-                    "Applied promotional prices",
+                    "Applied promotional prices to Hipoink",
                     schedule_id=str(schedule.id),
                     product_count=len(hipoink_products),
                     store_code=str(store_code),
+                )
+
+            # Update Shopify prices if credentials are available
+            shopify_credentials = self._get_shopify_credentials(store_mapping)
+            if shopify_credentials:
+                await self._update_shopify_prices(
+                    products_data,
+                    new_price=None,  # Will use 'pp' from product_data
+                    shopify_credentials=shopify_credentials,
                 )
 
         except Exception as e:
@@ -608,10 +752,19 @@ class PriceScheduler:
                     )
 
                 logger.info(
-                    "Restored original prices",
+                    "Restored original prices to Hipoink",
                     schedule_id=str(schedule.id),
                     product_count=len(hipoink_products),
                     store_code=str(store_code),
+                )
+
+            # Update Shopify prices if credentials are available
+            shopify_credentials = self._get_shopify_credentials(store_mapping)
+            if shopify_credentials:
+                await self._update_shopify_prices(
+                    products_data,
+                    use_original=True,  # Use original_price from product_data
+                    shopify_credentials=shopify_credentials,
                 )
 
         except Exception as e:
