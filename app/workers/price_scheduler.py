@@ -444,15 +444,32 @@ class PriceScheduler:
             Tuple of (shop_domain, access_token) if available, None otherwise
         """
         if not store_mapping.metadata:
+            logger.debug(
+                "Store mapping has no metadata, cannot get Shopify credentials",
+                store_mapping_id=str(store_mapping.id),
+            )
             return None
 
         shop_domain = store_mapping.metadata.get("shopify_shop_domain")
         access_token = store_mapping.metadata.get("shopify_access_token")
 
-        if shop_domain and access_token:
-            return (shop_domain, access_token)
+        if not shop_domain:
+            logger.warning(
+                "Shopify shop domain not found in store mapping metadata",
+                store_mapping_id=str(store_mapping.id),
+                metadata_keys=list(store_mapping.metadata.keys()) if store_mapping.metadata else [],
+            )
+            return None
 
-        return None
+        if not access_token:
+            logger.warning(
+                "Shopify access token not found in store mapping metadata",
+                store_mapping_id=str(store_mapping.id),
+                shop_domain=shop_domain,
+            )
+            return None
+
+        return (shop_domain, access_token)
 
     async def _update_shopify_prices(
         self,
@@ -558,10 +575,22 @@ class PriceScheduler:
 
         except Exception as e:
             # Log error but don't fail the entire operation
-            logger.error(
-                "Failed to update Shopify prices (non-critical)",
-                error=str(e),
-            )
+            error_str = str(e)
+            # Check if it's an authentication error
+            if "401" in error_str or "Unauthorized" in error_str:
+                logger.error(
+                    "Failed to update Shopify prices - Authentication error. "
+                    "Please check that shopify_shop_domain and shopify_access_token "
+                    "are correctly set in store mapping metadata",
+                    shop_domain=shop_domain,
+                    error=error_str,
+                )
+            else:
+                logger.error(
+                    "Failed to update Shopify prices (non-critical)",
+                    shop_domain=shop_domain,
+                    error=error_str,
+                )
 
     async def _apply_promotional_prices(
         self,
