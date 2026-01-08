@@ -259,8 +259,14 @@ async def delete_store_mapping(mapping_id: UUID):
 
 
 @router.get("/current", response_model=StoreMappingResponse)
-async def get_current_store_mapping(shop: str = Query(..., description="Shop domain")):
+async def get_current_store_mapping(shop: Optional[str] = Query(None, description="Shop domain")):
     """Get current shop's store mapping."""
+    if not shop or not shop.strip():
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Shop parameter is required",
+        )
+    
     try:
         mapping = supabase_service.get_store_mapping("shopify", shop)
         if not mapping:

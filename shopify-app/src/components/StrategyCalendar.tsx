@@ -117,9 +117,14 @@ export function StrategyCalendar() {
 
   if (!storeMapping?.id) {
     const handleGoToOnboarding = () => {
-      // Add query parameter to force onboarding
+      // Add query parameter to force onboarding, preserve shop
       const url = new URL(window.location.href);
+      const shop =
+        auth.shop || new URLSearchParams(window.location.search).get("shop");
       url.searchParams.set("onboarding", "true");
+      if (shop) {
+        url.searchParams.set("shop", shop);
+      }
       window.location.href = url.toString();
     };
 

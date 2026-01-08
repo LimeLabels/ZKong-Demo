@@ -173,9 +173,10 @@ async def shopify_oauth_callback(
                 # Continue anyway - onboarding will handle it
 
         # Redirect to frontend app
-        frontend_url = getattr(settings, "app_base_url", "http://localhost:3000")
-        if frontend_url.startswith("http://localhost:8000"):
-            # If backend URL, assume frontend is on port 3000
+        # Use frontend_url setting, same as OAuth initiation
+        frontend_url = getattr(settings, "frontend_url", None) or getattr(settings, "app_base_url", "http://localhost:3000")
+        # If app_base_url looks like backend (port 8000), use frontend default
+        if frontend_url.startswith("http://localhost:8000") or ":8000" in frontend_url:
             frontend_url = "http://localhost:3000"
 
         redirect_url = f"{frontend_url}?shop={shop}&installed=true"

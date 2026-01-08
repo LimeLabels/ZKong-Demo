@@ -235,8 +235,12 @@ export function Onboarding({ shop }: OnboardingProps) {
       setSuccess(true);
       setError(null);
       // Reload page after a short delay to refresh auth state
+      // Preserve shop parameter in URL
       setTimeout(() => {
-        window.location.reload();
+        const url = new URL(window.location.href);
+        url.searchParams.set("shop", shop);
+        url.searchParams.delete("onboarding"); // Remove onboarding flag
+        window.location.href = url.toString();
       }, 2000);
     } catch (err) {
       const errorMessage =

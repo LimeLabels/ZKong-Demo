@@ -55,25 +55,29 @@ function App() {
       const shop =
         auth.shop || new URLSearchParams(window.location.search).get("shop");
 
-      if (shop) {
-        // Redirect to OAuth endpoint (will be proxied to backend in dev, or use full URL in prod)
-        const oauthUrl = `/auth/shopify?shop=${encodeURIComponent(shop)}`;
-
-        // Use window.top to break out of iframe and redirect parent window
-        try {
-          if (window.top && window.top !== window.self) {
-            window.top.location.href = oauthUrl;
-          } else {
-            window.location.href = oauthUrl;
-          }
-        } catch (e) {
-          // If cross-origin error, fall back to current window
-          window.location.href = oauthUrl;
-        }
-      } else {
+      if (!shop) {
         alert(
           "Unable to determine shop domain. Please re-install the app from Shopify Admin."
         );
+        return;
+      }
+
+      // Try to use relative path first (works with proxy in dev/preview)
+      // If that fails, the backend should handle the OAuth redirect properly
+      const oauthUrl = `/auth/shopify?shop=${encodeURIComponent(shop)}`;
+
+      // Use window.top to break out of iframe and redirect parent window
+      try {
+        if (window.top && window.top !== window.self) {
+          // In embedded app, redirect the parent window
+          window.top.location.href = oauthUrl;
+        } else {
+          window.location.href = oauthUrl;
+        }
+      } catch (e) {
+        // If cross-origin error, try current window
+        // This should work if the proxy is configured correctly
+        window.location.href = oauthUrl;
       }
     };
 
