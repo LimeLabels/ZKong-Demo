@@ -44,19 +44,24 @@ export function ProductPicker({ shop, onSelect, onClose }: ProductPickerProps) {
 
       try {
         const response = await fetch(
-          `/api/products/search?shop=${encodeURIComponent(shop)}&q=${encodeURIComponent(searchQuery)}&limit=20`
+          `/api/products/search?shop=${encodeURIComponent(
+            shop
+          )}&q=${encodeURIComponent(searchQuery)}&limit=20`
         );
 
         if (!response.ok) {
           const errorData = await response.json().catch(() => ({}));
-          throw new Error(errorData.detail || "Failed to search products. Please try again.");
+          throw new Error(
+            errorData.detail || "Failed to search products. Please try again."
+          );
         }
 
         const data = await response.json();
         setProducts(Array.isArray(data) ? data : []);
         setError(null);
       } catch (err) {
-        const errorMessage = err instanceof Error ? err.message : "Unknown error occurred";
+        const errorMessage =
+          err instanceof Error ? err.message : "Unknown error occurred";
         setError(errorMessage);
         setProducts([]);
         console.error("Product search error", err);
@@ -119,20 +124,26 @@ export function ProductPicker({ shop, onSelect, onClose }: ProductPickerProps) {
         )}
 
         {!isLoading && products.length > 0 && (
-          <div style={{ marginTop: "1rem", maxHeight: "400px", overflowY: "auto" }}>
+          <div
+            style={{ marginTop: "1rem", maxHeight: "400px", overflowY: "auto" }}
+          >
             <ResourceList
               resourceName={{ singular: "product", plural: "products" }}
               items={products}
               renderItem={(item) => {
                 const product = item as Product;
-                const media = product.image_url ? (
-                  <Thumbnail source={product.image_url} alt={product.title} />
-                ) : null;
 
                 return (
                   <ResourceItem
                     id={product.id}
-                    media={media}
+                    media={
+                      product.image_url ? (
+                        <Thumbnail
+                          source={product.image_url}
+                          alt={product.title}
+                        />
+                      ) : undefined
+                    }
                     onClick={() => handleSelect(product)}
                   >
                     <Text variant="bodyMd" fontWeight="bold" as="h3">

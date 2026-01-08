@@ -110,7 +110,9 @@ export function StrategyCalendar() {
   }, [storeMapping, formData.storeMappingId]);
 
   if (isLoadingMapping) {
-    return <Spinner accessibilityLabel="Loading store information" size="large" />;
+    return (
+      <Spinner accessibilityLabel="Loading store information" size="large" />
+    );
   }
 
   if (!storeMapping?.id) {
@@ -246,14 +248,15 @@ export function StrategyCalendar() {
       if (!response.ok) {
         const error = await response.json().catch(() => ({}));
         throw new Error(
-          error.detail || "Failed to create price adjustment order. Please check your input and try again."
+          error.detail ||
+            "Failed to create price adjustment order. Please check your input and try again."
         );
       }
 
       const result = await response.json();
       setSubmitSuccess(true);
       setSubmitError(null);
-      
+
       // Reset form after successful submission
       setTimeout(() => {
         setFormData((prev) => ({
@@ -275,7 +278,8 @@ export function StrategyCalendar() {
         setSubmitSuccess(false);
       }, 3000);
     } catch (error: any) {
-      const errorMessage = error.message || "An error occurred while creating the strategy";
+      const errorMessage =
+        error.message || "An error occurred while creating the strategy";
       setSubmitError(errorMessage);
       setSubmitSuccess(false);
       console.error("Failed to create strategy", error);
@@ -335,7 +339,10 @@ export function StrategyCalendar() {
 
         {submitSuccess && (
           <Banner tone="success" onDismiss={() => setSubmitSuccess(false)}>
-            <p>Strategy created successfully! The price adjustments will run automatically according to the schedule.</p>
+            <p>
+              Strategy created successfully! The price adjustments will run
+              automatically according to the schedule.
+            </p>
           </Banner>
         )}
 
@@ -452,36 +459,45 @@ export function StrategyCalendar() {
         ))}
         <Button onClick={addTimeSlot}>Add Time Window</Button>
 
-        <Card sectioned>
-          <Text variant="headingSm" as="h3">
-            Product Selection
-          </Text>
-          <div style={{ marginTop: "1rem" }}>
-            <Button onClick={() => setShowProductPicker(true)}>
-              {formData.barcode ? `Change Product (${formData.barcode})` : "Select Product"}
-            </Button>
-            {formData.barcode && (
-              <Button
-                plain
-                destructive
-                onClick={() => {
-                  setFormData({ ...formData, barcode: "", originalPrice: "" });
-                }}
-              >
-                Clear
+        <Card>
+          <div style={{ padding: "1rem" }}>
+            <Text variant="headingSm" as="h3">
+              Product Selection
+            </Text>
+            <div style={{ marginTop: "1rem" }}>
+              <Button onClick={() => setShowProductPicker(true)}>
+                {formData.barcode
+                  ? `Change Product (${formData.barcode})`
+                  : "Select Product"}
               </Button>
+              {formData.barcode && (
+                <Button
+                  variant="plain"
+                  tone="critical"
+                  onClick={() => {
+                    setFormData({
+                      ...formData,
+                      barcode: "",
+                      originalPrice: "",
+                    });
+                  }}
+                >
+                  Clear
+                </Button>
+              )}
+            </div>
+            {formData.barcode && (
+              <div style={{ marginTop: "1rem" }}>
+                <TextField
+                  label="Product Barcode"
+                  value={formData.barcode}
+                  readOnly
+                  autoComplete="off"
+                  helpText="Selected product barcode"
+                />
+              </div>
             )}
           </div>
-          {formData.barcode && (
-            <div style={{ marginTop: "1rem" }}>
-              <TextField
-                label="Product Barcode"
-                value={formData.barcode}
-                readOnly
-                helpText="Selected product barcode"
-              />
-            </div>
-          )}
         </Card>
 
         {showProductPicker && auth.shop && (

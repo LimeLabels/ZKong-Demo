@@ -51,7 +51,9 @@ export function StrategyList() {
   const [strategies, setStrategies] = useState<Strategy[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [selectedStrategy, setSelectedStrategy] = useState<Strategy | null>(null);
+  const [selectedStrategy, setSelectedStrategy] = useState<Strategy | null>(
+    null
+  );
   const [showEditModal, setShowEditModal] = useState(false);
 
   useEffect(() => {
@@ -88,7 +90,11 @@ export function StrategyList() {
   };
 
   const handleDelete = async (strategyId: string) => {
-    if (!confirm("Are you sure you want to delete this strategy? This will stop all scheduled price adjustments.")) {
+    if (
+      !confirm(
+        "Are you sure you want to delete this strategy? This will stop all scheduled price adjustments."
+      )
+    ) {
       return;
     }
 
@@ -108,7 +114,8 @@ export function StrategyList() {
       // Refresh list
       await fetchStrategies();
     } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : "Unknown error occurred";
+      const errorMessage =
+        err instanceof Error ? err.message : "Unknown error occurred";
       setError(errorMessage);
       console.error("Failed to delete strategy", err);
     } finally {
@@ -170,8 +177,18 @@ export function StrategyList() {
             <ResourceItem
               id={strategy.id}
               accessibilityLabel={`View details for ${strategy.name}`}
+              onClick={() => {
+                setSelectedStrategy(strategy);
+                setShowEditModal(true);
+              }}
             >
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "start" }}>
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "start",
+                }}
+              >
                 <div>
                   <Text variant="bodyMd" fontWeight="bold" as="h3">
                     {strategy.name}
@@ -184,11 +201,15 @@ export function StrategyList() {
                   </Text>
                   {firstTimeSlot && (
                     <Text variant="bodySm" as="p">
-                      Time: {formatTime(firstTimeSlot.start_time)} - {formatTime(firstTimeSlot.end_time)}
+                      Time: {formatTime(firstTimeSlot.start_time)} -{" "}
+                      {formatTime(firstTimeSlot.end_time)}
                     </Text>
                   )}
                   <Text variant="bodySm" as="p">
-                    Repeat: {strategy.repeat_type === "none" ? "Once" : strategy.repeat_type}
+                    Repeat:{" "}
+                    {strategy.repeat_type === "none"
+                      ? "Once"
+                      : strategy.repeat_type}
                   </Text>
                   {strategy.next_trigger_at && (
                     <Text variant="bodySm" as="p">
@@ -196,14 +217,14 @@ export function StrategyList() {
                     </Text>
                   )}
                   <div style={{ marginTop: "0.5rem" }}>
-                    <Badge status={strategy.is_active ? "success" : "attention"}>
+                    <Badge tone={strategy.is_active ? "success" : "attention"}>
                       {strategy.is_active ? "Active" : "Inactive"}
                     </Badge>
                   </div>
                 </div>
                 <div>
                   <Button
-                    plain
+                    variant="plain"
                     onClick={() => {
                       setSelectedStrategy(strategy);
                       setShowEditModal(true);
@@ -212,8 +233,8 @@ export function StrategyList() {
                     View
                   </Button>
                   <Button
-                    plain
-                    destructive
+                    variant="plain"
+                    tone="critical"
                     onClick={() => handleDelete(strategy.id)}
                   >
                     Delete
@@ -243,34 +264,49 @@ export function StrategyList() {
         >
           <Modal.Section>
             <FormLayout>
-              <TextField label="Name" value={selectedStrategy.name} readOnly />
-              <TextField label="Order Number" value={selectedStrategy.order_number} readOnly />
+              <TextField
+                label="Name"
+                value={selectedStrategy.name}
+                readOnly
+                autoComplete="off"
+              />
+              <TextField
+                label="Order Number"
+                value={selectedStrategy.order_number}
+                readOnly
+                autoComplete="off"
+              />
               <Text variant="bodySm" as="p">
-                <strong>Status:</strong> {selectedStrategy.is_active ? "Active" : "Inactive"}
+                <strong>Status:</strong>{" "}
+                {selectedStrategy.is_active ? "Active" : "Inactive"}
               </Text>
               <Text variant="bodySm" as="p">
-                <strong>Products:</strong> {selectedStrategy.products?.products?.length || 0}
+                <strong>Products:</strong>{" "}
+                {selectedStrategy.products?.products?.length || 0}
               </Text>
               <Text variant="bodySm" as="p">
                 <strong>Repeat Type:</strong> {selectedStrategy.repeat_type}
               </Text>
               {selectedStrategy.next_trigger_at && (
                 <Text variant="bodySm" as="p">
-                  <strong>Next Trigger:</strong> {new Date(selectedStrategy.next_trigger_at).toLocaleString()}
+                  <strong>Next Trigger:</strong>{" "}
+                  {new Date(selectedStrategy.next_trigger_at).toLocaleString()}
                 </Text>
               )}
-              {selectedStrategy.time_slots && selectedStrategy.time_slots.length > 0 && (
-                <div>
-                  <Text variant="bodySm" as="p">
-                    <strong>Time Slots:</strong>
-                  </Text>
-                  {selectedStrategy.time_slots.map((slot, idx) => (
-                    <Text key={idx} variant="bodySm" as="p">
-                      {formatTime(slot.start_time)} - {formatTime(slot.end_time)}
+              {selectedStrategy.time_slots &&
+                selectedStrategy.time_slots.length > 0 && (
+                  <div>
+                    <Text variant="bodySm" as="p">
+                      <strong>Time Slots:</strong>
                     </Text>
-                  ))}
-                </div>
-              )}
+                    {selectedStrategy.time_slots.map((slot, idx) => (
+                      <Text key={idx} variant="bodySm" as="p">
+                        {formatTime(slot.start_time)} -{" "}
+                        {formatTime(slot.end_time)}
+                      </Text>
+                    ))}
+                  </div>
+                )}
             </FormLayout>
           </Modal.Section>
         </Modal>
