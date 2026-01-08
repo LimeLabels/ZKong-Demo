@@ -3,7 +3,7 @@ FastAPI router for store mapping management.
 Allows creating, listing, and managing store mappings without SQL.
 """
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, status, Query
 from typing import List, Optional
 from uuid import UUID
 import structlog
