@@ -26,7 +26,8 @@ class Settings(BaseSettings):
     )
     shopify_api_key: str = ""  # Shopify app API key (for OAuth)
     shopify_api_secret: str = ""  # Shopify app API secret (for OAuth)
-    app_base_url: str = "http://localhost:8000"  # Base URL for OAuth redirects
+    app_base_url: str = "http://localhost:8000"  # Base URL for OAuth redirects (backend)
+    frontend_url: str = "http://localhost:3000"  # Frontend app URL (must match App URL in Shopify)
 
     # Application Configuration
     app_environment: str = "development"

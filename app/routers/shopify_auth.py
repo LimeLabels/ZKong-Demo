@@ -48,8 +48,14 @@ async def shopify_oauth_initiate(
     state_token = state or secrets.token_urlsafe(32)
 
     # Build authorization URL
+    # redirect_uri must match the App URL domain (frontend URL)
+    # Frontend proxies /auth to backend, so use frontend URL
     scopes = "read_products,write_products,read_inventory,write_inventory"
-    redirect_uri = f"{settings.app_base_url}/auth/shopify/callback"
+    frontend_url = getattr(settings, "frontend_url", None) or getattr(settings, "app_base_url", "http://localhost:3000")
+    # If app_base_url looks like backend (port 8000), use frontend default
+    if frontend_url.startswith("http://localhost:8000") or ":8000" in frontend_url:
+        frontend_url = "http://localhost:3000"
+    redirect_uri = f"{frontend_url}/auth/shopify/callback"
     auth_url = (
         f"https://{shop}/admin/oauth/authorize?"
         f"client_id={shopify_api_key}&"
