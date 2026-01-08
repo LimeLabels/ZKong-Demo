@@ -35,6 +35,46 @@ export function Onboarding({ shop }: OnboardingProps) {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
+  const [existingMappingId, setExistingMappingId] = useState<string | null>(
+    null
+  );
+  const [isLoading, setIsLoading] = useState(true);
+
+  // Load existing store mapping on mount
+  React.useEffect(() => {
+    async function loadExistingMapping() {
+      try {
+        const response = await fetch(
+          `/api/store-mappings/current?shop=${encodeURIComponent(shop)}`
+        );
+
+        if (response.ok) {
+          const mapping = await response.json();
+          setExistingMappingId(mapping.id);
+
+          // Pre-populate form with existing data
+          if (mapping.hipoink_store_code) {
+            setHipoinkStoreCode(mapping.hipoink_store_code);
+          }
+          if (mapping.metadata?.timezone) {
+            setTimezone(mapping.metadata.timezone);
+          }
+          if (mapping.metadata?.store_name) {
+            setStoreName(mapping.metadata.store_name);
+          } else if (mapping.source_store_id) {
+            setStoreName(mapping.source_store_id);
+          }
+        }
+      } catch (err) {
+        console.error("Error loading existing mapping:", err);
+        // Continue with empty form if fetch fails
+      } finally {
+        setIsLoading(false);
+      }
+    }
+
+    loadExistingMapping();
+  }, [shop]);
 
   const handleSubmit = async () => {
     if (!hipoinkStoreCode.trim()) {
@@ -46,21 +86,44 @@ export function Onboarding({ shop }: OnboardingProps) {
     setError(null);
 
     try {
-      // First, get the current store mapping
-      const mappingResponse = await fetch(
-        `/api/store-mappings/current?shop=${encodeURIComponent(shop)}`
-      );
+      // Use existing mapping ID if we have it, otherwise try to fetch
+      let mappingId = existingMappingId;
+      let existingMetadata: any = {};
 
-      let mappingId: string;
+      if (!mappingId) {
+        // Try to fetch existing mapping, but handle 422/404 gracefully
+        try {
+          const mappingResponse = await fetch(
+            `/api/store-mappings/current?shop=${encodeURIComponent(shop)}`
+          );
 
-      if (mappingResponse.ok) {
-        // Update existing mapping (created by OAuth callback)
-        const mapping = await mappingResponse.json();
-        mappingId = mapping.id;
+          if (mappingResponse.ok) {
+            const mapping = await mappingResponse.json();
+            mappingId = mapping.id;
+            existingMetadata = mapping.metadata || {};
+          }
+          // If 404 or 422, mapping doesn't exist or can't be fetched - will try create
+        } catch (e) {
+          // Continue to create path if fetch fails
+          console.log("Could not fetch existing mapping, will try create");
+        }
+      } else {
+        // Fetch existing metadata if we already have the ID
+        try {
+          const mappingResponse = await fetch(
+            `/api/store-mappings/current?shop=${encodeURIComponent(shop)}`
+          );
+          if (mappingResponse.ok) {
+            const mapping = await mappingResponse.json();
+            existingMetadata = mapping.metadata || {};
+          }
+        } catch (e) {
+          // Continue with empty metadata if fetch fails
+        }
+      }
 
-        // Get existing metadata and merge with new data
-        const existingMetadata = mapping.metadata || {};
-
+      if (mappingId) {
+        // Update existing mapping
         const updateResponse = await fetch(`/api/store-mappings/${mappingId}`, {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
@@ -86,7 +149,7 @@ export function Onboarding({ shop }: OnboardingProps) {
           );
         }
       } else {
-        // Create new mapping (OAuth callback didn't create one)
+        // Create new mapping only if one doesn't exist
         const createResponse = await fetch("/api/store-mappings/", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -105,14 +168,68 @@ export function Onboarding({ shop }: OnboardingProps) {
 
         if (!createResponse.ok) {
           const errorData = await createResponse.json().catch(() => ({}));
-          throw new Error(
-            errorData.detail ||
-              "Failed to create store mapping. Please try again."
-          );
-        }
+          // If 409 Conflict (already exists), use list endpoint to find and update
+          if (
+            createResponse.status === 409 ||
+            (errorData.detail && errorData.detail.includes("already exists"))
+          ) {
+            // List all Shopify mappings and find the one for this shop
+            const listResponse = await fetch(
+              `/api/store-mappings/?source_system=shopify`
+            );
 
-        const created = await createResponse.json();
-        mappingId = created.id;
+            if (!listResponse.ok) {
+              throw new Error(
+                "Store mapping already exists but could not be retrieved. Please refresh the page."
+              );
+            }
+
+            const mappings = await listResponse.json();
+            const existing = mappings.find(
+              (m: any) => m.source_store_id === shop
+            );
+
+            if (!existing) {
+              throw new Error(
+                "Store mapping already exists but could not be found. Please refresh the page."
+              );
+            }
+
+            // Update the existing mapping
+            const updateResponse = await fetch(
+              `/api/store-mappings/${existing.id}`,
+              {
+                method: "PUT",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  source_system: "shopify",
+                  source_store_id: shop,
+                  hipoink_store_code: hipoinkStoreCode.trim(),
+                  is_active: true,
+                  metadata: {
+                    ...(existing.metadata || {}),
+                    timezone: timezone,
+                    shopify_shop_domain: shop,
+                    store_name: storeName.trim() || shop,
+                  },
+                }),
+              }
+            );
+
+            if (!updateResponse.ok) {
+              const updateError = await updateResponse.json().catch(() => ({}));
+              throw new Error(
+                updateError.detail ||
+                  "Failed to update existing store mapping. Please try again."
+              );
+            }
+          } else {
+            throw new Error(
+              errorData.detail ||
+                "Failed to create store mapping. Please try again."
+            );
+          }
+        }
       }
 
       setSuccess(true);
@@ -130,6 +247,20 @@ export function Onboarding({ shop }: OnboardingProps) {
       setIsSubmitting(false);
     }
   };
+
+  if (isLoading) {
+    return (
+      <Page title="Welcome to Hipoink ESL Integration" primaryAction={null}>
+        <Layout>
+          <Layout.Section>
+            <Card>
+              <p>Loading existing configuration...</p>
+            </Card>
+          </Layout.Section>
+        </Layout>
+      </Page>
+    );
+  }
 
   return (
     <Page title="Welcome to Hipoink ESL Integration" primaryAction={null}>
