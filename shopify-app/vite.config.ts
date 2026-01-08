@@ -12,9 +12,14 @@ export default defineConfig({
     headers: {
       "Content-Security-Policy": "frame-ancestors 'self' https://admin.shopify.com https://*.myshopify.com https://admin.shopify.io;",
     },
-    // Proxy API calls to FastAPI backend
+    // Proxy API calls and OAuth endpoints to FastAPI backend
     proxy: {
       "/api": {
+        target: process.env.BACKEND_URL || "http://localhost:8000",
+        changeOrigin: true,
+        secure: false,
+      },
+      "/auth": {
         target: process.env.BACKEND_URL || "http://localhost:8000",
         changeOrigin: true,
         secure: false,
@@ -28,9 +33,14 @@ export default defineConfig({
     headers: {
       "Content-Security-Policy": "frame-ancestors 'self' https://admin.shopify.com https://*.myshopify.com https://admin.shopify.io;",
     },
-    // Proxy API calls to FastAPI backend in preview mode
+    // Proxy API calls and OAuth endpoints to FastAPI backend in preview mode
     proxy: {
       "/api": {
+        target: process.env.BACKEND_URL || "http://localhost:8000",
+        changeOrigin: true,
+        secure: false,
+      },
+      "/auth": {
         target: process.env.BACKEND_URL || "http://localhost:8000",
         changeOrigin: true,
         secure: false,

@@ -12,8 +12,11 @@ embedded = true
 scopes = "read_products,write_products,read_inventory,write_inventory,read_orders,write_orders"
 
 [auth]
+# Note: Redirect URLs must be configured in Shopify Partner Dashboard
+# This file is for local development only
 redirect_urls = [
-  "https://eslshopifyplatform.com/auth/shopify/callback"
+  # Add your backend callback URL here for local dev
+  # Production callback URL should be set in Partner Dashboard
 ]
 
 [webhooks]

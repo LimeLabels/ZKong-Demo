@@ -52,21 +52,19 @@ function App() {
         auth.shop || new URLSearchParams(window.location.search).get("shop");
 
       if (shop) {
-        // Redirect to OAuth endpoint
+        // Redirect to OAuth endpoint (will be proxied to backend in dev, or use full URL in prod)
+        const oauthUrl = `/auth/shopify?shop=${encodeURIComponent(shop)}`;
+
         // Use window.top to break out of iframe and redirect parent window
         try {
-          const oauthUrl = `/auth/shopify?shop=${encodeURIComponent(shop)}`;
-          // Try to break out of iframe first
           if (window.top && window.top !== window.self) {
             window.top.location.href = oauthUrl;
           } else {
             window.location.href = oauthUrl;
           }
         } catch (e) {
-          // If cross-origin, fall back to current window
-          window.location.href = `/auth/shopify?shop=${encodeURIComponent(
-            shop
-          )}`;
+          // If cross-origin error, fall back to current window
+          window.location.href = oauthUrl;
         }
       } else {
         alert(
