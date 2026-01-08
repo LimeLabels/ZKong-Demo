@@ -9,6 +9,9 @@ export default defineConfig({
     allowedHosts: ["shopify-app-production-e35f.up.railway.app"],
     host: true,
     strictPort: true,
+    headers: {
+      "Content-Security-Policy": "frame-ancestors 'self' https://admin.shopify.com https://*.myshopify.com https://admin.shopify.io;",
+    },
     // Proxy API calls to FastAPI backend
     proxy: {
       "/api": {
@@ -22,6 +25,9 @@ export default defineConfig({
     port: parseInt(process.env.PORT || "3000"),
     host: true,
     strictPort: true,
+    headers: {
+      "Content-Security-Policy": "frame-ancestors 'self' https://admin.shopify.com https://*.myshopify.com https://admin.shopify.io;",
+    },
     // Proxy API calls to FastAPI backend in preview mode
     proxy: {
       "/api": {

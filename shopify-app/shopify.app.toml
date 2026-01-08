@@ -2,7 +2,7 @@
 # This file configures your Shopify app for native embedding
 
 name = "ESL System"
-client_id = "f14db8a0845e4b2026facc6594c3e741"
+client_id = "8c67c76fbd395da260548b9340395cae"
 # Shopify CLI will update this URL automatically when running 'shopify app dev'
 # It creates a tunnel and updates the app configuration
 application_url = "http://localhost:3000"
