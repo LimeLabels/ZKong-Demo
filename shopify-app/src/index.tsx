@@ -1,12 +1,20 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
-import { Provider } from "@shopify/app-bridge-react";
+import { Provider as AppBridgeProvider } from "@shopify/app-bridge-react";
+import { AppProvider } from "@shopify/polaris";
+import "@shopify/polaris/build/esm/styles.css";
 import App from "./App";
 
+// Minimal i18n for Polaris (can be expanded later)
+const i18n = {} as any;
+
 // Get config from URL or environment
+// API key from environment (VITE_SHOPIFY_API_KEY or SHOPIFY_API_KEY) or fallback to current Client ID
+const apiKey =
+  import.meta.env.VITE_SHOPIFY_API_KEY
+
 const config = {
-  apiKey:
-    import.meta.env.VITE_SHOPIFY_API_KEY || "f14db8a0845e4b2026facc6594c3e741",
+  apiKey,
   host: new URLSearchParams(window.location.search).get("host") || "",
   forceRedirect: true,
 };
@@ -17,8 +25,10 @@ const root = ReactDOM.createRoot(
 
 root.render(
   <React.StrictMode>
-    <Provider config={config}>
-      <App />
-    </Provider>
+    <AppBridgeProvider config={config}>
+      <AppProvider i18n={i18n}>
+        <App />
+      </AppProvider>
+    </AppBridgeProvider>
   </React.StrictMode>
 );

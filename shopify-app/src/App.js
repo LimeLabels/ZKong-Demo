@@ -1,7 +1,6 @@
 import { jsx as _jsx, jsxs as _jsxs } from "react/jsx-runtime";
 import { useState } from "react";
 import { Page, Layout, Tabs, Spinner, Banner } from "@shopify/polaris";
-import "@shopify/polaris/build/esm/styles.css";
 import { StrategyCalendar } from "./components/StrategyCalendar";
 import { StrategyList } from "./components/StrategyList";
 import { useShopifyAuth } from "./hooks/useShopifyAuth";
