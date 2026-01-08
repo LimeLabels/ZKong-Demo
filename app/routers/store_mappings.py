@@ -256,3 +256,38 @@ async def delete_store_mapping(mapping_id: UUID):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to delete store mapping: {str(e)}",
         )
+
+
+@router.get("/current", response_model=StoreMappingResponse)
+async def get_current_store_mapping(shop: str = Query(..., description="Shop domain")):
+    """Get current shop's store mapping."""
+    try:
+        mapping = supabase_service.get_store_mapping("shopify", shop)
+        if not mapping:
+            mapping = supabase_service.get_store_mapping_by_shop_domain(shop)
+        
+        if not mapping:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Store mapping not found for shop: {shop}",
+            )
+
+        return StoreMappingResponse(
+            id=str(mapping.id),
+            source_system=mapping.source_system,
+            source_store_id=mapping.source_store_id,
+            hipoink_store_code=mapping.hipoink_store_code,
+            is_active=mapping.is_active,
+            metadata=mapping.metadata,
+            created_at=mapping.created_at.isoformat() if mapping.created_at else "",
+            updated_at=mapping.updated_at.isoformat() if mapping.updated_at else "",
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Failed to get current store mapping", error=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get current store mapping: {str(e)}",
+        )

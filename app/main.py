@@ -12,6 +12,7 @@ from app.routers import (
     webhooks_new,
     shopify_auth,
     price_adjustments,
+    products,
 )
 import structlog
 
@@ -40,7 +41,9 @@ app.include_router(webhooks.router)  # Legacy routes for backward compatibility
 app.include_router(webhooks_new.router)  # New generic integration router
 app.include_router(store_mappings.router)
 app.include_router(shopify_auth.router)  # Shopify OAuth endpoints
+app.include_router(shopify_auth.api_router)  # API auth endpoints
 app.include_router(price_adjustments.router)  # Time-based price adjustment schedules
+app.include_router(products.router)  # Product search endpoints
 
 
 @app.on_event("startup")

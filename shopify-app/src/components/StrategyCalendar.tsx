@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import {
   Card,
   Button,
@@ -10,8 +10,12 @@ import {
   Checkbox,
   Banner,
   EmptyState,
+  Spinner,
 } from "@shopify/polaris";
 import { CalendarIcon } from "@shopify/polaris-icons";
+import { useStoreMapping } from "../hooks/useStoreMapping";
+import { useShopifyAuth } from "../hooks/useShopifyAuth";
+import { ProductPicker } from "./ProductPicker";
 
 interface StrategyProduct {
   id: string;
@@ -70,6 +74,9 @@ function convertTo24Hour(timeStr: string): string {
 }
 
 export function StrategyCalendar() {
+  const auth = useShopifyAuth();
+  const { storeMapping, isLoading: isLoadingMapping } = useStoreMapping();
+
   const [formData, setFormData] = useState<StrategyFormData>({
     name: "",
     startDate: new Date(),
@@ -80,16 +87,39 @@ export function StrategyCalendar() {
     products: [],
     priceOverride: 0,
     promotionText: "",
-    storeMappingId: "fb3a2563-9950-4610-b479-8b76b24bb359", // Default store mapping ID - update with your actual ID
+    storeMappingId: "",
     originalPrice: "",
     barcode: "",
     itemId: "",
-    triggerStores: [], // Array of store codes for f3
+    triggerStores: [],
   });
 
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [submitSuccess, setSubmitSuccess] = useState(false);
+  const [showProductPicker, setShowProductPicker] = useState(false);
+
+  // Auto-populate store mapping ID when available
+  useEffect(() => {
+    if (storeMapping?.id && !formData.storeMappingId) {
+      setFormData((prev) => ({
+        ...prev,
+        storeMappingId: storeMapping.id,
+      }));
+    }
+  }, [storeMapping, formData.storeMappingId]);
+
+  if (isLoadingMapping) {
+    return <Spinner accessibilityLabel="Loading store information" size="large" />;
+  }
+
+  if (!storeMapping?.id) {
+    return (
+      <Banner tone="warning" title="Store mapping not found">
+        <p>Please complete onboarding to create pricing strategies.</p>
+      </Banner>
+    );
+  }
 
   const repeatOptions = [
     { label: "No Repeat", value: "none" },
@@ -214,32 +244,41 @@ export function StrategyCalendar() {
       });
 
       if (!response.ok) {
-        const error = await response.json();
+        const error = await response.json().catch(() => ({}));
         throw new Error(
-          error.detail || "Failed to create price adjustment order"
+          error.detail || "Failed to create price adjustment order. Please check your input and try again."
         );
       }
 
+      const result = await response.json();
       setSubmitSuccess(true);
-      // Reset form
-      setFormData((prev) => ({
-        name: "",
-        startDate: new Date(),
-        endDate: new Date(),
-        repeatType: "none",
-        selectedDays: [],
-        timeSlots: [{ startTime: "09:00", endTime: "17:00" }],
-        products: [],
-        priceOverride: 0,
-        promotionText: "",
-        storeMappingId: prev.storeMappingId, // Keep store mapping ID
-        originalPrice: "",
-        barcode: "",
-        itemId: "",
-        triggerStores: [], // Reset trigger stores
-      }));
+      setSubmitError(null);
+      
+      // Reset form after successful submission
+      setTimeout(() => {
+        setFormData((prev) => ({
+          name: "",
+          startDate: new Date(),
+          endDate: new Date(),
+          repeatType: "none",
+          selectedDays: [],
+          timeSlots: [{ startTime: "09:00", endTime: "17:00" }],
+          products: [],
+          priceOverride: 0,
+          promotionText: "",
+          storeMappingId: prev.storeMappingId, // Keep store mapping ID
+          originalPrice: "",
+          barcode: "",
+          itemId: "",
+          triggerStores: [], // Reset trigger stores
+        }));
+        setSubmitSuccess(false);
+      }, 3000);
     } catch (error: any) {
-      setSubmitError(error.message || "An error occurred");
+      const errorMessage = error.message || "An error occurred while creating the strategy";
+      setSubmitError(errorMessage);
+      setSubmitSuccess(false);
+      console.error("Failed to create strategy", error);
     } finally {
       setIsSubmitting(false);
     }
@@ -272,18 +311,31 @@ export function StrategyCalendar() {
     });
   };
 
+  if (!formData.storeMappingId) {
+    return (
+      <Card>
+        <Banner tone="warning" title="Store mapping not found">
+          <p>Please wait while we load your store information...</p>
+        </Banner>
+      </Card>
+    );
+  }
+
   return (
     <Card>
       <FormLayout>
         {submitError && (
           <Banner tone="critical" onDismiss={() => setSubmitError(null)}>
-            {submitError}
+            <p>{submitError}</p>
+            <p style={{ fontSize: "0.875rem", marginTop: "0.5rem" }}>
+              Please check your input and try again.
+            </p>
           </Banner>
         )}
 
         {submitSuccess && (
           <Banner tone="success" onDismiss={() => setSubmitSuccess(false)}>
-            Strategy created successfully!
+            <p>Strategy created successfully! The price adjustments will run automatically according to the schedule.</p>
           </Banner>
         )}
 
@@ -400,13 +452,52 @@ export function StrategyCalendar() {
         ))}
         <Button onClick={addTimeSlot}>Add Time Window</Button>
 
-        <TextField
-          label="Product Barcode"
-          value={formData.barcode}
-          onChange={(value) => setFormData({ ...formData, barcode: value })}
-          placeholder="Enter product barcode"
-          autoComplete="off"
-        />
+        <Card sectioned>
+          <Text variant="headingSm" as="h3">
+            Product Selection
+          </Text>
+          <div style={{ marginTop: "1rem" }}>
+            <Button onClick={() => setShowProductPicker(true)}>
+              {formData.barcode ? `Change Product (${formData.barcode})` : "Select Product"}
+            </Button>
+            {formData.barcode && (
+              <Button
+                plain
+                destructive
+                onClick={() => {
+                  setFormData({ ...formData, barcode: "", originalPrice: "" });
+                }}
+              >
+                Clear
+              </Button>
+            )}
+          </div>
+          {formData.barcode && (
+            <div style={{ marginTop: "1rem" }}>
+              <TextField
+                label="Product Barcode"
+                value={formData.barcode}
+                readOnly
+                helpText="Selected product barcode"
+              />
+            </div>
+          )}
+        </Card>
+
+        {showProductPicker && auth.shop && (
+          <ProductPicker
+            shop={auth.shop}
+            onSelect={(product) => {
+              setFormData({
+                ...formData,
+                barcode: product.barcode || "",
+                originalPrice: product.price?.toString() || "",
+              });
+              setShowProductPicker(false);
+            }}
+            onClose={() => setShowProductPicker(false)}
+          />
+        )}
 
         <TextField
           label="Hipoink Item ID (Optional)"
