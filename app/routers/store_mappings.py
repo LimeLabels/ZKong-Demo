@@ -285,9 +285,9 @@ async def get_current_store_mapping(shop: Optional[str] = Query(None, descriptio
             id=str(mapping.id),
             source_system=mapping.source_system,
             source_store_id=mapping.source_store_id,
-            hipoink_store_code=mapping.hipoink_store_code,
+            hipoink_store_code=mapping.hipoink_store_code or "",
             is_active=mapping.is_active,
-            metadata=mapping.metadata,
+            metadata=mapping.metadata or {},
             created_at=mapping.created_at.isoformat() if mapping.created_at else "",
             updated_at=mapping.updated_at.isoformat() if mapping.updated_at else "",
         )
