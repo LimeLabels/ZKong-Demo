@@ -77,10 +77,7 @@ export function Onboarding({ shop }: OnboardingProps) {
   }, [shop]);
 
   const handleSubmit = async () => {
-    if (!hipoinkStoreCode.trim()) {
-      setError("Hipoink store code is required");
-      return;
-    }
+    // Hipoink store code is no longer required in onboarding
 
     setIsSubmitting(true);
     setError(null);
@@ -282,14 +279,7 @@ export function Onboarding({ shop }: OnboardingProps) {
                 <Banner tone="success">Setup complete! Redirecting...</Banner>
               )}
 
-              <TextField
-                label="Hipoink Store Code"
-                value={hipoinkStoreCode}
-                onChange={setHipoinkStoreCode}
-                placeholder="e.g., 001"
-                helpText="The store code used in your Hipoink ESL system"
-                autoComplete="off"
-              />
+              {/* Hipoink Store Code removed for onboarding */}
 
               <TextField
                 label="Store Name (Optional)"
@@ -312,7 +302,7 @@ export function Onboarding({ shop }: OnboardingProps) {
                 variant="primary"
                 loading={isSubmitting}
                 onClick={handleSubmit}
-                disabled={!hipoinkStoreCode.trim() || isSubmitting}
+                disabled={isSubmitting}
               >
                 Complete Setup
               </Button>
