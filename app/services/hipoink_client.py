@@ -12,7 +12,6 @@ API Documentation (Version V1.0.0):
 
 import httpx
 import structlog
-import hashlib
 from typing import Optional, List, Dict, Any
 from app.config import settings
 from app.utils.retry import retry_with_backoff, TransientError, PermanentError
@@ -153,19 +152,18 @@ class HipoinkClient:
         Based on Hipoink API documentation, sign is required.
         Default sign per API docs: "80805d794841f1b4"
 
+        The sign should be passed directly as-is (not hashed).
+
         Args:
             data: Request data dictionary
 
         Returns:
             Sign string
         """
-        # If API secret is provided, use it for signing
+        # If API secret is provided, use it directly as the sign
+        # (Hipoink expects the static sign value, not a computed hash)
         if self.api_secret:
-            # Common signing method: sort keys, concatenate values, hash
-            sorted_keys = sorted(data.keys())
-            sign_string = "".join(str(data.get(k, "")) for k in sorted_keys)
-            sign_string += self.api_secret
-            return hashlib.md5(sign_string.encode()).hexdigest()
+            return self.api_secret
 
         # Default sign per API documentation
         return "80805d794841f1b4"
