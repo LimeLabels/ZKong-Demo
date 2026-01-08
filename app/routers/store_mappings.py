@@ -33,7 +33,7 @@ class StoreMappingResponse(BaseModel):
     id: str
     source_system: str
     source_store_id: str
-    hipoink_store_code: str
+    hipoink_store_code: Optional[str] = None
     is_active: bool
     metadata: Optional[dict] = None
     created_at: str

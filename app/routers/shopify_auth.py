@@ -73,6 +73,7 @@ async def shopify_oauth_callback(
     code: str = Query(..., description="Authorization code from Shopify"),
     shop: str = Query(..., description="Shop domain"),
     state: Optional[str] = Query(None, description="State parameter"),
+    host: Optional[str] = Query(None, description="Host parameter from Shopify"),
     hmac_param: Optional[str] = Query(
         None, alias="hmac", description="HMAC for verification"
     ),
@@ -178,8 +179,11 @@ async def shopify_oauth_callback(
         # If app_base_url looks like backend (port 8000), use frontend default
         if frontend_url.startswith("http://localhost:8000") or ":8000" in frontend_url:
             frontend_url = "http://localhost:3000"
-
+        
         redirect_url = f"{frontend_url}?shop={shop}&installed=true"
+        if host:
+            redirect_url += f"&host={host}"
+            
         return RedirectResponse(url=redirect_url)
 
     except httpx.HTTPStatusError as e:
