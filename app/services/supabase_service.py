@@ -46,18 +46,20 @@ class SupabaseService:
             StoreMapping if found, None otherwise
         """
         try:
+            # Don't use .single() - it throws exception on 0 rows
+            # Instead, use .limit(1) and check results
             result = (
                 self.client.table("store_mappings")
                 .select("*")
                 .eq("source_system", source_system)
                 .eq("source_store_id", source_store_id)
                 .eq("is_active", True)
-                .single()
+                .limit(1)
                 .execute()
             )
 
-            if result.data:
-                return StoreMapping(**result.data)
+            if result.data and len(result.data) > 0:
+                return StoreMapping(**result.data[0])
             return None
         except Exception as e:
             logger.error(

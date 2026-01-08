@@ -17,6 +17,57 @@ router = APIRouter(prefix="/api/store-mappings", tags=["store-mappings"])
 supabase_service = SupabaseService()
 
 
+# NOTE: /current endpoint must be defined BEFORE /{mapping_id} to avoid route conflicts
+@router.get("/current")
+async def get_current_store_mapping(shop: Optional[str] = Query(None, description="Shop domain")):
+    """Get current shop's store mapping."""
+    if not shop or not shop.strip():
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Shop parameter is required",
+        )
+    
+    logger.info("Looking up store mapping", shop=shop)
+    
+    try:
+        # First try direct lookup by source_store_id
+        mapping = supabase_service.get_store_mapping("shopify", shop)
+        logger.info("Direct lookup result", found=mapping is not None, shop=shop)
+        
+        if not mapping:
+            # Fall back to metadata search
+            mapping = supabase_service.get_store_mapping_by_shop_domain(shop)
+            logger.info("Metadata lookup result", found=mapping is not None, shop=shop)
+
+        if not mapping:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Store mapping not found for shop: {shop}",
+            )
+        
+        logger.info("Found store mapping", mapping_id=str(mapping.id), hipoink_code=mapping.hipoink_store_code)
+
+        return {
+            "id": str(mapping.id),
+            "source_system": mapping.source_system,
+            "source_store_id": mapping.source_store_id,
+            "hipoink_store_code": mapping.hipoink_store_code or "",
+            "is_active": mapping.is_active,
+            "metadata": mapping.metadata or {},
+            "created_at": mapping.created_at.isoformat() if mapping.created_at else "",
+            "updated_at": mapping.updated_at.isoformat() if mapping.updated_at else "",
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Failed to get current store mapping", error=str(e), shop=shop)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get current store mapping: {str(e)}",
+        )
+
+
 class CreateStoreMappingRequest(BaseModel):
     """Request model for creating a store mapping."""
 
@@ -256,47 +307,4 @@ async def delete_store_mapping(mapping_id: UUID):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to delete store mapping: {str(e)}",
-        )
-
-
-@router.get("/current", response_model=StoreMappingResponse)
-async def get_current_store_mapping(shop: Optional[str] = Query(None, description="Shop domain")):
-    """Get current shop's store mapping."""
-    if not shop or not shop.strip():
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Shop parameter is required",
-        )
-    
-    try:
-        mapping = supabase_service.get_store_mapping("shopify", shop)
-        if not mapping:
-            mapping = supabase_service.get_store_mapping_by_shop_domain(shop)
-
-        if not mapping:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Store mapping not found for shop: {shop}",
-            )
-        
-        logger.info("Found store mapping", mapping_id=str(mapping.id), hipoink_code=mapping.hipoink_store_code)
-
-        return StoreMappingResponse(
-            id=str(mapping.id),
-            source_system=mapping.source_system,
-            source_store_id=mapping.source_store_id,
-            hipoink_store_code=mapping.hipoink_store_code or "",
-            is_active=mapping.is_active,
-            metadata=mapping.metadata or {},
-            created_at=mapping.created_at.isoformat() if mapping.created_at else "",
-            updated_at=mapping.updated_at.isoformat() if mapping.updated_at else "",
-        )
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error("Failed to get current store mapping", error=str(e))
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to get current store mapping: {str(e)}",
         )
