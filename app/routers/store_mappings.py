@@ -50,6 +50,7 @@ async def create_store_mapping(request: CreateStoreMappingRequest):
     This allows onboarding new stores without SQL queries.
     Example: Create a mapping for your Shopify store to Hipoink ESL store.
     """
+    logger.info("Received create_store_mapping request", payload=request.dict())
     try:
         # Check if mapping already exists
         existing = supabase_service.get_store_mapping(
@@ -277,6 +278,8 @@ async def get_current_store_mapping(shop: Optional[str] = Query(None, descriptio
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Store mapping not found for shop: {shop}",
             )
+        
+        logger.info("Found store mapping", mapping_id=str(mapping.id), hipoink_code=mapping.hipoink_store_code)
 
         return StoreMappingResponse(
             id=str(mapping.id),
