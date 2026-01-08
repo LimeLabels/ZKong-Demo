@@ -265,7 +265,7 @@ async def get_current_store_mapping(shop: str = Query(..., description="Shop dom
         mapping = supabase_service.get_store_mapping("shopify", shop)
         if not mapping:
             mapping = supabase_service.get_store_mapping_by_shop_domain(shop)
-        
+
         if not mapping:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,

@@ -95,15 +95,15 @@ class ShopifyAPIClient:
                 try:
                     error_data = e.response.json()
                     error_msg += f" - {error_data}"
-                except:
+                except Exception:
                     error_msg += f" - {e.response.text}"
-            
+
             # Provide specific guidance for common errors
             if e.response.status_code == 401:
                 error_msg += " (Unauthorized - check access token and shop domain)"
             elif e.response.status_code == 404:
                 error_msg += " (Not found - check product/variant IDs)"
-            
+
             logger.error(
                 "Failed to update Shopify variant price",
                 product_id=product_id,

@@ -109,12 +109,12 @@ class SupabaseService:
     ) -> Optional[StoreMapping]:
         """
         Update store mapping with Shopify OAuth token.
-        
+
         Args:
             mapping_id: Store mapping UUID
             shop_domain: Shopify shop domain
             access_token: Shopify access token
-            
+
         Returns:
             Updated StoreMapping or None if not found
         """
@@ -123,20 +123,20 @@ class SupabaseService:
             existing = self.get_store_mapping_by_id(mapping_id)
             if not existing:
                 return None
-            
+
             # Update metadata
             metadata = existing.metadata or {}
             metadata["shopify_shop_domain"] = shop_domain
             metadata["shopify_access_token"] = access_token
             metadata["shopify_oauth_installed_at"] = datetime.utcnow().isoformat()
-            
+
             result = (
                 self.client.table("store_mappings")
                 .update({"metadata": metadata})
                 .eq("id", str(mapping_id))
                 .execute()
             )
-            
+
             if result.data:
                 return StoreMapping(**result.data[0])
             return None
@@ -150,10 +150,10 @@ class SupabaseService:
         """
         Get store mapping by Shopify shop domain.
         Searches in metadata field.
-        
+
         Args:
             shop_domain: Shopify shop domain (e.g., 'myshop.myshopify.com')
-            
+
         Returns:
             StoreMapping if found, None otherwise
         """
@@ -167,16 +167,19 @@ class SupabaseService:
                 .eq("is_active", True)
                 .execute()
             )
-            
+
             # Filter in Python since Supabase JSON queries can be tricky
             for item in result.data:
                 mapping = StoreMapping(**item)
-                if mapping.metadata and mapping.metadata.get("shopify_shop_domain") == shop_domain:
+                if (
+                    mapping.metadata
+                    and mapping.metadata.get("shopify_shop_domain") == shop_domain
+                ):
                     return mapping
                 # Also check source_store_id as fallback
                 if mapping.source_store_id == shop_domain:
                     return mapping
-            
+
             return None
         except Exception as e:
             logger.error("Failed to get store mapping by shop domain", error=str(e))

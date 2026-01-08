@@ -8,7 +8,6 @@ from fastapi.responses import RedirectResponse
 from typing import Optional
 import structlog
 import hashlib
-import hmac
 import base64
 import secrets
 import httpx
@@ -78,7 +77,7 @@ async def shopify_oauth_callback(
     """
     shopify_api_key = getattr(settings, "shopify_api_key", None)
     shopify_api_secret = getattr(settings, "shopify_api_secret", None)
-    
+
     if not shopify_api_key or not shopify_api_secret:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -90,7 +89,7 @@ async def shopify_oauth_callback(
     try:
         # Exchange authorization code for access token
         token_url = f"https://{shop}/admin/oauth/access_token"
-        
+
         async with httpx.AsyncClient() as client:
             response = await client.post(
                 token_url,
@@ -103,7 +102,7 @@ async def shopify_oauth_callback(
             )
             response.raise_for_status()
             token_data = response.json()
-        
+
         access_token = token_data.get("access_token")
         if not access_token:
             raise HTTPException(
@@ -113,29 +112,35 @@ async def shopify_oauth_callback(
 
         # Store access token in database
         supabase_service = SupabaseService()
-        
+
         # Check if store mapping exists by shop domain or source_store_id
         existing_mapping = supabase_service.get_store_mapping("shopify", shop)
         if not existing_mapping:
             existing_mapping = supabase_service.get_store_mapping_by_shop_domain(shop)
-        
+
         if existing_mapping:
             # Update existing mapping with access token
             updated = supabase_service.update_store_mapping_oauth_token(
                 existing_mapping.id,  # type: ignore
                 shop,
-                access_token
+                access_token,
             )
-            
+
             if updated:
-                logger.info("Updated store mapping with OAuth token", shop=shop, mapping_id=str(existing_mapping.id))
+                logger.info(
+                    "Updated store mapping with OAuth token",
+                    shop=shop,
+                    mapping_id=str(existing_mapping.id),
+                )
             else:
-                logger.warning("Failed to update store mapping with OAuth token", shop=shop)
+                logger.warning(
+                    "Failed to update store mapping with OAuth token", shop=shop
+                )
         else:
             # Auto-create store mapping with OAuth token
             # Hipoink store code will be set during onboarding
             from app.models.database import StoreMapping
-            
+
             new_mapping = StoreMapping(
                 source_system="shopify",
                 source_store_id=shop,
@@ -145,27 +150,38 @@ async def shopify_oauth_callback(
                     "shopify_shop_domain": shop,
                     "shopify_access_token": access_token,
                     "shopify_oauth_installed_at": datetime.utcnow().isoformat(),
-                }
+                },
             )
-            
+
             try:
                 created_mapping = supabase_service.create_store_mapping(new_mapping)
-                logger.info("Auto-created store mapping with OAuth token", shop=shop, mapping_id=str(created_mapping.id))
+                logger.info(
+                    "Auto-created store mapping with OAuth token",
+                    shop=shop,
+                    mapping_id=str(created_mapping.id),
+                )
             except Exception as e:
-                logger.error("Failed to auto-create store mapping", shop=shop, error=str(e))
+                logger.error(
+                    "Failed to auto-create store mapping", shop=shop, error=str(e)
+                )
                 # Continue anyway - onboarding will handle it
-        
+
         # Redirect to frontend app
         frontend_url = getattr(settings, "app_base_url", "http://localhost:3000")
         if frontend_url.startswith("http://localhost:8000"):
             # If backend URL, assume frontend is on port 3000
             frontend_url = "http://localhost:3000"
-        
+
         redirect_url = f"{frontend_url}?shop={shop}&installed=true"
         return RedirectResponse(url=redirect_url)
 
     except httpx.HTTPStatusError as e:
-        logger.error("Failed to exchange OAuth code for token", shop=shop, status_code=e.response.status_code, error=e.response.text)
+        logger.error(
+            "Failed to exchange OAuth code for token",
+            shop=shop,
+            status_code=e.response.status_code,
+            error=e.response.text,
+        )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Failed to exchange authorization code: {e.response.text}",
@@ -236,32 +252,43 @@ async def get_current_auth(shop: str = Query(..., description="Shop domain")):
     Returns shop info and store mapping if available.
     """
     supabase_service = SupabaseService()
-    
+
     # Get store mapping for this shop
     store_mapping = supabase_service.get_store_mapping("shopify", shop)
     if not store_mapping:
         store_mapping = supabase_service.get_store_mapping_by_shop_domain(shop)
-    
+
     # Check if OAuth token exists
     has_oauth_token = False
     needs_onboarding = False
-    
+
     if store_mapping:
-        if store_mapping.metadata and store_mapping.metadata.get("shopify_access_token"):
+        if store_mapping.metadata and store_mapping.metadata.get(
+            "shopify_access_token"
+        ):
             has_oauth_token = True
         # Check if Hipoink store code is set (indicates onboarding complete)
-        if not store_mapping.hipoink_store_code or store_mapping.hipoink_store_code == "":
+        if (
+            not store_mapping.hipoink_store_code
+            or store_mapping.hipoink_store_code == ""
+        ):
             needs_onboarding = True
     else:
         needs_onboarding = True
-    
+
     return {
         "shop": shop,
         "is_authenticated": has_oauth_token,
         "needs_onboarding": needs_onboarding,
         "store_mapping": {
             "id": str(store_mapping.id) if store_mapping else None,
-            "hipoink_store_code": store_mapping.hipoink_store_code if store_mapping else None,
-            "timezone": store_mapping.metadata.get("timezone") if store_mapping and store_mapping.metadata else None,
-        } if store_mapping else None,
+            "hipoink_store_code": store_mapping.hipoink_store_code
+            if store_mapping
+            else None,
+            "timezone": store_mapping.metadata.get("timezone")
+            if store_mapping and store_mapping.metadata
+            else None,
+        }
+        if store_mapping
+        else None,
     }

@@ -457,7 +457,9 @@ class PriceScheduler:
             logger.warning(
                 "Shopify shop domain not found in store mapping metadata",
                 store_mapping_id=str(store_mapping.id),
-                metadata_keys=list(store_mapping.metadata.keys()) if store_mapping.metadata else [],
+                metadata_keys=list(store_mapping.metadata.keys())
+                if store_mapping.metadata
+                else [],
             )
             return None
 
@@ -601,11 +603,14 @@ class PriceScheduler:
         """Apply promotional prices to products - preserves all existing product data."""
         try:
             # Validate hipoink_store_code
-            if not store_mapping.hipoink_store_code or store_mapping.hipoink_store_code.strip() == "":
+            if (
+                not store_mapping.hipoink_store_code
+                or store_mapping.hipoink_store_code.strip() == ""
+            ):
                 raise Exception(
                     f"Store mapping {store_mapping.id} has no Hipoink store code. Please complete onboarding."
                 )
-            
+
             # Determine which store codes to use
             store_codes = []
             if schedule.trigger_stores and len(schedule.trigger_stores) > 0:
@@ -706,11 +711,14 @@ class PriceScheduler:
         """Restore original prices to products - preserves all existing product data."""
         try:
             # Validate hipoink_store_code
-            if not store_mapping.hipoink_store_code or store_mapping.hipoink_store_code.strip() == "":
+            if (
+                not store_mapping.hipoink_store_code
+                or store_mapping.hipoink_store_code.strip() == ""
+            ):
                 raise Exception(
                     f"Store mapping {store_mapping.id} has no Hipoink store code. Please complete onboarding."
                 )
-            
+
             # Determine which store codes to use
             store_codes = []
             if schedule.trigger_stores and len(schedule.trigger_stores) > 0:

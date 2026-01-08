@@ -3,7 +3,7 @@ API router for time-based price adjustment schedules.
 Manages scheduling price changes and triggers updates via product update endpoint.
 """
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, status, Query
 from typing import List, Optional, Dict, Any
 from uuid import UUID
 from datetime import datetime, timedelta
@@ -382,9 +382,6 @@ async def create_price_adjustment(request: CreatePriceAdjustmentRequest):
         # Get store timezone
         store_timezone = get_store_timezone(store_mapping)
 
-        # Get current time in store's timezone
-        current_time = datetime.now(store_timezone)
-
         # Normalize request datetimes to store timezone
         start_date = request.start_date
         if start_date.tzinfo is None:
@@ -465,7 +462,9 @@ async def create_price_adjustment(request: CreatePriceAdjustmentRequest):
 
 @router.get("/", response_model=List[PriceAdjustmentSchedule])
 async def list_price_adjustments(
-    store_mapping_id: Optional[UUID] = Query(None, description="Filter by store mapping ID"),
+    store_mapping_id: Optional[UUID] = Query(
+        None, description="Filter by store mapping ID"
+    ),
     is_active: Optional[bool] = Query(None, description="Filter by active status"),
 ):
     """List price adjustment schedules, optionally filtered by store mapping and active status."""
@@ -477,22 +476,24 @@ async def list_price_adjustments(
                 .select("*")
                 .eq("store_mapping_id", str(store_mapping_id))
             )
-            
+
             if is_active is not None:
                 result = result.eq("is_active", is_active)
-            
+
             result = result.order("created_at", desc=True).execute()
-            
+
             schedules = [PriceAdjustmentSchedule(**item) for item in result.data]
         else:
             # Get all active schedules
-            schedules = supabase_service.get_active_price_adjustment_schedules(limit=100)
-            
+            schedules = supabase_service.get_active_price_adjustment_schedules(
+                limit=100
+            )
+
             if is_active is not None:
                 schedules = [s for s in schedules if s.is_active == is_active]
-        
+
         return schedules
-        
+
     except Exception as e:
         logger.error("Failed to list price adjustment schedules", error=str(e))
         raise HTTPException(
@@ -527,7 +528,7 @@ async def update_price_adjustment(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Price adjustment schedule not found: {schedule_id}",
             )
-        
+
         # Get store mapping
         store_mapping = supabase_service.get_store_mapping_by_id(
             request.store_mapping_id
@@ -537,72 +538,74 @@ async def update_price_adjustment(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Store mapping not found: {request.store_mapping_id}",
             )
-        
+
         # Prepare update data
         update_data: Dict[str, Any] = {
             "name": request.name,
-            "products": {"products": [
-                {
-                    "pc": str(p.pc),
-                    "pp": str(p.pp),
-                    "original_price": p.original_price,
-                }
-                for p in request.products
-            ]},
-            "start_date": request.start_date.isoformat() if isinstance(request.start_date, datetime) else request.start_date,
+            "products": {
+                "products": [
+                    {
+                        "pc": str(p.pc),
+                        "pp": str(p.pp),
+                        "original_price": p.original_price,
+                    }
+                    for p in request.products
+                ]
+            },
+            "start_date": request.start_date.isoformat()
+            if isinstance(request.start_date, datetime)
+            else request.start_date,
             "repeat_type": request.repeat_type,
             "time_slots": [
                 {"start_time": ts.start_time, "end_time": ts.end_time}
                 for ts in request.time_slots
             ],
         }
-        
+
         if request.end_date:
-            update_data["end_date"] = request.end_date.isoformat() if isinstance(request.end_date, datetime) else request.end_date
-        
+            update_data["end_date"] = (
+                request.end_date.isoformat()
+                if isinstance(request.end_date, datetime)
+                else request.end_date
+            )
+
         if request.trigger_days:
             update_data["trigger_days"] = request.trigger_days
-        
+
         if request.trigger_stores:
             update_data["trigger_stores"] = request.trigger_stores
-        
+
         # Calculate next trigger time
         store_timezone = get_store_timezone(store_mapping)
         current_time = datetime.now(store_timezone)
-        
+
         # Create temporary schedule object for calculation
-        temp_schedule = PriceAdjustmentSchedule(
-            **existing.dict(),
-            **update_data
-        )
-        
+        temp_schedule = PriceAdjustmentSchedule(**existing.dict(), **update_data)
+
         next_trigger = calculate_next_trigger_time(
-            temp_schedule,
-            current_time,
-            store_timezone
+            temp_schedule, current_time, store_timezone
         )
-        
+
         if next_trigger:
             update_data["next_trigger_at"] = next_trigger.isoformat()
             update_data["is_active"] = True
         else:
             update_data["next_trigger_at"] = None
-        
+
         # Update schedule
         updated = supabase_service.update_price_adjustment_schedule(
-            schedule_id,
-            update_data
+            schedule_id, update_data
         )
-        
+
         if not updated:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Failed to update price adjustment schedule",
             )
-        
+
         logger.info("Updated price adjustment schedule", schedule_id=str(schedule_id))
         return updated
-        
+
     except HTTPException:
         raise
     except Exception as e:
