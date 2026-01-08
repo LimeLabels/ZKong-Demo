@@ -8,10 +8,13 @@ import App from "./App";
 // Minimal i18n for Polaris (can be expanded later)
 const i18n = {};
 // Get config from URL or environment
-// API key from environment (VITE_SHOPIFY_API_KEY or SHOPIFY_API_KEY) or fallback to current Client ID
-const apiKey = import.meta.env.VITE_SHOPIFY_API_KEY
+// API key must be set via VITE_SHOPIFY_API_KEY environment variable
+const apiKey = import.meta.env.VITE_SHOPIFY_API_KEY;
+if (!apiKey) {
+    throw new Error("VITE_SHOPIFY_API_KEY environment variable is required. Please set it in your environment variables.");
+}
 const config = {
-    apiKey,
+    apiKey: apiKey, // TypeScript now knows apiKey is string after the check
     host: new URLSearchParams(window.location.search).get("host") || "",
     forceRedirect: true,
 };
