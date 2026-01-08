@@ -64,11 +64,12 @@ async def search_products(
         results = []
 
         if q:
-            # Search database by barcode, SKU, or title
+            # Search database by title (case-insensitive)
+            # Supabase Python client uses ilike for case-insensitive search
             db_results = (
                 supabase_service.client.table("products")
                 .select("*")
-                .or_(f"barcode.ilike.%{q}%,sku.ilike.%{q}%,title.ilike.%{q}%")
+                .ilike("title", f"%{q}%")
                 .limit(limit)
                 .execute()
             )
