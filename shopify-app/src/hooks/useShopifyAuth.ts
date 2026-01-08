@@ -24,9 +24,30 @@ export function useShopifyAuth(): AuthState {
   useEffect(() => {
     async function fetchAuthState() {
       try {
-        // Get shop from URL or App Bridge
+        // Get shop from URL parameters (Shopify always includes this in embedded apps)
         const urlParams = new URLSearchParams(window.location.search);
-        const shop = urlParams.get("shop") || (window as any).shop;
+        let shop = urlParams.get("shop");
+        
+        // If not in URL, try to extract from App Bridge host parameter
+        if (!shop) {
+          const host = urlParams.get("host");
+          if (host) {
+            try {
+              // Host is base64 encoded, decode it to get shop domain
+              const decoded = atob(host);
+              // Extract shop from decoded host (format: "shop.myshopify.com/admin")
+              const match = decoded.match(/([a-zA-Z0-9-]+\.myshopify\.com)/);
+              if (match) {
+                shop = match[1];
+              }
+            } catch (e) {
+              // If decoding fails, try window.shop as fallback
+              shop = (window as any).shop;
+            }
+          } else {
+            shop = (window as any).shop;
+          }
+        }
 
         if (!shop) {
           setAuthState((prev) => ({ ...prev, isLoading: false }));
