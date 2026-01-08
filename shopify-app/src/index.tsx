@@ -54,20 +54,61 @@ const root = ReactDOM.createRoot(
 );
 
 // If host is missing, show error message instead of crashing
+// This usually means the app is being accessed directly instead of through Shopify Admin
 if (!host) {
+  const urlParams = new URLSearchParams(window.location.search);
+  const shop = urlParams.get("shop");
+
   root.render(
-    <div style={{ padding: "2rem", fontFamily: "system-ui" }}>
-      <h1>Configuration Error</h1>
+    <div
+      style={{
+        padding: "2rem",
+        fontFamily: "system-ui",
+        maxWidth: "600px",
+        margin: "0 auto",
+      }}
+    >
+      <h1>App Must Be Opened from Shopify Admin</h1>
       <p>
-        The app is missing the required "host" parameter from Shopify. This
-        usually means:
+        This app must be accessed through the Shopify Admin interface. The
+        "host" parameter is only provided when Shopify loads the app as an
+        embedded app.
       </p>
-      <ul>
-        <li>The App URL in Shopify Dev Dashboard is not set correctly</li>
-        <li>The app is not being loaded as an embedded app</li>
-        <li>Please check your Dev Dashboard app configuration</li>
-      </ul>
-      <p>Current URL: {window.location.href}</p>
+      {shop ? (
+        <div style={{ marginTop: "1.5rem" }}>
+          <p>
+            <strong>To open the app:</strong>
+          </p>
+          <ol>
+            <li>
+              Go to your Shopify Admin:{" "}
+              <a
+                href={`https://admin.shopify.com/store/${shop.split(".")[0]}`}
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                Shopify Admin
+              </a>
+            </li>
+            <li>Navigate to Apps → ESL System</li>
+            <li>The app will load properly with all required parameters</li>
+          </ol>
+        </div>
+      ) : (
+        <div style={{ marginTop: "1.5rem" }}>
+          <p>
+            <strong>To open the app:</strong>
+          </p>
+          <ol>
+            <li>Go to your Shopify Admin</li>
+            <li>Navigate to Apps → ESL System</li>
+            <li>The app will load properly with all required parameters</li>
+          </ol>
+        </div>
+      )}
+      <p style={{ marginTop: "1.5rem", color: "#666" }}>
+        Current URL: {window.location.href}
+      </p>
     </div>
   );
 } else {

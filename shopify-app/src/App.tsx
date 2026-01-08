@@ -47,11 +47,17 @@ function App() {
   // Show authentication required message
   if (!auth.isAuthenticated) {
     const handleReAuthenticate = () => {
-      // Trigger OAuth flow
+      // Get shop domain
       const shop =
         auth.shop || new URLSearchParams(window.location.search).get("shop");
+
       if (shop) {
-        window.location.href = `/auth/shopify?shop=${encodeURIComponent(shop)}`;
+        // Redirect to Shopify Admin to re-install the app
+        // This will trigger OAuth properly and load the app embedded
+        const adminUrl = `https://admin.shopify.com/store/${
+          shop.split(".")[0]
+        }/apps/esl-system`;
+        window.location.href = adminUrl;
       } else {
         alert(
           "Unable to determine shop domain. Please re-install the app from Shopify Admin."
