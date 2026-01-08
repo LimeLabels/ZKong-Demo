@@ -140,10 +140,24 @@ export function StrategyList() {
   }
 
   if (!storeMapping?.id) {
+    const handleGoToOnboarding = () => {
+      // Add query parameter to force onboarding
+      const url = new URL(window.location.href);
+      url.searchParams.set("onboarding", "true");
+      window.location.href = url.toString();
+    };
+
     return (
-      <Banner tone="warning" title="Store mapping not found">
-        <p>Please complete onboarding to manage pricing strategies.</p>
-      </Banner>
+      <Card>
+        <Banner tone="warning" title="Store mapping not found">
+          <p>Please complete onboarding to manage pricing strategies.</p>
+          <div style={{ marginTop: "1rem" }}>
+            <Button variant="primary" onClick={handleGoToOnboarding}>
+              Go to Onboarding
+            </Button>
+          </div>
+        </Banner>
+      </Card>
     );
   }
 

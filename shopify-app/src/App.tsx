@@ -40,7 +40,11 @@ function App() {
   }
 
   // Show onboarding if needed
-  if (auth.needsOnboarding) {
+  // Check URL parameter to force onboarding
+  const urlParams = new URLSearchParams(window.location.search);
+  const forceOnboarding = urlParams.get("onboarding") === "true";
+
+  if (auth.needsOnboarding || forceOnboarding) {
     return <Onboarding shop={auth.shop || ""} />;
   }
 

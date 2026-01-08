@@ -28,13 +28,16 @@ export function useStoreMapping() {
         );
 
         if (!response.ok) {
-          if (response.status === 404) {
-            // Store mapping not found - needs onboarding
+          if (response.status === 404 || response.status === 422) {
+            // Store mapping not found or validation error - needs onboarding
             setStoreMapping(null);
             setIsLoading(false);
             return;
           }
-          throw new Error("Failed to fetch store mapping");
+          const errorData = await response.json().catch(() => ({}));
+          throw new Error(
+            errorData.detail || "Failed to fetch store mapping"
+          );
         }
 
         const data = await response.json();
