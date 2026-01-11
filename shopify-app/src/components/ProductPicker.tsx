@@ -46,22 +46,25 @@ export function ProductPicker({
     new Set(selectedProducts.map((p) => p.id))
   );
 
+  // Sync selectedIds when selectedProducts prop changes
+  useEffect(() => {
+    setSelectedIds(new Set(selectedProducts.map((p) => p.id)));
+  }, [selectedProducts]);
+
   useEffect(() => {
     const searchProducts = async () => {
-      if (!searchQuery.trim()) {
-        setProducts([]);
-        return;
-      }
-
       setIsLoading(true);
       setError(null);
 
       try {
-        const response = await fetch(
-          `/api/products/search?shop=${encodeURIComponent(
-            shop
-          )}&q=${encodeURIComponent(searchQuery)}&limit=20`
-        );
+        // If no search query, fetch all products (or recent products)
+        // Pass empty string or use a wildcard to get all products
+        const queryParam = searchQuery.trim() || "";
+        const url = `/api/products/search?shop=${encodeURIComponent(
+          shop
+        )}&limit=50${queryParam ? `&q=${encodeURIComponent(queryParam)}` : ""}`;
+
+        const response = await fetch(url);
 
         if (!response.ok) {
           const errorData = await response.json().catch(() => ({}));
@@ -84,13 +87,20 @@ export function ProductPicker({
       }
     };
 
-    // Debounce search
-    const timeoutId = setTimeout(searchProducts, 300);
-    return () => clearTimeout(timeoutId);
+    // Load products immediately on mount, then debounce search changes
+    if (searchQuery.trim() === "") {
+      // Load immediately when no search query (initial load)
+      searchProducts();
+    } else {
+      // Debounce search queries
+      const timeoutId = setTimeout(searchProducts, 300);
+      return () => clearTimeout(timeoutId);
+    }
   }, [searchQuery, shop]);
 
   const handleSelect = (product: Product) => {
     if (multiSelect) {
+      // In multi-select mode, just toggle selection without closing modal
       const newSelectedIds = new Set(selectedIds);
       if (newSelectedIds.has(product.id)) {
         newSelectedIds.delete(product.id);
@@ -98,20 +108,17 @@ export function ProductPicker({
         newSelectedIds.add(product.id);
       }
       setSelectedIds(newSelectedIds);
-
-      if (onSelectMultiple) {
-        const selectedProducts = products.filter((p) =>
-          newSelectedIds.has(p.id)
-        );
-        onSelectMultiple(selectedProducts);
-      }
+      // Don't call onSelectMultiple here - wait for Confirm button
     } else {
+      // In single-select mode, select and close
       onSelect(product);
+      onClose();
     }
   };
 
   const handleConfirmSelection = () => {
     if (multiSelect && onSelectMultiple) {
+      // Get selected products from the current products list
       const selectedProducts = products.filter((p) => selectedIds.has(p.id));
       onSelectMultiple(selectedProducts);
     }
@@ -211,7 +218,10 @@ export function ProductPicker({
                       }}
                     >
                       {multiSelect && (
-                        <div style={{ marginTop: "0.25rem" }}>
+                        <div
+                          style={{ marginTop: "0.25rem" }}
+                          onClick={(e) => e.stopPropagation()}
+                        >
                           <Checkbox
                             checked={isSelected}
                             onChange={() => handleSelect(product)}
@@ -249,13 +259,13 @@ export function ProductPicker({
           </div>
         )}
 
-        {!searchQuery && (
+        {!isLoading && !error && products.length === 0 && !searchQuery && (
           <div style={{ marginTop: "1rem" }}>
             <EmptyState
-              heading="Search for products"
+              heading="No products found"
               image="https://cdn.shopify.com/s/files/1/0757/9955/files/empty-state.svg"
             >
-              <p>Enter a search term to find products.</p>
+              <p>No products available. Try searching for products.</p>
             </EmptyState>
           </div>
         )}

@@ -63,16 +63,35 @@ async def search_products(
         # Search in database first (faster)
         results = []
 
-        if q:
-            # Search database by title (case-insensitive)
-            # Supabase Python client uses ilike for case-insensitive search
-            db_results = (
+        # Get products that belong to this store mapping
+        # Products are linked to store mappings through sync_queue
+        # We'll query products that have sync_queue entries for this store_mapping_id
+        store_mapping_id = store_mapping.id  # type: ignore
+        
+        # First, get product IDs that belong to this store mapping from sync_queue
+        sync_queue_result = (
+            supabase_service.client.table("sync_queue")
+            .select("product_id")
+            .eq("store_mapping_id", str(store_mapping_id))
+            .execute()
+        )
+        
+        product_ids = [item["product_id"] for item in sync_queue_result.data]
+        
+        if product_ids:
+            # Query database - filter by product IDs that belong to this store
+            db_query = (
                 supabase_service.client.table("products")
                 .select("*")
-                .ilike("title", f"%{q}%")
-                .limit(limit)
-                .execute()
+                .in_("id", product_ids)
             )
+            
+            if q:
+                # Search database by title (case-insensitive)
+                # Supabase Python client uses ilike for case-insensitive search
+                db_query = db_query.ilike("title", f"%{q}%")
+            
+            db_results = db_query.limit(limit).execute()
 
             for item in db_results.data:
                 results.append(
