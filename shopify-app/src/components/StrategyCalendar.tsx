@@ -44,8 +44,6 @@ interface StrategyFormData {
   storeMappingId: string; // UUID for store mapping
   originalPrice: string;
   barcode: string; // For single product entry
-  itemId: string; // Optional Hipoink item ID
-  triggerStores: string[]; // Array of store codes for f3 (trigger_stores)
   multiplierPercentage: number | null; // Percentage multiplier (e.g., 10.0 for 10% increase)
 }
 
@@ -93,8 +91,6 @@ export function StrategyCalendar() {
     storeMappingId: "",
     originalPrice: "",
     barcode: "",
-    itemId: "",
-    triggerStores: [],
     multiplierPercentage: null,
   });
 
@@ -270,15 +266,6 @@ export function StrategyCalendar() {
       if (triggerDays && triggerDays.length > 0) {
         payload.trigger_days = triggerDays;
       }
-      if (formData.triggerStores && formData.triggerStores.length > 0) {
-        // Filter out empty strings and trim store codes
-        const validStores = formData.triggerStores
-          .map((s) => s.trim())
-          .filter((s) => s.length > 0);
-        if (validStores.length > 0) {
-          payload.trigger_stores = validStores;
-        }
-      }
       // Add multiplier_percentage if provided
       if (formData.multiplierPercentage !== null) {
         payload.multiplier_percentage = formData.multiplierPercentage;
@@ -318,8 +305,6 @@ export function StrategyCalendar() {
           storeMappingId: prev.storeMappingId, // Keep store mapping ID
           originalPrice: "",
           barcode: "",
-          itemId: "",
-          triggerStores: [], // Reset trigger stores
           multiplierPercentage: null,
         }));
         setSubmitSuccess(false);
@@ -463,22 +448,6 @@ export function StrategyCalendar() {
             ))}
           </FormLayout.Group>
         )}
-
-        <TextField
-          label="Trigger Stores (Optional)"
-          value={formData.triggerStores.join(", ")}
-          onChange={(value) => {
-            // Parse comma-separated store codes
-            const stores = value
-              .split(",")
-              .map((s) => s.trim())
-              .filter((s) => s.length > 0);
-            setFormData({ ...formData, triggerStores: stores });
-          }}
-          placeholder="e.g., 001, 002, 003"
-          helpText="Enter store codes separated by commas. Leave empty to use the default store from store mapping."
-          autoComplete="off"
-        />
 
         <Text variant="headingSm" as="h3">
           Time Windows
@@ -638,15 +607,6 @@ export function StrategyCalendar() {
             onClose={() => setShowProductPicker(false)}
           />
         )}
-
-        <TextField
-          label="Hipoink Item ID (Optional)"
-          value={formData.itemId}
-          onChange={(value) => setFormData({ ...formData, itemId: value })}
-          placeholder="Hipoink internal item ID"
-          autoComplete="off"
-          helpText="Leave empty if using barcode lookup"
-        />
 
         {formData.products.length === 0 && (
           <TextField
