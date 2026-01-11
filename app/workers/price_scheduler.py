@@ -620,6 +620,8 @@ class PriceScheduler:
 
             # Build Hipoink product items with full product data, only updating price
             hipoink_products = []
+            updated_products_data = []  # Store updated product data with calculated prices for Shopify
+            
             for product_data in products_data:
                 barcode = product_data["pc"]
 
@@ -636,10 +638,10 @@ class PriceScheduler:
 
                     if original_price is not None:
                         # Apply multiplier: price * (1 + multiplier_percentage / 100)
-                        new_price = original_price * (
+                        calculated_price = original_price * (
                             1 + schedule.multiplier_percentage / 100
                         )
-                        new_price = str(round(new_price, 2))
+                        new_price = str(round(calculated_price, 2))
                     else:
                         logger.warning(
                             "No original price found for multiplier calculation, using provided price",
@@ -649,6 +651,11 @@ class PriceScheduler:
                         new_price = str(product_data["pp"])
                 else:
                     new_price = str(product_data["pp"])
+                
+                # Create updated product data with calculated price for Shopify
+                updated_product_data = product_data.copy()
+                updated_product_data["pp"] = new_price
+                updated_products_data.append(updated_product_data)
 
                 # Get existing product from database to preserve all fields
                 existing_product = self.supabase_service.get_product_by_barcode(barcode)
@@ -714,9 +721,10 @@ class PriceScheduler:
             # Update Shopify prices if credentials are available
             shopify_credentials = self._get_shopify_credentials(store_mapping)
             if shopify_credentials:
+                # Use updated_products_data which has the calculated prices (including multiplier)
                 await self._update_shopify_prices(
-                    products_data,
-                    new_price=None,  # Will use 'pp' from product_data
+                    updated_products_data,
+                    new_price=None,  # Will use 'pp' from updated_products_data (includes calculated price)
                     shopify_credentials=shopify_credentials,
                 )
 
