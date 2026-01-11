@@ -16,7 +16,9 @@ class StoreMapping(BaseModel):
     source_system: str
     source_store_id: str
     # Hipoink ESL System Configuration
-    hipoink_store_code: Optional[str] = None  # Store code for Hipoink API (optional until onboarded)
+    hipoink_store_code: Optional[str] = (
+        None  # Store code for Hipoink API (optional until onboarded)
+    )
     is_active: bool = True
     metadata: Optional[Dict[str, Any]] = (
         None  # Can store timezone, Shopify credentials, etc.
@@ -112,6 +114,9 @@ class PriceAdjustmentSchedule(BaseModel):
     )
     trigger_stores: Optional[list] = None  # Store codes to trigger
     time_slots: list  # List of {"start_time": "09:00", "end_time": "17:00"}
+    multiplier_percentage: Optional[float] = (
+        None  # Percentage multiplier (e.g., 10.0 for 10% increase, -5.0 for 5% decrease)
+    )
     is_active: bool = True
     last_triggered_at: Optional[datetime] = None
     next_trigger_at: Optional[datetime] = None

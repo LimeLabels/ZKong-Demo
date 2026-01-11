@@ -81,7 +81,7 @@ function App() {
       }
     };
 
-    return (
+  return (
       <Page title="Hipoink ESL Pricing Strategies" fullWidth>
         <Layout>
           <Layout.Section>
@@ -103,16 +103,16 @@ function App() {
   }
 
   return (
-    <Page title="Hipoink ESL Pricing Strategies" fullWidth>
-      <Tabs tabs={tabs} selected={selectedTab} onSelect={setSelectedTab}>
-        <Layout>
-          <Layout.Section>
-            {selectedTab === 0 && <StrategyCalendar />}
+      <Page title="Hipoink ESL Pricing Strategies" fullWidth>
+        <Tabs tabs={tabs} selected={selectedTab} onSelect={setSelectedTab}>
+          <Layout>
+            <Layout.Section>
+              {selectedTab === 0 && <StrategyCalendar />}
             {selectedTab === 1 && <StrategyList />}
-          </Layout.Section>
-        </Layout>
-      </Tabs>
-    </Page>
+            </Layout.Section>
+          </Layout>
+        </Tabs>
+      </Page>
   );
 }
 

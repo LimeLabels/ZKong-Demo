@@ -9,6 +9,7 @@ import {
   EmptyState,
   Spinner,
   Banner,
+  Checkbox,
 } from "@shopify/polaris";
 
 interface Product {
@@ -23,14 +24,27 @@ interface Product {
 interface ProductPickerProps {
   shop: string;
   onSelect: (product: Product) => void;
+  onSelectMultiple?: (products: Product[]) => void;
   onClose: () => void;
+  multiSelect?: boolean;
+  selectedProducts?: Product[];
 }
 
-export function ProductPicker({ shop, onSelect, onClose }: ProductPickerProps) {
+export function ProductPicker({
+  shop,
+  onSelect,
+  onSelectMultiple,
+  onClose,
+  multiSelect = false,
+  selectedProducts = [],
+}: ProductPickerProps) {
   const [searchQuery, setSearchQuery] = useState("");
   const [products, setProducts] = useState<Product[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(
+    new Set(selectedProducts.map((p) => p.id))
+  );
 
   useEffect(() => {
     const searchProducts = async () => {
@@ -76,18 +90,58 @@ export function ProductPicker({ shop, onSelect, onClose }: ProductPickerProps) {
   }, [searchQuery, shop]);
 
   const handleSelect = (product: Product) => {
-    onSelect(product);
+    if (multiSelect) {
+      const newSelectedIds = new Set(selectedIds);
+      if (newSelectedIds.has(product.id)) {
+        newSelectedIds.delete(product.id);
+      } else {
+        newSelectedIds.add(product.id);
+      }
+      setSelectedIds(newSelectedIds);
+
+      if (onSelectMultiple) {
+        const selectedProducts = products.filter((p) =>
+          newSelectedIds.has(p.id)
+        );
+        onSelectMultiple(selectedProducts);
+      }
+    } else {
+      onSelect(product);
+    }
+  };
+
+  const handleConfirmSelection = () => {
+    if (multiSelect && onSelectMultiple) {
+      const selectedProducts = products.filter((p) => selectedIds.has(p.id));
+      onSelectMultiple(selectedProducts);
+    }
+    onClose();
   };
 
   return (
     <Modal
       open={true}
       onClose={onClose}
-      title="Select Product"
+      title={multiSelect ? "Select Products" : "Select Product"}
       primaryAction={{
-        content: "Close",
-        onAction: onClose,
+        content: multiSelect ? `Confirm (${selectedIds.size})` : "Close",
+        onAction: multiSelect ? handleConfirmSelection : onClose,
       }}
+      secondaryActions={
+        multiSelect
+          ? [
+              {
+                content: "Clear All",
+                onAction: () => {
+                  setSelectedIds(new Set());
+                  if (onSelectMultiple) {
+                    onSelectMultiple([]);
+                  }
+                },
+              },
+            ]
+          : undefined
+      }
     >
       <Modal.Section>
         <TextField
@@ -133,6 +187,8 @@ export function ProductPicker({ shop, onSelect, onClose }: ProductPickerProps) {
               renderItem={(item) => {
                 const product = item as Product;
 
+                const isSelected = selectedIds.has(product.id);
+
                 return (
                   <ResourceItem
                     id={product.id}
@@ -145,26 +201,46 @@ export function ProductPicker({ shop, onSelect, onClose }: ProductPickerProps) {
                       ) : undefined
                     }
                     onClick={() => handleSelect(product)}
+                    accessibilityLabel={`Select ${product.title}`}
                   >
-                    <Text variant="bodyMd" fontWeight="bold" as="h3">
-                      {product.title}
-                    </Text>
-                    <div>
-                      {product.barcode && (
-                        <Text variant="bodySm" as="p">
-                          Barcode: {product.barcode}
-                        </Text>
+                    <div
+                      style={{
+                        display: "flex",
+                        alignItems: "flex-start",
+                        gap: "0.5rem",
+                      }}
+                    >
+                      {multiSelect && (
+                        <div style={{ marginTop: "0.25rem" }}>
+                          <Checkbox
+                            checked={isSelected}
+                            onChange={() => handleSelect(product)}
+                            label=""
+                          />
+                        </div>
                       )}
-                      {product.sku && (
-                        <Text variant="bodySm" as="p">
-                          SKU: {product.sku}
+                      <div style={{ flex: 1 }}>
+                        <Text variant="bodyMd" fontWeight="bold" as="h3">
+                          {product.title}
                         </Text>
-                      )}
-                      {product.price !== null && (
-                        <Text variant="bodySm" as="p">
-                          Price: ${product.price.toFixed(2)}
-                        </Text>
-                      )}
+                        <div>
+                          {product.barcode && (
+                            <Text variant="bodySm" as="p">
+                              Barcode: {product.barcode}
+                            </Text>
+                          )}
+                          {product.sku && (
+                            <Text variant="bodySm" as="p">
+                              SKU: {product.sku}
+                            </Text>
+                          )}
+                          {product.price !== null && (
+                            <Text variant="bodySm" as="p">
+                              Price: ${product.price.toFixed(2)}
+                            </Text>
+                          )}
+                        </div>
+                      </div>
                     </div>
                   </ResourceItem>
                 );

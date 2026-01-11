@@ -51,7 +51,9 @@ async def shopify_oauth_initiate(
     # redirect_uri must match the App URL domain (frontend URL)
     # Frontend proxies /auth to backend, so use frontend URL
     scopes = "read_products,write_products,read_inventory,write_inventory"
-    frontend_url = getattr(settings, "frontend_url", None) or getattr(settings, "app_base_url", "http://localhost:3000")
+    frontend_url = getattr(settings, "frontend_url", None) or getattr(
+        settings, "app_base_url", "http://localhost:3000"
+    )
     # If app_base_url looks like backend (port 8000), use frontend default
     if frontend_url.startswith("http://localhost:8000") or ":8000" in frontend_url:
         frontend_url = "http://localhost:3000"
@@ -175,15 +177,17 @@ async def shopify_oauth_callback(
 
         # Redirect to frontend app
         # Use frontend_url setting, same as OAuth initiation
-        frontend_url = getattr(settings, "frontend_url", None) or getattr(settings, "app_base_url", "http://localhost:3000")
+        frontend_url = getattr(settings, "frontend_url", None) or getattr(
+            settings, "app_base_url", "http://localhost:3000"
+        )
         # If app_base_url looks like backend (port 8000), use frontend default
         if frontend_url.startswith("http://localhost:8000") or ":8000" in frontend_url:
             frontend_url = "http://localhost:3000"
-        
+
         redirect_url = f"{frontend_url}?shop={shop}&installed=true"
         if host:
             redirect_url += f"&host={host}"
-            
+
         return RedirectResponse(url=redirect_url)
 
     except httpx.HTTPStatusError as e:

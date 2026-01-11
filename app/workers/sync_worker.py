@@ -262,22 +262,88 @@ class SyncWorker:
         if not barcode:
             raise Exception("Barcode is required for Hipoink import")
 
+        # Get base price
+        base_price = float(normalized.get("price") or product.price or 0.0)
+        final_price = base_price
+
+        # Calculate f1-f4 fields
+        # f1: price per unit (price / unit_amount)
+        # f2: price/ounce (price / ounce_amount)
+        # f3: unit amount
+        # f4: ounce amount
+
+        # Extract unit and ounce amounts from product data
+        unit_amount = None
+        ounce_amount = None
+
+        # Try to get from normalized_data or raw_data
+        if product.normalized_data:
+            unit_amount = product.normalized_data.get("unit_amount")
+            ounce_amount = product.normalized_data.get("ounce_amount")
+
+        if not unit_amount and product.raw_data:
+            # Try to extract from Shopify variant data
+            if isinstance(product.raw_data, dict):
+                variants = product.raw_data.get("variants", [])
+                if variants and isinstance(variants, list):
+                    # Find matching variant
+                    variant_id = product.source_variant_id
+                    for variant in variants:
+                        if str(variant.get("id")) == str(variant_id):
+                            # Shopify uses grams and weight
+                            grams = variant.get("grams", 0)
+                            weight = variant.get("weight", 0.0)
+                            weight_unit = variant.get("weight_unit", "kg")
+
+                            # Convert to ounces (1 oz = 28.3495 grams)
+                            if grams > 0:
+                                ounce_amount = grams / 28.3495
+                            elif weight > 0:
+                                if weight_unit.lower() == "kg":
+                                    ounce_amount = weight * 35.274  # kg to oz
+                                elif weight_unit.lower() == "lb":
+                                    ounce_amount = weight * 16  # lb to oz
+                                elif weight_unit.lower() == "oz":
+                                    ounce_amount = weight
+
+                            # Unit amount could be quantity or package size
+                            # For now, use 1 if not specified
+                            unit_amount = variant.get("inventory_quantity", 1)
+                            break
+
+        # Calculate f1-f4
+        f1 = None  # price per unit
+        f2 = None  # price per ounce
+        f3 = None  # unit amount
+        f4 = None  # ounce amount
+
+        if unit_amount and unit_amount > 0:
+            f1 = str(round(final_price / unit_amount, 2))
+            f3 = str(unit_amount)
+
+        if ounce_amount and ounce_amount > 0:
+            f2 = str(round(final_price / ounce_amount, 2))
+            f4 = str(round(ounce_amount, 2))
+
         # Build Hipoink product item
         # Map Shopify fields to Hipoink API fields
         hipoink_product = HipoinkProductItem(
             product_code=barcode,  # pc - required (barcode)
             product_name=normalized.get("title") or product.title,  # pn - required
             product_price=str(
-                normalized.get("price") or product.price or 0.0
-            ),  # pp - required (as string)
+                round(final_price, 2)
+            ),  # pp - required (as string, with multiplier applied)
             product_inner_code=normalized.get("sku")
             or product.sku,  # pi - optional (using SKU)
             product_image_url=normalized.get("image_url")
             or product.image_url,  # pim - optional
             product_qrcode_url=normalized.get("image_url")
             or product.image_url,  # pqr - optional (using image URL)
-            # Add source system to a custom field if needed
-            f1=product.source_system,  # Store source system in f1
+            # f1-f4 fields for pricing calculations
+            f1=f1,  # price per unit
+            f2=f2,  # price per ounce
+            f3=f3,  # unit amount
+            f4=f4,  # ounce amount
         )
 
         # Create product in Hipoink

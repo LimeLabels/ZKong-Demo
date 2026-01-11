@@ -20,8 +20,10 @@ import { ProductPicker } from "./ProductPicker";
 interface StrategyProduct {
   id: string;
   title: string;
-  barcode: string;
-  price: number;
+  barcode: string | null;
+  sku: string | null;
+  price: number | null;
+  image_url: string | null;
 }
 
 interface StrategyTimeSlot {
@@ -44,6 +46,7 @@ interface StrategyFormData {
   barcode: string; // For single product entry
   itemId: string; // Optional Hipoink item ID
   triggerStores: string[]; // Array of store codes for f3 (trigger_stores)
+  multiplierPercentage: number | null; // Percentage multiplier (e.g., 10.0 for 10% increase)
 }
 
 // Helper function to convert 12-hour time to 24-hour format
@@ -92,12 +95,14 @@ export function StrategyCalendar() {
     barcode: "",
     itemId: "",
     triggerStores: [],
+    multiplierPercentage: null,
   });
 
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [submitSuccess, setSubmitSuccess] = useState(false);
   const [showProductPicker, setShowProductPicker] = useState(false);
+  const [multiSelectMode, setMultiSelectMode] = useState(false);
 
   // Auto-populate store mapping ID when available
   useEffect(() => {
@@ -165,39 +170,57 @@ export function StrategyCalendar() {
     setSubmitSuccess(false);
 
     try {
-      // Validate barcode is provided
-      if (!formData.barcode || formData.barcode.trim() === "") {
-        throw new Error("Product barcode is required");
+      const hasMultipleProducts = formData.products.length > 0;
+      const hasSingleProduct =
+        formData.barcode && formData.barcode.trim() !== "";
+
+      // Validate at least one product is selected
+      if (!hasMultipleProducts && !hasSingleProduct) {
+        throw new Error("At least one product is required");
       }
 
-      // Validate and clean price (priceOverride is always a number)
-      if (formData.priceOverride <= 0 || isNaN(formData.priceOverride)) {
-        throw new Error("Promotional price must be greater than 0");
+      // If using multiplier, validate it's provided
+      if (hasMultipleProducts && formData.multiplierPercentage === null) {
+        throw new Error(
+          "Multiplier percentage is required when selecting multiple products"
+        );
       }
-      const cleanPrice = formData.priceOverride.toFixed(2);
 
-      // Get original price if available
+      // If single product without multiplier, validate price
+      if (
+        hasSingleProduct &&
+        !hasMultipleProducts &&
+        formData.multiplierPercentage === null
+      ) {
+        if (formData.priceOverride <= 0 || isNaN(formData.priceOverride)) {
+          throw new Error("Promotional price must be greater than 0");
+        }
+      }
+
+      const cleanPrice =
+        formData.priceOverride > 0 ? formData.priceOverride.toFixed(2) : "0.00";
+
+      // Get original price if available (only for single product)
       const originalPrice = formData.originalPrice
         ? parseFloat(formData.originalPrice)
         : null;
 
-      // Build products array - always ensure it's a non-empty array
-      const products =
-        formData.products.length > 0
-          ? formData.products
-              .filter((p) => p.barcode && p.barcode.trim() !== "")
-              .map((product) => ({
-                pc: product.barcode.trim(),
-                pp: cleanPrice,
-                original_price: product.price || originalPrice,
-              }))
-          : [
-              {
-                pc: formData.barcode.trim(),
-                pp: cleanPrice,
-                original_price: originalPrice,
-              },
-            ];
+      // Build products array
+      const products = hasMultipleProducts
+        ? formData.products
+            .filter((p) => p.barcode && p.barcode.trim() !== "")
+            .map((product) => ({
+              pc: product.barcode!.trim(), // Non-null assertion safe due to filter above
+              pp: cleanPrice, // Will be recalculated by backend using multiplier
+              original_price: product.price || null, // Original price from product
+            }))
+        : [
+            {
+              pc: formData.barcode.trim(),
+              pp: cleanPrice,
+              original_price: originalPrice,
+            },
+          ];
 
       // Final validation - ensure we have at least one product
       if (products.length === 0) {
@@ -256,6 +279,10 @@ export function StrategyCalendar() {
           payload.trigger_stores = validStores;
         }
       }
+      // Add multiplier_percentage if provided
+      if (formData.multiplierPercentage !== null) {
+        payload.multiplier_percentage = formData.multiplierPercentage;
+      }
 
       // Call new price adjustment schedule API
       const response = await fetch("/api/price-adjustments/create", {
@@ -293,6 +320,7 @@ export function StrategyCalendar() {
           barcode: "",
           itemId: "",
           triggerStores: [], // Reset trigger stores
+          multiplierPercentage: null,
         }));
         setSubmitSuccess(false);
       }, 3000);
@@ -483,13 +511,35 @@ export function StrategyCalendar() {
             <Text variant="headingSm" as="h3">
               Product Selection
             </Text>
-            <div style={{ marginTop: "1rem" }}>
-              <Button onClick={() => setShowProductPicker(true)}>
+            <div
+              style={{
+                marginTop: "1rem",
+                display: "flex",
+                gap: "0.5rem",
+                flexWrap: "wrap",
+              }}
+            >
+              <Button
+                onClick={() => {
+                  setMultiSelectMode(false);
+                  setShowProductPicker(true);
+                }}
+              >
                 {formData.barcode
                   ? `Change Product (${formData.barcode})`
-                  : "Select Product"}
+                  : "Select Single Product"}
               </Button>
-              {formData.barcode && (
+              <Button
+                onClick={() => {
+                  setMultiSelectMode(true);
+                  setShowProductPicker(true);
+                }}
+              >
+                {formData.products.length > 0
+                  ? `Change Products (${formData.products.length} selected)`
+                  : "Select Multiple Products"}
+              </Button>
+              {(formData.barcode || formData.products.length > 0) && (
                 <Button
                   variant="plain"
                   tone="critical"
@@ -497,15 +547,17 @@ export function StrategyCalendar() {
                     setFormData({
                       ...formData,
                       barcode: "",
+                      products: [],
                       originalPrice: "",
+                      multiplierPercentage: null,
                     });
                   }}
                 >
-                  Clear
+                  Clear All
                 </Button>
               )}
             </div>
-            {formData.barcode && (
+            {formData.barcode && formData.products.length === 0 && (
               <div style={{ marginTop: "1rem" }}>
                 <TextField
                   label="Product Barcode"
@@ -516,17 +568,70 @@ export function StrategyCalendar() {
                 />
               </div>
             )}
+            {formData.products.length > 0 && (
+              <div style={{ marginTop: "1rem" }}>
+                <Text variant="bodyMd" as="p" fontWeight="medium">
+                  Selected Products ({formData.products.length}):
+                </Text>
+                <div
+                  style={{
+                    marginTop: "0.5rem",
+                    maxHeight: "200px",
+                    overflowY: "auto",
+                  }}
+                >
+                  {formData.products.map((product, index) => (
+                    <div
+                      key={index}
+                      style={{
+                        padding: "0.5rem",
+                        border: "1px solid #e1e3e5",
+                        borderRadius: "4px",
+                        marginBottom: "0.5rem",
+                      }}
+                    >
+                      <Text variant="bodySm" as="p" fontWeight="medium">
+                        {product.title}
+                      </Text>
+                      {product.barcode && (
+                        <Text variant="bodySm" as="p">
+                          Barcode: {product.barcode}
+                        </Text>
+                      )}
+                      {product.price !== null &&
+                        product.price !== undefined && (
+                          <Text variant="bodySm" as="p">
+                            Price: ${product.price.toFixed(2)}
+                          </Text>
+                        )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         </Card>
 
         {showProductPicker && auth.shop && (
           <ProductPicker
             shop={auth.shop}
+            multiSelect={multiSelectMode}
+            selectedProducts={formData.products}
             onSelect={(product) => {
               setFormData({
                 ...formData,
                 barcode: product.barcode || "",
                 originalPrice: product.price?.toString() || "",
+                products: [], // Clear multi-select when single select
+              });
+              setShowProductPicker(false);
+            }}
+            onSelectMultiple={(products) => {
+              setFormData({
+                ...formData,
+                products: products,
+                barcode: "", // Clear single select when multi-select
+                originalPrice: "", // Clear original price for multi-select
               });
               setShowProductPicker(false);
             }}
@@ -543,27 +648,54 @@ export function StrategyCalendar() {
           helpText="Leave empty if using barcode lookup"
         />
 
-        <TextField
-          label="Original Price (Optional)"
-          type="number"
-          value={formData.originalPrice}
-          onChange={(value) =>
-            setFormData({ ...formData, originalPrice: value })
-          }
-          prefix="$"
-          autoComplete="off"
-        />
+        {formData.products.length === 0 && (
+          <TextField
+            label="Original Price (Optional)"
+            type="number"
+            value={formData.originalPrice}
+            onChange={(value) =>
+              setFormData({ ...formData, originalPrice: value })
+            }
+            prefix="$"
+            autoComplete="off"
+            helpText="Original price will be auto-filled when selecting a product"
+          />
+        )}
 
-        <TextField
-          label="Promotional Price"
-          type="number"
-          value={formData.priceOverride.toString()}
-          onChange={(value) =>
-            setFormData({ ...formData, priceOverride: parseFloat(value) || 0 })
-          }
-          prefix="$"
-          autoComplete="off"
-        />
+        {formData.products.length > 0 && (
+          <TextField
+            label="Multiplier Percentage"
+            type="number"
+            value={formData.multiplierPercentage?.toString() || ""}
+            onChange={(value) =>
+              setFormData({
+                ...formData,
+                multiplierPercentage: value ? parseFloat(value) : null,
+              })
+            }
+            suffix="%"
+            autoComplete="off"
+            helpText="Percentage to apply to original prices (e.g., 10 for 10% increase, -5 for 5% decrease)"
+            requiredIndicator
+          />
+        )}
+
+        {formData.products.length === 0 && (
+          <TextField
+            label="Promotional Price"
+            type="number"
+            value={formData.priceOverride.toString()}
+            onChange={(value) =>
+              setFormData({
+                ...formData,
+                priceOverride: parseFloat(value) || 0,
+              })
+            }
+            prefix="$"
+            autoComplete="off"
+            requiredIndicator
+          />
+        )}
 
         <TextField
           label="Promotion Text (Optional)"
@@ -581,7 +713,9 @@ export function StrategyCalendar() {
           onClick={handleSubmit}
           disabled={
             !formData.name ||
-            (!formData.barcode && formData.products.length === 0)
+            (!formData.barcode && formData.products.length === 0) ||
+            (formData.products.length > 0 &&
+              formData.multiplierPercentage === null)
           }
         >
           Create Strategy

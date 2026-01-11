@@ -73,6 +73,10 @@ class CreatePriceAdjustmentRequest(BaseModel):
     time_slots: List[TimeSlot] = Field(
         ..., description="Time slots for price adjustments"
     )
+    multiplier_percentage: Optional[float] = Field(
+        None,
+        description="Percentage multiplier for selected products (e.g., 10.0 for 10% increase, -5.0 for 5% decrease). If provided, applies to all products in the schedule.",
+    )
 
 
 class PriceAdjustmentResponse(BaseModel):
@@ -428,6 +432,7 @@ async def create_price_adjustment(request: CreatePriceAdjustmentRequest):
             trigger_days=request.trigger_days,
             trigger_stores=request.trigger_stores,
             time_slots=time_slots_data,
+            multiplier_percentage=request.multiplier_percentage,
             is_active=True,
             next_trigger_at=next_trigger,
         )
@@ -574,6 +579,9 @@ async def update_price_adjustment(
 
         if request.trigger_stores:
             update_data["trigger_stores"] = request.trigger_stores
+
+        if request.multiplier_percentage is not None:
+            update_data["multiplier_percentage"] = request.multiplier_percentage
 
         # Calculate next trigger time
         store_timezone = get_store_timezone(store_mapping)

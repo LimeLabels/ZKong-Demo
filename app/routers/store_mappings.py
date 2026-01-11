@@ -19,21 +19,23 @@ supabase_service = SupabaseService()
 
 # NOTE: /current endpoint must be defined BEFORE /{mapping_id} to avoid route conflicts
 @router.get("/current")
-async def get_current_store_mapping(shop: Optional[str] = Query(None, description="Shop domain")):
+async def get_current_store_mapping(
+    shop: Optional[str] = Query(None, description="Shop domain"),
+):
     """Get current shop's store mapping."""
     if not shop or not shop.strip():
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="Shop parameter is required",
         )
-    
+
     logger.info("Looking up store mapping", shop=shop)
-    
+
     try:
         # First try direct lookup by source_store_id
         mapping = supabase_service.get_store_mapping("shopify", shop)
         logger.info("Direct lookup result", found=mapping is not None, shop=shop)
-        
+
         if not mapping:
             # Fall back to metadata search
             mapping = supabase_service.get_store_mapping_by_shop_domain(shop)
@@ -44,8 +46,12 @@ async def get_current_store_mapping(shop: Optional[str] = Query(None, descriptio
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Store mapping not found for shop: {shop}",
             )
-        
-        logger.info("Found store mapping", mapping_id=str(mapping.id), hipoink_code=mapping.hipoink_store_code)
+
+        logger.info(
+            "Found store mapping",
+            mapping_id=str(mapping.id),
+            hipoink_code=mapping.hipoink_store_code,
+        )
 
         return {
             "id": str(mapping.id),

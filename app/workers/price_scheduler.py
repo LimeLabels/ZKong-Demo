@@ -622,7 +622,33 @@ class PriceScheduler:
             hipoink_products = []
             for product_data in products_data:
                 barcode = product_data["pc"]
-                new_price = str(product_data["pp"])
+
+                # Calculate price: if multiplier_percentage is provided, use it; otherwise use provided price
+                if schedule.multiplier_percentage is not None:
+                    original_price = product_data.get("original_price")
+                    if original_price is None:
+                        # Try to get original price from database
+                        existing_product = self.supabase_service.get_product_by_barcode(
+                            barcode
+                        )
+                        if existing_product:
+                            original_price = existing_product.price
+
+                    if original_price is not None:
+                        # Apply multiplier: price * (1 + multiplier_percentage / 100)
+                        new_price = original_price * (
+                            1 + schedule.multiplier_percentage / 100
+                        )
+                        new_price = str(round(new_price, 2))
+                    else:
+                        logger.warning(
+                            "No original price found for multiplier calculation, using provided price",
+                            barcode=barcode,
+                            schedule_id=str(schedule.id),
+                        )
+                        new_price = str(product_data["pp"])
+                else:
+                    new_price = str(product_data["pp"])
 
                 # Get existing product from database to preserve all fields
                 existing_product = self.supabase_service.get_product_by_barcode(barcode)
