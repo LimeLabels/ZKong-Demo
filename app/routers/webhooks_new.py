@@ -72,7 +72,9 @@ async def handle_webhook(
         # Add other integrations' signature extraction here
 
         # Verify signature
-        if signature and not adapter.verify_signature(body_bytes, signature, headers):
+        # For Square, pass request URL for signature verification (Square doesn't send it in headers)
+        request_url = str(request.url) if integration_name == "square" else None
+        if signature and not adapter.verify_signature(body_bytes, signature, headers, request_url=request_url):
             logger.warning(
                 "Invalid webhook signature",
                 integration=integration_name,

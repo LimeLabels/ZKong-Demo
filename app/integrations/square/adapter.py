@@ -41,7 +41,7 @@ class SquareIntegrationAdapter(BaseIntegrationAdapter):
         return "square"
 
     def verify_signature(
-        self, payload: bytes, signature: str, headers: Dict[str, str]
+        self, payload: bytes, signature: str, headers: Dict[str, str], request_url: Optional[str] = None
     ) -> bool:
         """
         Verify Square webhook signature using HMAC SHA256.
@@ -50,6 +50,7 @@ class SquareIntegrationAdapter(BaseIntegrationAdapter):
             payload: Raw request body bytes
             signature: x-square-hmacsha256-signature header value
             headers: Request headers
+            request_url: Full request URL (optional, will construct if not provided)
 
         Returns:
             True if signature is valid, False otherwise
@@ -64,11 +65,40 @@ class SquareIntegrationAdapter(BaseIntegrationAdapter):
             return True
 
         try:
-            # Square uses HMAC SHA256 of the request body
+            # Square uses HMAC SHA256 of (notification_url + payload)
+            # Square does NOT send x-square-notification-url header
+            # We must use the actual request URL (from request.url)
+            
+            if request_url:
+                # Use provided request URL
+                notification_url = request_url
+            else:
+                # Fallback: construct from APP_BASE_URL + webhook path
+                # This is less reliable but works if URL structure matches
+                base_url = settings.app_base_url
+                notification_url = f"{base_url}/webhooks/square"
+                logger.warning(
+                    "No request_url provided, using constructed URL",
+                    constructed_url=notification_url,
+                )
+
+            # CRITICAL: Force HTTPS if Railway passes HTTP (SSL termination issue)
+            # Square signs with HTTPS, so we must use HTTPS for verification
+            if notification_url.startswith("http://"):
+                notification_url = notification_url.replace("http://", "https://", 1)
+                logger.info(
+                    "Converted notification URL from HTTP to HTTPS for signature verification",
+                    original_url=request_url,
+                    converted_url=notification_url,
+                )
+
+            # Square signature = HMAC-SHA256(notification_url + payload)
+            full_payload = notification_url.encode("utf-8") + payload
+
             calculated_hmac = base64.b64encode(
                 hmac.new(
                     settings.square_webhook_secret.encode("utf-8"),
-                    payload,
+                    full_payload,
                     hashlib.sha256,
                 ).digest()
             ).decode("utf-8")
