@@ -109,6 +109,8 @@ async def square_oauth_callback(
             base_api_url = "https://connect.squareup.com"
 
         # Exchange authorization code for access token
+        # CRITICAL: redirect_uri must match exactly what was used in authorization step
+        redirect_uri = f"{settings.app_base_url}/auth/square/callback"
         token_url = f"{base_api_url}/oauth2/token"
 
         async with httpx.AsyncClient() as client:
@@ -119,6 +121,7 @@ async def square_oauth_callback(
                     "client_secret": square_application_secret,
                     "code": code,
                     "grant_type": "authorization_code",
+                    "redirect_uri": redirect_uri,  # Required by Square - must match authorization step
                 },
                 timeout=30.0,
             )
