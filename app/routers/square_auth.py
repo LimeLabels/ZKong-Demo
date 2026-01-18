@@ -4,7 +4,7 @@ Handles OAuth flow for Square POS integration.
 """
 
 from fastapi import APIRouter, Request, HTTPException, status, Query
-from fastapi.responses import RedirectResponse
+from fastapi.responses import RedirectResponse, JSONResponse
 from typing import Optional
 import structlog
 import secrets
@@ -169,6 +169,7 @@ async def square_oauth_callback(
 
         # Check if store mapping exists for this merchant/location
         existing_mapping = supabase_service.get_store_mapping("square", merchant_id)
+        mapping_id = None
 
         if existing_mapping:
             # Update existing mapping with access token via direct metadata update
@@ -188,10 +189,11 @@ async def square_oauth_callback(
                 "metadata": existing_metadata
             }).eq("id", str(existing_mapping.id)).execute()
 
+            mapping_id = str(existing_mapping.id)
             logger.info(
                 "Updated Square store mapping with OAuth token",
                 merchant_id=merchant_id,
-                mapping_id=str(existing_mapping.id),
+                mapping_id=mapping_id,
             )
         else:
             # Auto-create store mapping with OAuth token
@@ -215,10 +217,11 @@ async def square_oauth_callback(
 
             try:
                 created_mapping = supabase_service.create_store_mapping(new_mapping)
+                mapping_id = str(created_mapping.id) if created_mapping.id else None
                 logger.info(
                     "Auto-created Square store mapping with OAuth token",
                     merchant_id=merchant_id,
-                    mapping_id=str(created_mapping.id),
+                    mapping_id=mapping_id,
                 )
             except Exception as e:
                 logger.error(
@@ -228,16 +231,21 @@ async def square_oauth_callback(
                 )
                 # Continue anyway - onboarding will handle it
 
-        # Redirect to frontend with success
-        frontend_url = settings.frontend_url or "http://localhost:3000"
-        redirect_url = (
-            f"{frontend_url}/square/success?"
-            f"merchant_id={merchant_id}&"
-            f"location_id={location_id}&"
-            f"installed=true"
+        # Return success response (no frontend needed for Square)
+        # The OAuth flow is complete: token saved, store mapping created
+        from fastapi.responses import JSONResponse
+        
+        return JSONResponse(
+            status_code=200,
+            content={
+                "status": "success",
+                "message": "Square OAuth authentication successful",
+                "merchant_id": merchant_id,
+                "location_id": location_id,
+                "location_name": location_name,
+                "mapping_id": mapping_id,
+            },
         )
-
-        return RedirectResponse(url=redirect_url)
 
     except httpx.HTTPStatusError as e:
         logger.error(
