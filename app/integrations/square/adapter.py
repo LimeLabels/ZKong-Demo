@@ -6,6 +6,8 @@ Implements BaseIntegrationAdapter for Square webhooks and data transformation.
 import hmac
 import hashlib
 import base64
+import httpx
+import os
 from typing import List, Dict, Any, Optional
 from fastapi import Request, HTTPException, status
 import structlog
@@ -222,7 +224,10 @@ class SquareIntegrationAdapter(BaseIntegrationAdapter):
     async def _handle_catalog_update(
         self, headers: Dict[str, str], payload: Dict[str, Any]
     ) -> Dict[str, Any]:
-        """Handle catalog.version.updated webhook."""
+        """
+        Handle catalog.version.updated webhook.
+        Since Square webhooks don't contain product data, we must fetch the catalog.
+        """
         # Validate payload structure
         CatalogVersionUpdatedWebhook(**payload)
 
@@ -234,83 +239,119 @@ class SquareIntegrationAdapter(BaseIntegrationAdapter):
                 detail="Square merchant/location ID not found in webhook",
             )
 
-        # Get store mapping
+        # 1. Get store mapping to find access token
         store_mapping = self.supabase_service.get_store_mapping("square", merchant_id)
-        if not store_mapping:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail={
-                    "error": f"Store mapping not found for Square merchant {merchant_id}",
-                    "message": "Please create a store mapping first",
-                    "endpoint": "/api/store-mappings/",
-                },
-            )
+        
+        access_token = None
+        store_mapping_id = None
 
-        # Check if this is a deletion
-        data = payload.get("data", {})
-        obj = data.get("object", {})
-        catalog_object_data = obj.get("catalog_object", {})
-        is_deleted = catalog_object_data.get("is_deleted", False)
+        if store_mapping and store_mapping.metadata:
+            access_token = store_mapping.metadata.get("square_access_token")
+            store_mapping_id = store_mapping.id
+        
+        # FALLBACK: If DB token is missing, use env var (for testing)
+        # Using os.getenv to avoid AttributeError if settings doesn't have the field
+        if not access_token:
+            logger.warning("No access token in store mapping, checking env vars", merchant_id=merchant_id)
+            
+            env_token = os.getenv("SQUARE_ACCESS_TOKEN")
+            if env_token:
+                access_token = env_token
+                # We still need a valid store_mapping_id to save products
+                if store_mapping:
+                    store_mapping_id = store_mapping.id
+                else:
+                    logger.warning("No store mapping found - products won't be saved correctly")
+            else:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="No access token found for Square integration"
+                )
 
-        if is_deleted:
-            return await self._handle_catalog_delete(
-                headers, payload, store_mapping, catalog_object_data
-            )
+        # 2. Determine API URL (Sandbox vs Prod)
+        base_url = "https://connect.squareup.com"
+        if settings.square_environment == "sandbox":
+            base_url = "https://connect.squareupsandbox.com"
 
-        # Transform Square catalog object to normalized products
-        normalized_products = self.transform_product(payload)
+        # 3. Fetch latest catalog data from Square
+        # (Square webhooks are just a notification, we must fetch the data)
+        logger.info("Fetching latest catalog from Square API", merchant_id=merchant_id)
+        
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.get(
+                    f"{base_url}/v2/catalog/list?types=ITEM",
+                    headers={
+                        "Authorization": f"Bearer {access_token}",
+                        "Content-Type": "application/json"
+                    },
+                    timeout=30.0,
+                )
+                
+                if response.status_code != 200:
+                    logger.error("Failed to fetch Square catalog", status=response.status_code, body=response.text)
+                    return {"status": "error", "message": "Failed to fetch catalog from Square"}
+                
+                catalog_data = response.json()
+        except Exception as e:
+            logger.error("Exception fetching Square catalog", error=str(e))
+            return {"status": "error", "message": str(e)}
 
-        if not normalized_products:
-            logger.warning(
-                "No products extracted from catalog update",
-                merchant_id=merchant_id,
-            )
-            return {
-                "status": "success",
-                "message": "No products to process",
-                "products": [],
-            }
+        # 4. Process the fetched items
+        items = catalog_data.get("objects", [])
+        if not items:
+            logger.info("No items found in Square catalog")
+            return {"status": "success", "message": "Catalog empty", "products": []}
 
         processed_products = []
 
-        # Store each variation as a separate product
-        for normalized in normalized_products:
-            # Validate normalized product
-            is_valid, errors = self.validate_normalized_product(normalized)
+        for item in items:
+            try:
+                # Convert raw API item to SquareCatalogObject
+                catalog_object = SquareCatalogObject(**item)
+                
+                # Transform to normalized products
+                # (One Square item might have multiple variations)
+                normalized_products = self.transformer.extract_variations_from_catalog_object(catalog_object)
 
-            # Create product record
-            product = Product(
-                source_system="square",
-                source_id=normalized.source_id,
-                source_variant_id=normalized.source_variant_id,
-                title=normalized.title,
-                barcode=normalized.barcode,
-                sku=normalized.sku,
-                price=normalized.price,
-                currency=normalized.currency,
-                image_url=normalized.image_url,
-                raw_data=payload,
-                normalized_data=normalized.to_dict(),
-                status="validated" if is_valid else "pending",
-                validation_errors={"errors": errors} if errors else None,
-            )
+                for normalized in normalized_products:
+                    # Validate
+                    is_valid, errors = self.validate_normalized_product(normalized)
 
-            # Save to database
-            saved_product = self.supabase_service.create_or_update_product(product)
-            processed_products.append(saved_product)
+                    # Create Product Model
+                    product = Product(
+                        source_system="square",
+                        source_id=normalized.source_id,
+                        source_variant_id=normalized.source_variant_id,
+                        title=normalized.title,
+                        barcode=normalized.barcode,
+                        sku=normalized.sku,
+                        price=normalized.price,
+                        currency=normalized.currency,
+                        image_url=normalized.image_url,
+                        raw_data={"item_data": item},  # Save the full item data
+                        normalized_data=normalized.to_dict(),
+                        status="validated" if is_valid else "pending",
+                        validation_errors={"errors": errors} if errors else None,
+                    )
 
-            # If valid, add to sync queue
-            if is_valid:
-                self.supabase_service.add_to_sync_queue(
-                    product_id=saved_product.id,  # type: ignore
-                    store_mapping_id=store_mapping.id,  # type: ignore
-                    operation="update",
-                )
-                logger.info(
-                    "Square product queued for sync",
-                    product_id=str(saved_product.id),
-                    barcode=normalized.barcode,
-                )
+                    # Save to DB
+                    saved_product = self.supabase_service.create_or_update_product(product)
+                    processed_products.append(saved_product)
+
+                    # Add to Sync Queue
+                    if is_valid and store_mapping_id:
+                        self.supabase_service.add_to_sync_queue(
+                            product_id=saved_product.id,  # type: ignore
+                            store_mapping_id=store_mapping_id,  # type: ignore
+                            operation="update",
+                        )
+
+            except Exception as e:
+                logger.error("Error processing catalog item", item_id=item.get("id"), error=str(e))
+                continue
+
+        logger.info(f"Successfully synced {len(processed_products)} products from Square")
 
         return {
             "status": "success",
