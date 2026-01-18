@@ -1,6 +1,6 @@
 """
 Configuration management using Pydantic settings.
-Loads environment variables for Hipoink ESL API, Supabase, and Shopify webhook secrets.
+Loads environment variables for Hipoink ESL API, Supabase, Shopify, and Square.
 """
 
 from pydantic_settings import BaseSettings
@@ -32,6 +32,12 @@ class Settings(BaseSettings):
     frontend_url: str = (
         "http://localhost:3000"  # Frontend app URL (must match App URL in Shopify)
     )
+
+    # Square Configuration
+    square_webhook_secret: str = ""  # Webhook signature key from Square
+    square_application_id: str = ""  # Square Application ID
+    square_application_secret: str = ""  # Square Application Secret
+    square_environment: str = "sandbox"  # "sandbox" or "production"
 
     # Application Configuration
     app_environment: str = "development"
