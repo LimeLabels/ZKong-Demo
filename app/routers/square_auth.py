@@ -76,8 +76,9 @@ async def square_oauth_initiate(
         "Initiating Square OAuth",
         redirect_uri=redirect_uri,
         environment=settings.square_environment,
+        auth_url=auth_url,  # Log the full Square OAuth URL for debugging
     )
-    return RedirectResponse(url=auth_url)
+    return RedirectResponse(url=auth_url, status_code=302)  # Explicit 302 redirect
 
 
 @router.get("/square/callback")
