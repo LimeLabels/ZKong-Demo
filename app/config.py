@@ -17,8 +17,8 @@ class Settings(BaseSettings):
     hipoink_client_id: str = "default"  # Client ID for API endpoint
 
     # Supabase Configuration
-    supabase_url: str
-    supabase_service_key: str
+    supabase_url: str = ""  # Required for production, optional for NCR testing
+    supabase_service_key: str = ""  # Required for production, optional for NCR testing
 
     # Shopify Configuration
     shopify_webhook_secret: str = (
@@ -32,6 +32,15 @@ class Settings(BaseSettings):
     frontend_url: str = (
         "http://localhost:3000"  # Frontend app URL (must match App URL in Shopify)
     )
+
+    # NCR POS Configuration
+    ncr_api_base_url: str = "https://api.ncr.com/catalog"  # NCR API base URL (production)
+    ncr_shared_key: str = "42ca1d8c9fe34aa89b283b07e7694fcd"  # NCR shared key (bsp-shared-key)
+    ncr_secret_key: str = "fc12af86bb4d4aa1a01e6178373f9b21"  # NCR secret key (bsp-secret-key)
+    ncr_organization: str = "test-drive-db9be7e5183a4ed183c99"  # NCR organization ID (bsp-organization)
+    ncr_enterprise_unit: str = "4e469b13321f41bc9f2d45078de86beb"  # NCR enterprise unit ID (bsp-site-id)
+    ncr_department_id: str = "DEFAULT"  # Default department ID
+    ncr_category_id: str = "DEFAULT"  # Default category ID
 
     # Application Configuration
     app_environment: str = "development"
@@ -50,6 +59,7 @@ class Settings(BaseSettings):
         env_file = ".env"
         env_file_encoding = "utf-8"
         case_sensitive = False
+        extra = "ignore"  # Ignore extra env vars like deprecated NCR_ACCESS_TOKEN
 
 
 # Global settings instance

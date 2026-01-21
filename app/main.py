@@ -13,6 +13,7 @@ from app.routers import (
     shopify_auth,
     price_adjustments,
     products,
+    ncr_test,
 )
 import structlog
 
@@ -44,6 +45,7 @@ app.include_router(shopify_auth.router)  # Shopify OAuth endpoints
 app.include_router(shopify_auth.api_router)  # API auth endpoints
 app.include_router(price_adjustments.router)  # Time-based price adjustment schedules
 app.include_router(products.router)  # Product search endpoints
+app.include_router(ncr_test.router)  # NCR integration test endpoints
 
 
 @app.on_event("startup")
