@@ -183,7 +183,13 @@ class NCRAPIClient:
         status: str = "ACTIVE",
     ) -> Dict[str, Any]:
         """
-        Create a single product in NCR.
+        Create a single product in NCR via PUT /items/{itemCode} endpoint.
+        
+        This method:
+        1. Validates that item_code, barcode, or sku is provided
+        2. Creates the product data structure with NCR-required fields
+        3. Sends PUT request to NCR API to create/update the product
+        4. Optionally creates a price if price is provided
 
         Args:
             item_code: Unique item code (alphanumeric, max 100 chars)
@@ -196,7 +202,11 @@ class NCRAPIClient:
             status: Item status (ACTIVE, INACTIVE, etc.)
 
         Returns:
-            API response dictionary
+            API response dictionary with status and item_code
+
+        Raises:
+            ValueError: If item_code, barcode, and sku are all missing
+            Exception: If NCR API returns an error
         """
         from app.integrations.ncr.models import (
             ItemIdData,
@@ -204,16 +214,19 @@ class NCRAPIClient:
             NodeIdData,
         )
 
-        # Use barcode as item_code if provided and item_code not set
+        # Step 1: Determine item_code - use barcode or sku as fallback
+        # NCR requires an item_code, so we use the first available identifier
         if not item_code and barcode:
             item_code = barcode
         elif not item_code and sku:
             item_code = sku
 
+        # Validate that we have at least one identifier
         if not item_code:
             raise ValueError("item_code, barcode, or sku must be provided")
 
-        # Create item data
+        # Step 2: Create item data structure with required NCR fields
+        # NCR requires: departmentId, merchandiseCategory, shortDescription, status
         item_data = ItemWriteData(
             itemId=ItemIdData(itemCode=item_code),
             departmentId=department_id,
@@ -224,30 +237,35 @@ class NCRAPIClient:
             sku=sku,
         )
 
-        # Add barcode to package identifiers if provided and different from item_code
+        # Step 3: Add barcode to package identifiers if provided and different from item_code
+        # This allows products to be identified by barcode while using a different item_code
         if barcode and barcode != item_code:
             item_data.packageIdentifiers = [
                 {"type": "UPC", "value": barcode}
             ]
 
-        # Use single item endpoint: PUT /items/{itemCode}
-        # This endpoint accepts a single ItemData object (not wrapped in an array)
-        # Note: ItemData does NOT include itemId (it's in the URL path)
+        # Step 4: Prepare request payload and URL
+        # Note: NCR API uses PUT for create/update operations (idempotent)
+        # The endpoint is PUT /items/{itemCode} and accepts ItemData (not wrapped in array)
+        # ItemId is excluded from payload since it's in the URL path
         payload = item_data.model_dump(exclude_none=True, by_alias=True, exclude={"itemId"})
         url = f"{self.base_url}/items/{item_code}"
         
-        # Serialize body for Content-MD5 calculation
+        # Step 5: Serialize body and generate HMAC-signed headers
+        # NCR requires Content-MD5 header and HMAC signature for authentication
         body = json.dumps(payload).encode('utf-8')
         headers = self._get_request_headers("PUT", url, body)
         
         logger.info("NCR create product request", url=url, payload=payload, headers={k: v for k, v in headers.items() if k != "Authorization"})
         
+        # Step 6: Send PUT request to NCR API
         response = await self.client.put(
             url,
             content=body,  # Use content= instead of json= since we already serialized
             headers=headers,
         )
         
+        # Step 7: Handle errors
         if response.status_code >= 400:
             error_body = response.text
             logger.error("NCR API error", status=response.status_code, body=error_body)
@@ -261,7 +279,8 @@ class NCRAPIClient:
             title=title,
         )
 
-        # If price provided, create price as well
+        # Step 8: If price provided and enterprise_unit exists, create price record
+        # Prices are created separately via the item-prices endpoint
         if price is not None and self.enterprise_unit:
             try:
                 await self.update_price(
@@ -270,6 +289,7 @@ class NCRAPIClient:
                     price_code="REGULAR",  # Default price code
                 )
             except Exception as e:
+                # Log warning but don't fail product creation if price creation fails
                 logger.warning(
                     "Failed to create price after product creation",
                     item_code=item_code,
@@ -287,34 +307,49 @@ class NCRAPIClient:
         effective_date: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
-        Update product price in NCR.
+        Update product price in NCR via PUT /item-prices endpoint.
+        
+        This method:
+        1. Validates that enterprise_unit is configured (required for prices)
+        2. Creates price data structure with effective date, currency, and status
+        3. Sends PUT request to NCR API to update/create the price
 
         Args:
-            item_code: Item code
-            price: New price value
+            item_code: Item code of the product
+            price: New price value (float)
             price_code: Price code identifier (default: "REGULAR")
             currency: Currency code (default: "USD")
             effective_date: Effective date in ISO format (default: now)
 
         Returns:
-            API response dictionary
+            API response dictionary with status, item_code, and price
+
+        Raises:
+            ValueError: If enterprise_unit is not configured
+            Exception: If NCR API returns an error
         """
+        # Validate enterprise_unit is required for price updates
+        # Prices are store-specific (enterprise unit specific) in NCR
         if not self.enterprise_unit:
             raise ValueError("enterprise_unit is required for price updates")
 
         from app.integrations.ncr.models import ItemPriceIdData
 
+        # Step 1: Generate effective date if not provided
+        # NCR API requires ISO 8601 format with timezone indicator (Z for UTC)
+        # Format: 2026-01-14T16:19:48.061Z (milliseconds precision)
         if effective_date is None:
-            # NCR API requires ISO 8601 format with timezone indicator (Z for UTC)
-            # Format: 2026-01-14T16:19:48.061Z
             now = datetime.now(timezone.utc)
-            effective_date = now.strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z'  # Remove last 3 digits of microseconds and add Z
+            # Format with milliseconds (remove last 3 digits of microseconds) and add Z
+            effective_date = now.strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z'
 
-        # Create price data with required fields
-        # Note: priceCode typically matches itemCode for base prices (as per NCR demo pattern)
+        # Step 2: Determine actual price code
+        # Note: For base prices, priceCode typically matches itemCode (NCR demo pattern)
         # If price_code is "REGULAR", use item_code as the price code (common pattern)
         actual_price_code = item_code if price_code == "REGULAR" else price_code
         
+        # Step 3: Create price data structure with required NCR fields
+        # NCR requires: priceId (itemCode, priceCode, enterpriseUnitId), price, currency, effectiveDate, status
         price_data = ItemPriceWriteData(
             priceId=ItemPriceIdData(
                 itemCode=item_code,
@@ -327,26 +362,29 @@ class NCRAPIClient:
             promotionPriceType="NON_CARD_PRICE",
             status="ACTIVE",
             basePrice=True,  # Required for base prices
-            endDate="2100-12-31T23:59:59Z",  # Set far future end date
+            endDate="2100-12-31T23:59:59Z",  # Set far future end date (effectively no end)
         )
 
+        # Step 4: Wrap in request model (NCR API accepts batch of prices)
         request = SaveMultipleItemPricesRequest(itemPrices=[price_data])
 
         url = f"{self.base_url}/item-prices"
         
-        # Serialize body for Content-MD5 calculation
+        # Step 5: Serialize body and generate HMAC-signed headers
         payload = request.model_dump(exclude_none=True, by_alias=True)
         body = json.dumps(payload).encode('utf-8')
         headers = self._get_request_headers("PUT", url, body)
         
         logger.info("NCR update price request", url=url, payload=payload, headers={k: v for k, v in headers.items() if k != "Authorization"})
         
+        # Step 6: Send PUT request to NCR API
         response = await self.client.put(
             url,
             content=body,
             headers=headers,
         )
         
+        # Step 7: Handle errors
         if response.status_code >= 400:
             error_body = response.text
             logger.error("NCR API error", status=response.status_code, body=error_body, url=url, payload=payload)
@@ -370,16 +408,31 @@ class NCRAPIClient:
         category_id: str,
     ) -> Dict[str, Any]:
         """
-        Delete a product by setting status to INACTIVE.
-        Note: NCR API doesn't have a DELETE endpoint, so we update status to INACTIVE.
+        Delete a product by setting its status to INACTIVE.
+        
+        Note: NCR API doesn't have a physical DELETE endpoint. Instead, products
+        are "deleted" by updating their status to INACTIVE via PUT /items/{itemCode}.
+        This preserves the product data but hides it from active product listings.
+        
+        This method:
+        1. Creates a minimal update payload with INACTIVE status
+        2. Sends PUT request to NCR API to update the product status
 
         Args:
-            item_code: Item code to delete
-            department_id: Department ID (required for update)
-            category_id: Category ID (required for update)
+            item_code: Item code of the product to delete
+            department_id: Department ID (required for NCR API update)
+            category_id: Category ID (required for NCR API update)
 
         Returns:
-            API response dictionary
+            API response dictionary with status, item_code, and deleted flag
+
+        Raises:
+            Exception: If NCR API returns an error
+
+        Note:
+            This is a minimal update that only sets status to INACTIVE. In production,
+            you might want to fetch the existing item first to preserve other fields
+            when updating to INACTIVE status.
         """
         from app.integrations.ncr.models import (
             ItemIdData,
@@ -387,35 +440,41 @@ class NCRAPIClient:
             NodeIdData,
         )
 
-        # First, get the existing item to preserve its data
-        # For simplicity, we'll create a minimal update with INACTIVE status
-        # In production, you might want to fetch the item first to preserve other fields
-        
+        # Step 1: Create minimal item data structure with INACTIVE status
+        # Note: We're doing a minimal update - in production, you might want to
+        # fetch the existing item first to preserve other fields when setting status
+        # Required fields: departmentId, merchandiseCategory, shortDescription, status
+        # Use a placeholder description instead of empty string to avoid validation errors
         item_data = ItemWriteData(
             itemId=ItemIdData(itemCode=item_code),
             departmentId=department_id,
             merchandiseCategory=NodeIdData(nodeId=category_id),
             nonMerchandise=False,
-            shortDescription=MultiLanguageTextData.from_single_text(""),  # Required field
-            status="INACTIVE",  # Set to INACTIVE to "delete"
+            shortDescription=MultiLanguageTextData.from_single_text("Product deleted"),  # Required field (use placeholder instead of empty)
+            status="INACTIVE",  # Set to INACTIVE to "delete" the product
         )
+        # Explicitly exclude longDescription to avoid sending empty values
+        # NCR validation requires longDescription values to be 1-1024 chars if present
 
-        # Use single item endpoint: PUT /items/{itemCode}
-        # This endpoint accepts a single ItemData object (not wrapped in an array)
-        # Note: ItemData does NOT include itemId (it's in the URL path)
+        # Step 2: Prepare request payload and URL
+        # Note: NCR API uses PUT for updates (idempotent)
+        # The endpoint is PUT /items/{itemCode} and accepts ItemData (not wrapped in array)
+        # ItemId is excluded from payload since it's in the URL path
         payload = item_data.model_dump(exclude_none=True, by_alias=True, exclude={"itemId"})
         url = f"{self.base_url}/items/{item_code}"
         
-        # Serialize body for Content-MD5 calculation
+        # Step 3: Serialize body and generate HMAC-signed headers
         body = json.dumps(payload).encode('utf-8')
         headers = self._get_request_headers("PUT", url, body)
 
+        # Step 4: Send PUT request to NCR API
         response = await self.client.put(
             url,
             content=body,
             headers=headers,
         )
         
+        # Step 5: Handle errors
         if response.status_code >= 400:
             error_body = response.text
             logger.error("NCR API error", status=response.status_code, body=error_body)

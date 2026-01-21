@@ -50,6 +50,7 @@ class UpdatePriceRequest(BaseModel):
     price: float
     price_code: str = "REGULAR"
     currency: str = "USD"
+    store_mapping_id: Optional[str] = None  # Optional: if provided, will save to Supabase and queue for ESL
 
 
 class DeleteProductRequest(BaseModel):
@@ -57,6 +58,7 @@ class DeleteProductRequest(BaseModel):
     item_code: str
     department_id: Optional[str] = None
     category_id: Optional[str] = None
+    store_mapping_id: Optional[str] = None  # Optional: if provided, will sync to database and ESL
 
 
 @router.get("/config")
@@ -180,18 +182,61 @@ async def test_update_price(request: UpdatePriceRequest):
     """
     Test updating a product price in NCR.
     
+    If store_mapping_id is provided, the price update will also:
+    - Update the product in Supabase database
+    - Queue for ESL (Hipoink) sync
+    
     This endpoint calls the NCR API to update a product's price.
     """
     logger.info(
         "Testing NCR update price",
         item_code=request.item_code,
         price=request.price,
+        store_mapping_id=request.store_mapping_id,
     )
 
+    # If store_mapping_id is provided, use the adapter (includes Supabase/ESL sync)
+    if request.store_mapping_id:
+        try:
+            # Get store mapping
+            store_mapping = supabase_service.get_store_mapping_by_id(request.store_mapping_id)
+            if not store_mapping:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Store mapping {request.store_mapping_id} not found",
+                )
+            
+            # Use adapter to update price (includes NCR API + Supabase + ESL queue)
+            adapter = NCRIntegrationAdapter()
+            result = await adapter.update_price(
+                item_code=request.item_code,
+                price=request.price,
+                store_mapping_config={
+                    "id": store_mapping.id,
+                    "metadata": store_mapping.metadata or {},
+                },
+            )
+            
+            logger.info("NCR update price with sync successful", result=result)
+            return {
+                "status": "success",
+                "message": "Price updated in NCR, saved to Supabase, and queued for ESL sync",
+                "result": result,
+            }
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error("NCR update price with sync failed", error=str(e))
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to update price: {str(e)}",
+            )
+    
+    # Otherwise, just update price in NCR directly (no Supabase/ESL sync)
     if not settings.ncr_enterprise_unit:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="NCR_ENTERPRISE_UNIT must be set for price updates",
+            detail="NCR_ENTERPRISE_UNIT must be set for price updates (or provide store_mapping_id)",
         )
 
     api_client = NCRAPIClient(
@@ -213,8 +258,9 @@ async def test_update_price(request: UpdatePriceRequest):
         logger.info("NCR update price successful", result=result)
         return {
             "status": "success",
-            "message": "Price updated successfully",
+            "message": "Price updated successfully in NCR (not synced to Supabase/ESL)",
             "result": result,
+            "note": "Provide store_mapping_id to enable Supabase/ESL sync",
         }
 
     except Exception as e:
@@ -232,13 +278,55 @@ async def test_delete_product(request: DeleteProductRequest):
     """
     Test deleting a product in NCR (sets status to INACTIVE).
     
+    If store_mapping_id is provided, the deletion will also:
+    - Queue product deletion in Supabase database
+    - Queue for ESL (Hipoink) sync
+    
     This endpoint calls the NCR API to mark a product as INACTIVE.
     """
     logger.info(
         "Testing NCR delete product",
         item_code=request.item_code,
+        store_mapping_id=request.store_mapping_id,
     )
 
+    # If store_mapping_id is provided, use the adapter (includes Supabase/ESL sync)
+    if request.store_mapping_id:
+        try:
+            # Get store mapping
+            store_mapping = supabase_service.get_store_mapping_by_id(request.store_mapping_id)
+            if not store_mapping:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Store mapping {request.store_mapping_id} not found",
+                )
+            
+            # Use adapter to delete product (includes NCR API + Supabase + ESL queue)
+            adapter = NCRIntegrationAdapter()
+            result = await adapter.delete_product(
+                item_code=request.item_code,
+                store_mapping_config={
+                    "id": store_mapping.id,
+                    "metadata": store_mapping.metadata or {},
+                },
+            )
+            
+            logger.info("NCR delete product with sync successful", result=result)
+            return {
+                "status": "success",
+                "message": "Product deleted in NCR, queued for database deletion and ESL sync",
+                "result": result,
+            }
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error("NCR delete product with sync failed", error=str(e))
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to delete product: {str(e)}",
+            )
+    
+    # Otherwise, just delete in NCR directly (no Supabase/ESL sync)
     api_client = NCRAPIClient(
         base_url=settings.ncr_api_base_url,
         shared_key=settings.ncr_shared_key or None,
@@ -257,8 +345,9 @@ async def test_delete_product(request: DeleteProductRequest):
         logger.info("NCR delete product successful", result=result)
         return {
             "status": "success",
-            "message": "Product deleted (set to INACTIVE)",
+            "message": "Product deleted (set to INACTIVE) in NCR (not synced to Supabase/ESL)",
             "result": result,
+            "note": "Provide store_mapping_id to enable Supabase/ESL sync",
         }
 
     except Exception as e:

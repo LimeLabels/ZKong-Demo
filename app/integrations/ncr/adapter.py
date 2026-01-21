@@ -6,6 +6,8 @@ Implements BaseIntegrationAdapter for NCR PRO Catalog API integration.
 from typing import List, Dict, Any, Optional
 from fastapi import Request, HTTPException, status
 import structlog
+from datetime import datetime
+from uuid import UUID
 
 from app.integrations.base import (
     BaseIntegrationAdapter,
@@ -19,6 +21,23 @@ from app.services.supabase_service import SupabaseService
 from app.models.database import Product
 
 logger = structlog.get_logger()
+
+
+def make_json_serializable(obj: Any) -> Any:
+    """Convert objects to JSON-serializable format."""
+    if isinstance(obj, datetime):
+        return obj.isoformat()
+    elif isinstance(obj, UUID):
+        return str(obj)
+    elif isinstance(obj, dict):
+        return {k: make_json_serializable(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [make_json_serializable(item) for item in obj]
+    elif isinstance(obj, (str, int, float, bool, type(None))):
+        return obj
+    else:
+        # Fallback: try to convert to string
+        return str(obj)
 
 
 class NCRIntegrationAdapter(BaseIntegrationAdapter):
@@ -37,10 +56,10 @@ class NCRIntegrationAdapter(BaseIntegrationAdapter):
         self, payload: bytes, signature: str, headers: Dict[str, str]
     ) -> bool:
         """
-        Verify NCR webhook signature (if applicable).
+        Verify signature for requests (not applicable for NCR API calls).
         
-        Note: NCR may use OAuth or other authentication methods.
-        For now, we'll return True if signature is present or if we're using API key auth.
+        Note: NCR API uses HMAC-SHA512 authentication for API requests, not webhook signatures.
+        This method is required by BaseIntegrationAdapter but not used for NCR.
 
         Args:
             payload: Raw request body bytes
@@ -48,52 +67,18 @@ class NCRIntegrationAdapter(BaseIntegrationAdapter):
             headers: Request headers
 
         Returns:
-            True if signature is valid or not required, False otherwise
+            True (NCR doesn't use webhook signatures)
         """
-        # NCR API typically uses OAuth Bearer tokens, not webhook signatures
-        # If webhooks are implemented later, add signature verification here
-        # For now, return True as API calls use OAuth
+        # NCR API uses HMAC-SHA512 for API authentication, not webhook signatures
+        # This method is not used for NCR integration
         return True
-
-    def extract_store_id(
-        self, headers: Dict[str, str], payload: Dict[str, Any]
-    ) -> Optional[str]:
-        """
-        Extract NCR enterprise unit/store identifier from headers or payload.
-
-        Args:
-            headers: Request headers
-            payload: Webhook payload (if applicable)
-
-        Returns:
-            Enterprise unit ID if found, None otherwise
-        """
-        # Check headers first
-        enterprise_unit = (
-            headers.get("nep-enterprise-unit")
-            or headers.get("nep-enterprise-unit-id")
-            or headers.get("enterprise-unit-id")
-        )
-
-        if enterprise_unit:
-            return enterprise_unit
-
-        # Check payload
-        if payload:
-            return (
-                payload.get("enterpriseUnitId")
-                or payload.get("enterprise_unit_id")
-                or payload.get("store_id")
-            )
-
-        return None
 
     def transform_product(self, raw_data: Dict[str, Any]) -> List[NormalizedProduct]:
         """
         Transform NCR product data to normalized format.
         
-        Note: This is for incoming webhooks/data. For outgoing API calls,
-        we transform normalized products TO NCR format in the API client.
+        Note: For outgoing API calls, we transform normalized products TO NCR format
+        in the API client. This method is used for transforming NCR API responses.
 
         Args:
             raw_data: Raw NCR product data
@@ -165,9 +150,11 @@ class NCRIntegrationAdapter(BaseIntegrationAdapter):
         return None
 
     def get_supported_events(self) -> List[str]:
-        """Return list of supported event types."""
-        # NCR integration uses direct API calls, not webhooks
-        # Return empty list or add webhook event types if NCR supports them
+        """
+        Return list of supported event types.
+        
+        Note: NCR does not provide webhooks. This method returns an empty list.
+        """
         return []
 
     async def handle_webhook(
@@ -178,8 +165,10 @@ class NCRIntegrationAdapter(BaseIntegrationAdapter):
         payload: Dict[str, Any],
     ) -> Dict[str, Any]:
         """
-        Handle a webhook event (if NCR supports webhooks).
-
+        Handle webhook events (not supported by NCR).
+        
+        NCR does not provide webhooks. This method always returns 501 Not Implemented.
+        
         Args:
             event_type: Type of event
             request: FastAPI Request object
@@ -187,13 +176,11 @@ class NCRIntegrationAdapter(BaseIntegrationAdapter):
             payload: Parsed webhook payload
 
         Returns:
-            Response dictionary
+            Response dictionary with error message
         """
-        # NCR integration primarily uses direct API calls
-        # If webhooks are implemented, handle them here
         raise HTTPException(
             status_code=status.HTTP_501_NOT_IMPLEMENTED,
-            detail="NCR webhooks not yet implemented",
+            detail="NCR does not provide webhooks. Use API endpoints for product operations.",
         )
 
     async def create_product(
@@ -209,11 +196,12 @@ class NCRIntegrationAdapter(BaseIntegrationAdapter):
             store_mapping_config: Store mapping configuration with NCR credentials
 
         Returns:
-            Response dictionary
+            Response dictionary with status, NCR result, product ID, and sync queue status
         """
-        # Extract NCR configuration from store mapping
+        # Step 1: Extract NCR configuration from store mapping metadata
         ncr_config = store_mapping_config.get("metadata", {}) or {}
         
+        # Step 2: Initialize NCR API client with credentials from store mapping
         api_client = NCRAPIClient(
             base_url=ncr_config.get("ncr_base_url", "https://api.ncr.com/catalog"),
             shared_key=ncr_config.get("ncr_shared_key"),
@@ -223,11 +211,13 @@ class NCRIntegrationAdapter(BaseIntegrationAdapter):
         )
 
         try:
-            # Get department and category from config or use defaults
+            # Step 3: Get department and category from config or use defaults
+            # These are required by NCR API for product creation
             department_id = ncr_config.get("department_id", "DEFAULT")
             category_id = ncr_config.get("category_id", "DEFAULT")
 
-            # Create product in NCR
+            # Step 4: Create product in NCR via API
+            # Use barcode, sku, or source_id as item_code (priority order)
             result = await api_client.create_product(
                 item_code=normalized_product.barcode or normalized_product.sku or normalized_product.source_id,
                 title=normalized_product.title,
@@ -238,10 +228,10 @@ class NCRIntegrationAdapter(BaseIntegrationAdapter):
                 barcode=normalized_product.barcode,
             )
 
-            # Validate normalized product
+            # Step 5: Validate normalized product data (title, barcode/SKU, price)
             is_valid, errors = self.validate_normalized_product(normalized_product)
             
-            # Create product record for Supabase
+            # Step 6: Create product record for Supabase database
             from app.models.database import Product
             
             product = Product(
@@ -254,16 +244,17 @@ class NCRIntegrationAdapter(BaseIntegrationAdapter):
                 price=normalized_product.price,
                 currency=normalized_product.currency or "USD",
                 image_url=normalized_product.image_url,
-                raw_data=result,  # Store NCR API response as raw_data
+                raw_data=result,  # Store NCR API response as raw_data for reference
                 normalized_data=normalized_product.to_dict(),
                 status="validated" if is_valid else "pending",
                 validation_errors={"errors": errors} if errors else None,
             )
 
-            # Save to Supabase
+            # Step 7: Save product to Supabase (upsert operation)
             saved_product = self.supabase_service.create_or_update_product(product)
             
-            # If valid and store_mapping has an ID, add to sync queue for ESL
+            # Step 8: If product is valid and store_mapping exists, queue for ESL sync
+            # This ensures the product will be synced to electronic shelf labels (ESL)
             store_mapping_id = store_mapping_config.get("id")
             if is_valid and store_mapping_id:
                 self.supabase_service.add_to_sync_queue(
@@ -278,13 +269,14 @@ class NCRIntegrationAdapter(BaseIntegrationAdapter):
                     item_code=normalized_product.source_id,
                 )
 
-            return {
+            return make_json_serializable({
                 "status": "success",
                 "ncr_result": result,
                 "product_id": str(saved_product.id) if saved_product.id else None,
                 "queued_for_sync": is_valid and bool(store_mapping_id),
-            }
+            })
         finally:
+            # Always close the API client connection
             await api_client.close()
 
     async def update_price(
@@ -295,17 +287,23 @@ class NCRIntegrationAdapter(BaseIntegrationAdapter):
     ) -> Dict[str, Any]:
         """
         Update product price in NCR.
+        
+        This is the core price update method that updates the price of an existing
+        product in NCR via the item-prices API endpoint. The price update is
+        effective immediately and applies to the specified enterprise unit.
 
         Args:
-            item_code: Item code
-            price: New price
-            store_mapping_config: Store mapping configuration
+            item_code: Item code of the product to update
+            price: New price value (float)
+            store_mapping_config: Store mapping configuration with NCR credentials
 
         Returns:
-            Response dictionary
+            Response dictionary with status, item_code, and updated price
         """
+        # Extract NCR configuration from store mapping metadata
         ncr_config = store_mapping_config.get("metadata", {}) or {}
         
+        # Initialize NCR API client with credentials from store mapping
         api_client = NCRAPIClient(
             base_url=ncr_config.get("ncr_base_url", "https://api.ncr.com/catalog"),
             shared_key=ncr_config.get("ncr_shared_key"),
@@ -315,12 +313,71 @@ class NCRIntegrationAdapter(BaseIntegrationAdapter):
         )
 
         try:
+            # Update price in NCR via API
+            # Uses PUT /item-prices endpoint with price data
             result = await api_client.update_price(
                 item_code=item_code,
                 price=price,
             )
-            return result
+            
+            # If store_mapping has an ID, update database and queue for ESL sync
+            store_mapping_id = store_mapping_config.get("id")
+            if store_mapping_id:
+                # Find product in database
+                existing_product = self.supabase_service.get_product_by_source(
+                    "ncr", item_code
+                )
+                
+                if existing_product:
+                    # Update product price in database
+                    existing_product.price = float(price)
+                    
+                    # Also update normalized_data price (sync worker uses normalized_data first)
+                    if existing_product.normalized_data:
+                        existing_product.normalized_data["price"] = float(price)
+                    else:
+                        # If normalized_data doesn't exist, create it with updated price
+                        existing_product.normalized_data = {
+                            "source_id": existing_product.source_id,
+                            "title": existing_product.title,
+                            "barcode": existing_product.barcode,
+                            "sku": existing_product.sku,
+                            "price": float(price),
+                            "currency": existing_product.currency or "USD",
+                        }
+                    
+                    updated_product = self.supabase_service.create_or_update_product(existing_product)
+                    
+                    # Queue for ESL sync
+                    if updated_product.id:
+                        self.supabase_service.add_to_sync_queue(
+                            product_id=updated_product.id,
+                            store_mapping_id=store_mapping_id,
+                            operation="update",
+                        )
+                        logger.info(
+                            "NCR price update queued for ESL sync",
+                            product_id=str(updated_product.id),
+                            item_code=item_code,
+                            price=price,
+                        )
+                        
+                        return make_json_serializable({
+                            "status": "success",
+                            "item_code": item_code,
+                            "price": float(price),
+                            "product_id": str(updated_product.id) if updated_product.id else None,
+                            "queued_for_sync": True,
+                        })
+                else:
+                    logger.warning(
+                        "Product not found in database for price update",
+                        item_code=item_code,
+                    )
+            
+            return make_json_serializable(result)
         finally:
+            # Always close the API client connection
             await api_client.close()
 
     async def delete_product(
@@ -329,17 +386,23 @@ class NCRIntegrationAdapter(BaseIntegrationAdapter):
         store_mapping_config: Dict[str, Any],
     ) -> Dict[str, Any]:
         """
-        Delete a product in NCR (sets status to INACTIVE).
+        Delete a product in NCR by setting its status to INACTIVE.
+        
+        Note: NCR API doesn't have a physical DELETE endpoint. Instead, products
+        are "deleted" by updating their status to INACTIVE, which hides them from
+        active product listings but preserves the data.
 
         Args:
-            item_code: Item code to delete
-            store_mapping_config: Store mapping configuration
+            item_code: Item code of the product to delete
+            store_mapping_config: Store mapping configuration with NCR credentials
 
         Returns:
-            Response dictionary
+            Response dictionary with status, item_code, and deleted flag
         """
+        # Extract NCR configuration from store mapping metadata
         ncr_config = store_mapping_config.get("metadata", {}) or {}
         
+        # Initialize NCR API client with credentials from store mapping
         api_client = NCRAPIClient(
             base_url=ncr_config.get("ncr_base_url", "https://api.ncr.com/catalog"),
             shared_key=ncr_config.get("ncr_shared_key"),
@@ -349,16 +412,51 @@ class NCRIntegrationAdapter(BaseIntegrationAdapter):
         )
 
         try:
-            # Get department and category from config
+            # Get department and category from config (required for NCR API update)
             department_id = ncr_config.get("department_id", "DEFAULT")
             category_id = ncr_config.get("category_id", "DEFAULT")
 
+            # Delete product by setting status to INACTIVE via API
+            # This preserves the product data but marks it as inactive
             result = await api_client.delete_product(
                 item_code=item_code,
                 department_id=department_id,
                 category_id=category_id,
             )
-            return result
+            
+            # If store_mapping has an ID, queue for database deletion and ESL sync
+            store_mapping_id = store_mapping_config.get("id")
+            if store_mapping_id:
+                # Find products with this source_id in the database
+                products_to_delete = self.supabase_service.get_products_by_source_id(
+                    "ncr", item_code
+                )
+                
+                queued_count = 0
+                for product in products_to_delete:
+                    if product.id:
+                        self.supabase_service.add_to_sync_queue(
+                            product_id=product.id,
+                            store_mapping_id=store_mapping_id,
+                            operation="delete",
+                        )
+                        queued_count += 1
+                        logger.info(
+                            "NCR product queued for deletion and ESL sync",
+                            product_id=str(product.id),
+                            item_code=item_code,
+                        )
+                
+                return make_json_serializable({
+                    "status": "success",
+                    "item_code": item_code,
+                    "deleted": True,
+                    "queued_for_sync": queued_count > 0,
+                    "queued_count": queued_count,
+                })
+            
+            return make_json_serializable(result)
         finally:
+            # Always close the API client connection
             await api_client.close()
 

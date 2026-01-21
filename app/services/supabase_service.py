@@ -8,6 +8,7 @@ from uuid import UUID
 from datetime import datetime
 from supabase import create_client, Client
 import structlog
+import json
 from app.config import settings
 from app.models.database import (
     Product,
@@ -29,6 +30,28 @@ class SupabaseService:
         self.client: Client = create_client(
             settings.supabase_url, settings.supabase_service_key
         )
+    
+    def _serialize_datetimes(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Recursively convert datetime objects to ISO format strings.
+        Also converts UUID objects to strings.
+        
+        Args:
+            data: Dictionary that may contain datetime/UUID objects
+            
+        Returns:
+            Dictionary with datetime/UUID objects converted to strings
+        """
+        if isinstance(data, dict):
+            return {k: self._serialize_datetimes(v) for k, v in data.items()}
+        elif isinstance(data, list):
+            return [self._serialize_datetimes(item) for item in data]
+        elif isinstance(data, datetime):
+            return data.isoformat()
+        elif isinstance(data, UUID):
+            return str(data)
+        else:
+            return data
 
     # Store Mappings
 
@@ -208,9 +231,20 @@ class SupabaseService:
 
             if existing:
                 # Update existing product
-                update_data = product.dict(
-                    exclude_none=True, exclude={"id", "created_at"}
-                )
+                # Use model_dump with json mode for Pydantic v2, or dict() with manual serialization
+                try:
+                    # Try Pydantic v2 style first
+                    update_data = product.model_dump(
+                        mode='json', exclude_none=True, exclude={"id", "created_at"}
+                    )
+                except AttributeError:
+                    # Fallback to Pydantic v1 with manual datetime serialization
+                    update_data = product.dict(
+                        exclude_none=True, exclude={"id", "created_at"}
+                    )
+                    # Convert datetime objects to ISO format strings
+                    update_data = self._serialize_datetimes(update_data)
+                
                 result = (
                     self.client.table("products")
                     .update(update_data)
@@ -222,9 +256,20 @@ class SupabaseService:
                     return Product(**result.data[0])
             else:
                 # Create new product
+                try:
+                    # Try Pydantic v2 style first
+                    insert_data = product.model_dump(
+                        mode='json', exclude_none=True, exclude={"id"}
+                    )
+                except AttributeError:
+                    # Fallback to Pydantic v1 with manual datetime serialization
+                    insert_data = product.dict(exclude_none=True, exclude={"id"})
+                    # Convert datetime objects to ISO format strings
+                    insert_data = self._serialize_datetimes(insert_data)
+                
                 result = (
                     self.client.table("products")
-                    .insert(product.dict(exclude_none=True, exclude={"id"}))
+                    .insert(insert_data)
                     .execute()
                 )
 
