@@ -626,6 +626,46 @@ class SupabaseService:
             logger.error("Failed to get Hipoink product", error=str(e))
             return None
 
+    def delete_hipoink_product_mapping(
+        self, product_id: str, store_mapping_id: str
+    ) -> bool:
+        """
+        Delete a Hipoink product mapping record.
+        
+        Args:
+            product_id: The product UUID
+            store_mapping_id: The store mapping UUID
+            
+        Returns:
+            True if deleted, False if not found
+        """
+        try:
+            response = (
+                self.client.table("hipoink_products")
+                .delete()
+                .eq("product_id", str(product_id))
+                .eq("store_mapping_id", str(store_mapping_id))
+                .execute()
+            )
+            
+            deleted_count = len(response.data) if response.data else 0
+            logger.info(
+                "Deleted Hipoink product mapping",
+                product_id=str(product_id),
+                store_mapping_id=str(store_mapping_id),
+                deleted_count=deleted_count,
+            )
+            return deleted_count > 0
+            
+        except Exception as e:
+            logger.error(
+                "Failed to delete Hipoink product mapping",
+                product_id=str(product_id),
+                store_mapping_id=str(store_mapping_id),
+                error=str(e),
+            )
+            return False
+
     # Price Adjustment Schedules
 
     def create_price_adjustment_schedule(
