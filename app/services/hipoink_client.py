@@ -305,6 +305,76 @@ class HipoinkClient:
         except Exception as e:
             raise HipoinkAPIError(f"Product creation failed: {str(e)}")
 
+    @retry_with_backoff(max_attempts=3, initial_delay=1.0, multiplier=2.0)
+    async def delete_products(
+        self, store_code: str, product_codes: List[str], is_base64: str = "0"
+    ) -> Dict[str, Any]:
+        """
+        Delete products from Hipoink ESL system.
+        Uses endpoint: POST /api/{client_id}/product/del_multiple
+        
+        When a product is deleted, any ESL tag bound to it will be unbound.
+
+        Args:
+            store_code: Store code (required)
+            product_codes: List of product codes (barcodes) to delete
+            is_base64: Whether codes are base64 encoded (default "0")
+
+        Returns:
+            Response data from Hipoink API with count of deleted products
+        """
+        try:
+            # Build request payload
+            # f1 is the array of product codes to delete
+            request_data = {
+                "store_code": store_code,
+                "f1": product_codes,
+                "is_base64": is_base64,
+            }
+
+            # Generate sign
+            sign = self._generate_sign(request_data)
+            request_data["sign"] = sign
+
+            # API endpoint
+            endpoint = f"/api/{self.client_id}/product/del_multiple"
+
+            logger.info(
+                "Deleting products from Hipoink",
+                product_codes=product_codes,
+                store_code=store_code,
+                endpoint=endpoint,
+            )
+
+            response = await self.client.post(endpoint, json=request_data)
+            response.raise_for_status()
+
+            response_data = response.json()
+
+            # Check for errors
+            error_code = response_data.get("error_code")
+            if error_code != 0:
+                error_msg = response_data.get("error_msg", "Unknown error")
+                raise HipoinkAPIError(
+                    f"Hipoink API error: {error_msg} (code: {error_code})"
+                )
+
+            deleted_count = response_data.get("count", 0)
+            logger.info(
+                "Successfully deleted products from Hipoink",
+                deleted_count=deleted_count,
+                store_code=store_code,
+            )
+
+            return response_data
+
+        except httpx.HTTPStatusError as e:
+            if 500 <= e.response.status_code < 600:
+                raise TransientError(f"Hipoink API error: {e.response.status_code}")
+            raise PermanentError(f"Hipoink API error: {e.response.status_code}")
+        except Exception as e:
+            raise HipoinkAPIError(f"Product deletion failed: {str(e)}")
+
     async def close(self):
         """Close the HTTP client."""
         await self.client.aclose()

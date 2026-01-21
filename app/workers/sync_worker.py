@@ -383,7 +383,7 @@ class SyncWorker:
     ):
         """
         Handle delete operation.
-        Note: Hipoink API may not have a delete endpoint - implement when available.
+        Deletes product from Hipoink ESL system and cleans up mapping.
 
         Args:
             product: Product to delete
@@ -414,12 +414,40 @@ class SyncWorker:
             )
             return
 
-        # TODO: Implement Hipoink product delete when API endpoint is available
-        logger.warning(
-            "Hipoink product delete not yet implemented",
-            product_code=barcode,
-            store_code=store_mapping.hipoink_store_code,
-        )
+        try:
+            # Call Hipoink API to delete the product
+            response = await self.hipoink_client.delete_products(
+                store_code=store_mapping.hipoink_store_code,
+                product_codes=[barcode],  # API expects a list
+            )
+
+            deleted_count = response.get("count", 0)
+            logger.info(
+                "Successfully deleted product from Hipoink",
+                product_code=barcode,
+                store_code=store_mapping.hipoink_store_code,
+                deleted_count=deleted_count,
+            )
+
+            # Clean up the hipoink_products mapping table
+            if hipoink_mapping:
+                self.supabase_service.delete_hipoink_product_mapping(
+                    product_id=product.id,  # type: ignore
+                    store_mapping_id=store_mapping.id,  # type: ignore
+                )
+                logger.info(
+                    "Cleaned up Hipoink product mapping",
+                    product_id=str(product.id),
+                )
+
+        except HipoinkAPIError as e:
+            logger.error(
+                "Failed to delete product from Hipoink",
+                product_code=barcode,
+                store_code=store_mapping.hipoink_store_code,
+                error=str(e),
+            )
+            raise
 
 
 async def run_worker():
