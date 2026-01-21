@@ -335,6 +335,57 @@ class SupabaseService:
             )
             return []
 
+    def get_products_by_system(self, source_system: str) -> List[Product]:
+        """
+        Fetch all products belonging to a specific integration (e.g., 'square').
+        Used for deletion detection by comparing DB vs API products.
+
+        Args:
+            source_system: Source system name (e.g., 'square', 'shopify')
+
+        Returns:
+            List of Product objects
+        """
+        try:
+            result = (
+                self.client.table("products")
+                .select("*")
+                .eq("source_system", source_system)
+                .execute()
+            )
+
+            if result.data:
+                return [Product(**item) for item in result.data]
+            return []
+        except Exception as e:
+            logger.error(
+                "Failed to get products by system",
+                source_system=source_system,
+                error=str(e),
+            )
+            return []
+
+    def update_product_status(self, product_id: Any, status: str) -> None:
+        """
+        Update the status of a product (e.g., marking it as 'deleted').
+
+        Args:
+            product_id: Product UUID or string ID
+            status: New status (e.g., 'deleted', 'pending', 'validated')
+        """
+        try:
+            self.client.table("products").update({"status": status}).eq(
+                "id", str(product_id)
+            ).execute()
+            logger.debug("Updated product status", product_id=str(product_id), status=status)
+        except Exception as e:
+            logger.error(
+                "Failed to update product status",
+                product_id=str(product_id),
+                status=status,
+                error=str(e),
+            )
+
     def get_product_by_barcode(
         self, barcode: str, store_mapping_id: Optional[UUID] = None
     ) -> Optional[Product]:

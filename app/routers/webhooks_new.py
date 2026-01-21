@@ -21,6 +21,7 @@ async def handle_webhook(
     event_type: str,
     request: Request,
     x_shopify_hmac_sha256: Optional[str] = Header(None, alias="X-Shopify-Hmac-Sha256"),
+    x_square_hmacsha256_signature: Optional[str] = Header(None, alias="x-square-hmacsha256-signature"),
 ):
     """
     Generic webhook handler that routes to the appropriate integration adapter.
@@ -62,10 +63,18 @@ async def handle_webhook(
                 or headers.get("X-Shopify-Hmac-Sha256")
                 or headers.get("x-shopify-hmac-sha256")
             )
+        elif integration_name == "square":
+            signature = (
+                x_square_hmacsha256_signature
+                or headers.get("X-Square-HmacSha256-Signature")
+                or headers.get("x-square-hmacsha256-signature")
+            )
         # Add other integrations' signature extraction here
 
         # Verify signature
-        if signature and not adapter.verify_signature(body_bytes, signature, headers):
+        # For Square, pass request URL for signature verification (Square doesn't send it in headers)
+        request_url = str(request.url) if integration_name == "square" else None
+        if signature and not adapter.verify_signature(body_bytes, signature, headers, request_url=request_url):
             logger.warning(
                 "Invalid webhook signature",
                 integration=integration_name,
@@ -84,6 +93,12 @@ async def handle_webhook(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Invalid JSON payload: {str(e)}",
             )
+
+        logger.info(
+            "Processing webhook",
+            integration=integration_name,
+            event_type=event_type,
+        )
 
         # Let the adapter handle the webhook
         result = await adapter.handle_webhook(

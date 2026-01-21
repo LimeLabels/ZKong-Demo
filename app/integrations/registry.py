@@ -49,13 +49,18 @@ class IntegrationRegistry:
 
         # Future integrations will be loaded here
         # Try to load Square integration
-        # try:
-        #     from app.integrations.square.adapter import SquareIntegrationAdapter
-        #     square_adapter = SquareIntegrationAdapter()
-        #     self.register(square_adapter)
-        #     logger.info("Loaded Square integration", adapter_name=square_adapter.get_name())
-        # except ImportError:
-        #     pass  # Square not implemented yet
+        try:
+            from app.integrations.square.adapter import SquareIntegrationAdapter
+
+            square_adapter = SquareIntegrationAdapter()
+            self.register(square_adapter)
+            logger.info(
+                "Loaded Square integration", adapter_name=square_adapter.get_name()
+            )
+        except ImportError as e:
+            logger.warning("Could not load Square integration", error=str(e))
+        except Exception as e:
+            logger.error("Error loading Square integration", error=str(e))
 
     def register(self, adapter: BaseIntegrationAdapter):
         """
