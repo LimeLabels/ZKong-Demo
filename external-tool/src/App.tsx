@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import { useState } from 'react'
 import { Page, Layout, Tabs } from '@shopify/polaris'
 import { ScheduleCalendar } from './components/ScheduleCalendar'
 import { ScheduleList } from './components/ScheduleList'

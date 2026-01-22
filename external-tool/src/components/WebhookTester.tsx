@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import { useState } from 'react'
 import { Card, FormLayout, TextField, Button, Banner, Text, BlockStack, Select, InlineStack } from '@shopify/polaris'
 import { apiClient } from '../services/api'
 
@@ -98,6 +98,7 @@ export function WebhookTester() {
               onChange={setItemCode}
               placeholder="ITEM-001"
               helpText="Required for NCR webhooks"
+              autoComplete="off"
             />
           )}
 
@@ -108,6 +109,7 @@ export function WebhookTester() {
               onChange={setObjectId}
               placeholder="catalog-object-id"
               helpText="Required for Square webhooks"
+              autoComplete="off"
             />
           )}
 
@@ -118,6 +120,7 @@ export function WebhookTester() {
               onChange={setStoreMappingId}
               placeholder="uuid-here"
               helpText="Required for price update triggers"
+              autoComplete="off"
             />
           )}
 
@@ -127,6 +130,7 @@ export function WebhookTester() {
             onChange={setScheduleId}
             placeholder="schedule-uuid-here"
             helpText={webhookType === 'manual' ? 'Required for manual triggers' : 'Optional - specific schedule to trigger'}
+            autoComplete="off"
           />
 
           <TextField
@@ -136,6 +140,7 @@ export function WebhookTester() {
             type="password"
             placeholder="Bearer token"
             helpText="Optional - for authenticated requests"
+            autoComplete="off"
           />
 
           <InlineStack>
