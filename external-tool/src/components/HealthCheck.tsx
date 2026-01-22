@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react'
+import { useState, useEffect } from 'react'
 import { Card, Button, Banner, Text, BlockStack, InlineStack } from '@shopify/polaris'
 import { apiClient } from '../services/api'
 
@@ -58,7 +58,7 @@ export function HealthCheck() {
             Monitor the health status of webhook endpoints
           </Text>
         </div>
-        <InlineStack gap="tight">
+        <InlineStack gap="200">
           <Button
             onClick={checkHealth}
             loading={loading}

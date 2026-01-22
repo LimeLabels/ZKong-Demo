@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react'
+import { useEffect, useState } from 'react'
 import {
   Card,
   ResourceList,
@@ -209,8 +209,7 @@ export function ScheduleList() {
                     </BlockStack>
                     <InlineStack gap="200">
                       <Button
-                        onClick={(e) => {
-                          e.stopPropagation()
+                        onClick={() => {
                           handleTriggerSchedule(id)
                         }}
                         size="slim"
@@ -218,11 +217,10 @@ export function ScheduleList() {
                         Trigger
                       </Button>
                       <Button
-                        onClick={(e) => {
-                          e.stopPropagation()
+                        onClick={() => {
                           handleDelete(id)
                         }}
-                        destructive
+                        tone="critical"
                         size="slim"
                       >
                         Delete

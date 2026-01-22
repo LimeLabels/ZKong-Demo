@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Card, ResourceList, ResourceItem, Text, Button, Banner, Spinner, BlockStack, Badge, InlineStack } from '@shopify/polaris'
 import { apiClient } from '../services/api'
 import { format } from 'date-fns'
@@ -110,6 +110,7 @@ export function ScheduleManager() {
                 <ResourceItem
                   id={id}
                   accessibilityLabel={`View details for ${name}`}
+                  onClick={() => {}}
                 >
                   <InlineStack align="space-between" blockAlign="start">
                     <BlockStack gap="200">
@@ -123,7 +124,7 @@ export function ScheduleManager() {
                         <Badge tone={is_active ? 'success' : 'info'}>
                           {is_active ? 'Active' : 'Inactive'}
                         </Badge>
-                        <Text variant="bodySm" tone="subdued">
+                        <Text variant="bodySm" tone="subdued" as="span">
                           {repeat_type || 'none'}
                         </Text>
                       </InlineStack>

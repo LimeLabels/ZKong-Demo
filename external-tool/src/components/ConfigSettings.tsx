@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import { useState } from 'react'
 import { Card, FormLayout, TextField, Button, Banner, Text, BlockStack } from '@shopify/polaris'
 import { updateApiBaseUrl } from '../services/api'
 
@@ -44,6 +44,7 @@ export function ConfigSettings() {
             onChange={setBackendUrl}
             placeholder="http://localhost:8000"
             helpText="Base URL for the FastAPI backend (e.g., https://your-app.up.railway.app)"
+            autoComplete="off"
           />
 
           <TextField
@@ -53,6 +54,7 @@ export function ConfigSettings() {
             type="password"
             placeholder="Bearer token for API authentication"
             helpText="Optional - Token used for authenticating webhook trigger requests"
+            autoComplete="off"
           />
 
           <Button

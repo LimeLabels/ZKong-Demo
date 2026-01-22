@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Card, Layout, Spinner, Button, Banner, Text, BlockStack, InlineStack } from '@shopify/polaris'
 import { apiClient } from '../services/api'
 
@@ -69,7 +69,7 @@ export function Dashboard() {
       </Text>
 
       <Layout>
-        <Layout.Section oneThird>
+        <Layout.Section variant="oneThird">
           <Card>
             <BlockStack gap="200">
               <Text variant="headingSm" as="h3">
@@ -82,7 +82,7 @@ export function Dashboard() {
           </Card>
         </Layout.Section>
 
-        <Layout.Section oneThird>
+        <Layout.Section variant="oneThird">
           <Card>
             <BlockStack gap="200">
               <Text variant="headingSm" as="h3">
@@ -95,7 +95,7 @@ export function Dashboard() {
           </Card>
         </Layout.Section>
 
-        <Layout.Section oneThird>
+        <Layout.Section variant="oneThird">
           <Card>
             <BlockStack gap="200">
               <Text variant="headingSm" as="h3">
