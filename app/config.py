@@ -34,6 +34,9 @@ class Settings(BaseSettings):
     )
 
     # NCR POS Configuration
+    ncr_pos_base_url: str = (
+        "https://ncr-pos-local-production.up.railway.app"  # NCR POS deployment URL (Railway)
+    )
     ncr_api_base_url: str = "https://api.ncr.com/catalog"  # NCR API base URL (production)
     ncr_shared_key: str = "42ca1d8c9fe34aa89b283b07e7694fcd"  # NCR shared key (bsp-shared-key)
     ncr_secret_key: str = "fc12af86bb4d4aa1a01e6178373f9b21"  # NCR secret key (bsp-secret-key)

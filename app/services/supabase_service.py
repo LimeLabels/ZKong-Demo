@@ -169,6 +169,36 @@ class SupabaseService:
             logger.error("Failed to update store mapping OAuth token", error=str(e))
             return None
 
+    def get_store_mappings_by_source_system(
+        self, source_system: str
+    ) -> List[StoreMapping]:
+        """
+        Get all active store mappings for a source system.
+
+        Args:
+            source_system: Source system name (e.g., 'ncr', 'square', 'shopify')
+
+        Returns:
+            List of StoreMapping objects
+        """
+        try:
+            result = (
+                self.client.table("store_mappings")
+                .select("*")
+                .eq("source_system", source_system)
+                .eq("is_active", True)
+                .execute()
+            )
+
+            return [StoreMapping(**row) for row in result.data] if result.data else []
+        except Exception as e:
+            logger.error(
+                "Failed to get store mappings by source system",
+                source_system=source_system,
+                error=str(e),
+            )
+            return []
+
     def get_store_mapping_by_shop_domain(
         self, shop_domain: str
     ) -> Optional[StoreMapping]:

@@ -401,6 +401,72 @@ class NCRAPIClient:
 
         return {"status": "success", "item_code": item_code, "price": price}
 
+    async def list_items(
+        self,
+        page_number: int = 0,
+        page_size: int = 200,
+        item_code_pattern: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        List items from NCR API using GET /items endpoint.
+        
+        Args:
+            page_number: Page number (starting from 0)
+            page_size: Number of items per page (10-10000, default 200)
+            item_code_pattern: Optional item code pattern for filtering (supports wildcards)
+        
+        Returns:
+            API response dictionary with items and pagination info
+        """
+        url = f"{self.base_url}/items"
+        
+        # Build query parameters
+        params: Dict[str, Any] = {
+            "pageNumber": page_number,
+            "pageSize": min(max(page_size, 10), 10000),  # Clamp between 10 and 10000
+        }
+        
+        if item_code_pattern:
+            params["itemCodePattern"] = item_code_pattern
+        
+        # Get request headers (NCR requires HMAC signature for GET requests too)
+        headers = self._get_request_headers("GET", url, b"")
+        
+        logger.debug(
+            "NCR list items request",
+            url=url,
+            params=params,
+        )
+        
+        # Make GET request
+        response = await self.client.get(
+            url,
+            params=params,
+            headers=headers,
+        )
+        
+        # Handle errors
+        if response.status_code >= 400:
+            error_body = response.text
+            logger.error(
+                "NCR API error listing items",
+                status=response.status_code,
+                body=error_body,
+                params=params,
+            )
+            raise Exception(f"NCR API error {response.status_code}: {error_body}")
+        
+        response.raise_for_status()
+        data = response.json()
+        
+        logger.debug(
+            "NCR list items response",
+            page_number=page_number,
+            item_count=len(data.get("content", [])),
+        )
+        
+        return data
+
     async def delete_product(
         self,
         item_code: str,
