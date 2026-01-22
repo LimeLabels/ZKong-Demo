@@ -26,6 +26,11 @@ export default defineConfig({
     port: parseInt(process.env.PORT || "3000"),
     host: true,
     strictPort: true,
+    allowedHosts: [
+      "external-time-based-tool-production.up.railway.app",
+      ".railway.app",
+      "localhost",
+    ],
     proxy: {
       "/api": {
         target: process.env.BACKEND_URL || "http://localhost:8000",
