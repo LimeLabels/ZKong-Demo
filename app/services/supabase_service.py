@@ -461,6 +461,33 @@ class SupabaseService:
                 error=str(e),
             )
 
+    def delete_product(self, product_id: Any) -> bool:
+        """
+        Delete a product from the database.
+
+        Args:
+            product_id: Product UUID or string ID
+
+        Returns:
+            True if deleted successfully, False otherwise
+        """
+        try:
+            result = (
+                self.client.table("products")
+                .delete()
+                .eq("id", str(product_id))
+                .execute()
+            )
+            logger.info("Deleted product from database", product_id=str(product_id))
+            return True
+        except Exception as e:
+            logger.error(
+                "Failed to delete product from database",
+                product_id=str(product_id),
+                error=str(e),
+            )
+            return False
+
     def get_product_by_barcode(
         self, barcode: str, store_mapping_id: Optional[UUID] = None
     ) -> Optional[Product]:
