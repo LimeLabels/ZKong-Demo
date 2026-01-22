@@ -132,40 +132,94 @@ export function ScheduleCalendar() {
       }))
 
       // Prepare request payload
+      // Ensure dates are valid and end_date is after start_date
+      const startDate = new Date(formData.startDate)
+      const endDate = new Date(formData.endDate)
+      
+      if (isNaN(startDate.getTime())) {
+        throw new Error('Invalid start date')
+      }
+      if (isNaN(endDate.getTime())) {
+        throw new Error('Invalid end date')
+      }
+      if (endDate < startDate) {
+        throw new Error('End date must be after start date')
+      }
+
       const payload = {
         store_mapping_id: formData.storeMappingId,
         name: formData.name,
         products: products,
-        start_date: formData.startDate.toISOString(),
-        end_date: formData.endDate.toISOString(),
+        start_date: startDate.toISOString(),
+        end_date: endDate.toISOString(),
         repeat_type: formData.repeatType,
         trigger_days: formData.repeatType === 'weekly' ? formData.selectedDays.map(String) : null,
         time_slots: timeSlots,
-        multiplier_percentage: formData.multiplierPercentage,
+        multiplier_percentage: formData.multiplierPercentage !== null ? formData.multiplierPercentage : undefined,
       }
+      
+      console.log('Submitting payload:', payload)
 
-      await apiClient.post('/api/price-adjustments/create', payload)
+      const response = await apiClient.post('/api/price-adjustments/create', payload)
+      
+      console.log('Schedule created successfully:', response.data)
 
       setSubmitSuccess(true)
+      setSubmitError(null)
       
-      // Reset form
-      setFormData({
-        platform: formData.platform, // Keep platform selection
-        name: '',
-        startDate: new Date(),
-        endDate: new Date(),
-        repeatType: 'none',
-        selectedDays: [],
-        timeSlots: [{ startTime: '09:00', endTime: '17:00' }],
-        storeMappingId: formData.storeMappingId, // Keep store mapping ID
-        itemCode: '',
-        objectId: '',
-        price: 0,
-        originalPrice: 0,
-        multiplierPercentage: null,
-      })
+      // Reset form after a short delay to show success message
+      setTimeout(() => {
+        setFormData({
+          platform: formData.platform, // Keep platform selection
+          name: '',
+          startDate: new Date(),
+          endDate: new Date(),
+          repeatType: 'none',
+          selectedDays: [],
+          timeSlots: [{ startTime: '09:00', endTime: '17:00' }],
+          storeMappingId: formData.storeMappingId, // Keep store mapping ID
+          itemCode: '',
+          objectId: '',
+          price: 0,
+          originalPrice: 0,
+          multiplierPercentage: null,
+        })
+        setSubmitSuccess(false)
+      }, 3000)
     } catch (err: any) {
-      setSubmitError(err.response?.data?.detail || err.message || 'Failed to create schedule')
+      console.error('Error creating schedule:', err)
+      console.error('Error response:', err.response?.data)
+      
+      // Handle different error formats
+      let errorMessage = 'Failed to create schedule'
+      
+      try {
+        if (err.response?.data) {
+          if (typeof err.response.data.detail === 'string') {
+            errorMessage = err.response.data.detail
+          } else if (Array.isArray(err.response.data.detail)) {
+            // Pydantic validation errors
+            const errors = err.response.data.detail.map((e: any) => {
+              const field = e.loc?.join('.') || 'unknown'
+              return `${field}: ${e.msg || e.message || 'Invalid value'}`
+            })
+            errorMessage = errors.join('; ')
+          } else if (err.response.data.detail) {
+            // If detail is an object, stringify it safely
+            errorMessage = typeof err.response.data.detail === 'object' 
+              ? JSON.stringify(err.response.data.detail, null, 2)
+              : String(err.response.data.detail)
+          }
+        } else if (err.message) {
+          errorMessage = String(err.message)
+        }
+      } catch (parseError) {
+        // Fallback if error parsing fails
+        errorMessage = `Error: ${err.message || 'Unknown error occurred'}`
+      }
+      
+      setSubmitError(String(errorMessage))
+      setSubmitSuccess(false)
     } finally {
       setIsSubmitting(false)
     }
@@ -446,7 +500,7 @@ export function ScheduleCalendar() {
 
           {submitError && (
             <Banner tone="critical" title="Error">
-              <p>{submitError}</p>
+              <Text as="p">{String(submitError)}</Text>
             </Banner>
           )}
 
