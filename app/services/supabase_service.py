@@ -464,6 +464,12 @@ class SupabaseService:
     def delete_product(self, product_id: Any) -> bool:
         """
         Delete a product from the database.
+        
+        This method handles cascading deletes by removing related records first:
+        - sync_log entries (via sync_queue_id)
+        - sync_queue items
+        - hipoink_products mappings
+        - Finally, the product itself
 
         Args:
             product_id: Product UUID or string ID
@@ -472,19 +478,73 @@ class SupabaseService:
             True if deleted successfully, False otherwise
         """
         try:
+            product_id_str = str(product_id)
+            
+            # Step 1: Get all sync_queue items for this product to find sync_log entries
+            try:
+                sync_queue_items = (
+                    self.client.table("sync_queue")
+                    .select("id")
+                    .eq("product_id", product_id_str)
+                    .execute()
+                )
+                
+                sync_queue_ids = [item["id"] for item in sync_queue_items.data] if sync_queue_items.data else []
+                
+                # Step 2: Delete sync_log entries for these sync_queue items
+                if sync_queue_ids:
+                    try:
+                        for queue_id in sync_queue_ids:
+                            self.client.table("sync_log").delete().eq("sync_queue_id", str(queue_id)).execute()
+                        logger.debug("Cleaned up sync_log entries", product_id=product_id_str, count=len(sync_queue_ids))
+                    except Exception as e:
+                        logger.warning("Failed to clean up sync_log entries", product_id=product_id_str, error=str(e))
+                
+                # Step 3: Delete sync_queue items
+                if sync_queue_ids:
+                    self.client.table("sync_queue").delete().eq("product_id", product_id_str).execute()
+                    logger.debug("Cleaned up sync_queue items", product_id=product_id_str, count=len(sync_queue_ids))
+            except Exception as e:
+                logger.warning("Failed to clean up sync_queue/sync_log items", product_id=product_id_str, error=str(e))
+            
+            # Step 4: Delete hipoink_products mappings
+            try:
+                self.client.table("hipoink_products").delete().eq("product_id", product_id_str).execute()
+                logger.debug("Cleaned up hipoink_products mappings", product_id=product_id_str)
+            except Exception as e:
+                logger.warning("Failed to clean up hipoink_products mappings", product_id=product_id_str, error=str(e))
+            
+            # Step 5: Delete the product itself
             result = (
                 self.client.table("products")
                 .delete()
-                .eq("id", str(product_id))
+                .eq("id", product_id_str)
                 .execute()
             )
-            logger.info("Deleted product from database", product_id=str(product_id))
-            return True
+            
+            # Check if any rows were actually deleted
+            deleted = result.data is not None and len(result.data) > 0 if isinstance(result.data, list) else result.data is not None
+            
+            if deleted:
+                logger.info(
+                    "Deleted product from database",
+                    product_id=product_id_str,
+                    deleted_count=len(result.data) if isinstance(result.data, list) else 1
+                )
+                return True
+            else:
+                # No rows deleted - product might not exist or already deleted
+                logger.warning(
+                    "No product deleted - product may not exist or already deleted",
+                    product_id=product_id_str
+                )
+                return False
         except Exception as e:
             logger.error(
                 "Failed to delete product from database",
                 product_id=str(product_id),
                 error=str(e),
+                error_type=type(e).__name__,
             )
             return False
 
