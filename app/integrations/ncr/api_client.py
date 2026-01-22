@@ -388,11 +388,26 @@ class NCRAPIClient:
             headers=headers,
         )
         
-        # Step 7: Handle errors
+        # Step 7: Handle errors and log response
+        response_text = response.text
+        response_data = None
+        
+        try:
+            if response_text:
+                response_data = response.json()
+        except Exception:
+            response_data = {"raw_response": response_text}
+        
         if response.status_code >= 400:
-            error_body = response.text
-            logger.error("NCR API error", status=response.status_code, body=error_body, url=url, payload=payload)
-            raise Exception(f"NCR API error {response.status_code}: {error_body}")
+            logger.error(
+                "NCR API error",
+                status=response.status_code,
+                body=response_text,
+                url=url,
+                payload=payload,
+                response_data=response_data
+            )
+            raise Exception(f"NCR API error {response.status_code}: {response_text}")
         
         response.raise_for_status()
 
@@ -401,9 +416,19 @@ class NCRAPIClient:
             item_code=item_code,
             price=price,
             price_code=price_code,
+            enterprise_unit=self.enterprise_unit,
+            response_status=response.status_code,
+            response_data=response_data,
+            payload_sent=payload,
         )
 
-        return {"status": "success", "item_code": item_code, "price": price}
+        return {
+            "status": "success",
+            "item_code": item_code,
+            "price": price,
+            "enterprise_unit": self.enterprise_unit,
+            "api_response": response_data,
+        }
 
     async def list_items(
         self,

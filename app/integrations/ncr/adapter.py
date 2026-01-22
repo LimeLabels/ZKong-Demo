@@ -239,8 +239,9 @@ class NCRIntegrationAdapter(BaseIntegrationAdapter):
 
             # Step 4: Create product in NCR via API
             # Use barcode, sku, or source_id as item_code (priority order)
+            actual_item_code = normalized_product.barcode or normalized_product.sku or normalized_product.source_id
             result = await api_client.create_product(
-                item_code=normalized_product.barcode or normalized_product.sku or normalized_product.source_id,
+                item_code=actual_item_code,
                 title=normalized_product.title,
                 department_id=department_id,
                 category_id=category_id,
@@ -253,11 +254,12 @@ class NCRIntegrationAdapter(BaseIntegrationAdapter):
             is_valid, errors = self.validate_normalized_product(normalized_product)
             
             # Step 6: Create product record for Supabase database
+            # IMPORTANT: Use the actual NCR item_code as source_id so delete/update operations can find it
             from app.models.database import Product
             
             product = Product(
                 source_system="ncr",
-                source_id=normalized_product.source_id,
+                source_id=actual_item_code,  # Use actual NCR item_code, not the original source_id
                 source_variant_id=normalized_product.source_variant_id,
                 title=normalized_product.title,
                 barcode=normalized_product.barcode,
@@ -449,9 +451,25 @@ class NCRIntegrationAdapter(BaseIntegrationAdapter):
             store_mapping_id = store_mapping_config.get("id")
             if store_mapping_id:
                 # Find products with this source_id in the database
+                # Try source_id first (the NCR item_code)
                 products_to_delete = self.supabase_service.get_products_by_source_id(
                     "ncr", item_code
                 )
+                
+                # If not found by source_id, try searching by barcode as fallback
+                # (for products created before the fix where source_id might not match item_code)
+                if not products_to_delete:
+                    logger.info(
+                        "Product not found by source_id, trying barcode search",
+                        item_code=item_code,
+                        source_system="ncr"
+                    )
+                    # Search by barcode - get all NCR products and filter
+                    all_ncr_products = self.supabase_service.get_products_by_system("ncr")
+                    products_to_delete = [
+                        p for p in all_ncr_products 
+                        if p.barcode == item_code or p.sku == item_code
+                    ]
                 
                 queued_count = 0
                 for product in products_to_delete:
