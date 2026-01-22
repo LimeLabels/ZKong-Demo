@@ -12,6 +12,8 @@ from app.services.hipoink_client import (
     HipoinkProductItem,
 )
 from app.services.shopify_api_client import ShopifyAPIClient
+from app.integrations.ncr.adapter import NCRIntegrationAdapter
+from app.integrations.square.adapter import SquareIntegrationAdapter
 from app.models.database import PriceAdjustmentSchedule, StoreMapping
 
 logger = structlog.get_logger()
@@ -728,6 +730,20 @@ class PriceScheduler:
                     shopify_credentials=shopify_credentials,
                 )
 
+            # Update NCR prices if store mapping is for NCR
+            if store_mapping.source_system == "ncr":
+                await self._update_ncr_prices(
+                    updated_products_data,
+                    store_mapping,
+                )
+
+            # Update Square prices if store mapping is for Square
+            if store_mapping.source_system == "square":
+                await self._update_square_prices(
+                    updated_products_data,
+                    store_mapping,
+                )
+
         except Exception as e:
             logger.error(
                 "Failed to apply promotional prices",
@@ -850,6 +866,22 @@ class PriceScheduler:
                     shopify_credentials=shopify_credentials,
                 )
 
+            # Update NCR prices if store mapping is for NCR (restore original prices)
+            if store_mapping.source_system == "ncr":
+                await self._update_ncr_prices(
+                    products_data,
+                    store_mapping,
+                    use_original=True,
+                )
+
+            # Update Square prices if store mapping is for Square (restore original prices)
+            if store_mapping.source_system == "square":
+                await self._update_square_prices(
+                    products_data,
+                    store_mapping,
+                    use_original=True,
+                )
+
         except Exception as e:
             logger.error(
                 "Failed to restore original prices",
@@ -857,6 +889,145 @@ class PriceScheduler:
                 error=str(e),
             )
             raise
+
+    async def _update_ncr_prices(
+        self,
+        products_data: list,
+        store_mapping: StoreMapping,
+        use_original: bool = False,
+    ):
+        """
+        Update prices in NCR for products.
+        
+        This method is called by the price scheduler to update NCR prices when schedules trigger.
+        Since NCR doesn't provide webhooks, the scheduler polls every minute and updates prices directly.
+
+        Args:
+            products_data: List of product data dicts with 'pc' (item_code) and 'pp' (price) or 'original_price'
+            store_mapping: Store mapping with NCR configuration
+            use_original: If True, use original_price from product_data instead of 'pp'
+        """
+        if store_mapping.source_system != "ncr":
+            logger.debug("Store mapping is not for NCR, skipping NCR update")
+            return
+
+        try:
+            # Initialize NCR adapter
+            ncr_adapter = NCRIntegrationAdapter()
+
+            for product_data in products_data:
+                item_code = product_data["pc"]  # Item code (barcode)
+
+                # Determine price to use
+                if use_original:
+                    price = float(product_data.get("original_price", 0))
+                else:
+                    price = float(product_data.get("pp", 0))
+
+                if price <= 0:
+                    logger.warning(
+                        "Invalid price for NCR update",
+                        item_code=item_code,
+                        price=price,
+                    )
+                    continue
+
+                # Update price in NCR using the adapter
+                # The adapter handles NCR API calls and updates the database
+                try:
+                    result = await ncr_adapter.update_price(
+                        item_code=item_code,
+                        price=price,
+                        store_mapping_config={
+                            "id": str(store_mapping.id),
+                            "metadata": store_mapping.metadata or {},
+                        },
+                    )
+
+                    logger.info(
+                        "Updated NCR price",
+                        item_code=item_code,
+                        price=price,
+                        use_original=use_original,
+                    )
+                except Exception as e:
+                    logger.error(
+                        "Failed to update NCR price",
+                        item_code=item_code,
+                        price=price,
+                        error=str(e),
+                    )
+                    # Continue with other products even if one fails
+                    continue
+
+        except Exception as e:
+            # Log error but don't fail the entire operation
+                logger.error(
+                "Failed to update NCR prices (non-critical)",
+                store_mapping_id=str(store_mapping.id),
+                error=str(e),
+            )
+
+    async def _update_square_prices(
+        self,
+        products_data: list,
+        store_mapping: StoreMapping,
+        use_original: bool = False,
+    ):
+        """
+        Update prices in Square for products.
+        
+        This method is called by the price scheduler to update Square prices when schedules trigger.
+        Square supports webhooks, but this provides a fallback polling mechanism.
+
+        Args:
+            products_data: List of product data dicts with 'pc' (object_id) and 'pp' (price) or 'original_price'
+            store_mapping: Store mapping with Square configuration
+            use_original: If True, use original_price from product_data instead of 'pp'
+        """
+        if store_mapping.source_system != "square":
+            logger.debug("Store mapping is not for Square, skipping Square update")
+            return
+
+        try:
+            # Initialize Square adapter
+            square_adapter = SquareIntegrationAdapter()
+
+            for product_data in products_data:
+                object_id = product_data["pc"]  # Object ID (catalog object ID)
+
+                # Determine price to use
+                if use_original:
+                    price = float(product_data.get("original_price", 0))
+                else:
+                    price = float(product_data.get("pp", 0))
+
+                if price <= 0:
+                    logger.warning(
+                        "Invalid price for Square update",
+                        object_id=object_id,
+                        price=price,
+                    )
+                    continue
+
+                # TODO: Implement Square price update via API
+                # Square API requires updating catalog objects with new price_money
+                # For now, log that we would update it
+                logger.info(
+                    "Square price update (to be implemented)",
+                    object_id=object_id,
+                    price=price,
+                    use_original=use_original,
+                    note="Square price updates via API need to be implemented",
+                )
+
+        except Exception as e:
+            # Log error but don't fail the entire operation
+            logger.error(
+                "Failed to update Square prices (non-critical)",
+                store_mapping_id=str(store_mapping.id),
+                error=str(e),
+            )
 
 
 async def run_price_scheduler():

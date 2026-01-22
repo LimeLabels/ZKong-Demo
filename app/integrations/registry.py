@@ -33,6 +33,21 @@ class IntegrationRegistry:
         except Exception as e:
             logger.error("Error loading Shopify integration", error=str(e))
 
+        # Try to load NCR integration
+        try:
+            from app.integrations.ncr.adapter import NCRIntegrationAdapter
+
+            ncr_adapter = NCRIntegrationAdapter()
+            self.register(ncr_adapter)
+            logger.info(
+                "Loaded NCR integration", adapter_name=ncr_adapter.get_name()
+            )
+        except ImportError as e:
+            logger.warning("Could not load NCR integration", error=str(e))
+        except Exception as e:
+            logger.error("Error loading NCR integration", error=str(e))
+
+        # Future integrations will be loaded here
         # Try to load Square integration
         try:
             from app.integrations.square.adapter import SquareIntegrationAdapter

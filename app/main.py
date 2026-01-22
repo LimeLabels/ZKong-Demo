@@ -14,6 +14,8 @@ from app.routers import (
     square_auth,
     price_adjustments,
     products,
+    ncr_test,
+    external_webhooks,
 )
 from app.integrations.registry import integration_registry
 # Explicitly import adapters to ensure they're loaded and registered
@@ -51,6 +53,8 @@ app.include_router(square_auth.router)  # Square OAuth endpoints
 app.include_router(square_auth.api_router)  # Square API auth endpoints
 app.include_router(price_adjustments.router)  # Time-based price adjustment schedules
 app.include_router(products.router)  # Product search endpoints
+app.include_router(ncr_test.router)  # NCR integration test endpoints
+app.include_router(external_webhooks.router)  # External webhooks for NCR and Square
 
 
 @app.on_event("startup")
