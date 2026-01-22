@@ -73,6 +73,27 @@ class NCRIntegrationAdapter(BaseIntegrationAdapter):
         # This method is not used for NCR integration
         return True
 
+    def extract_store_id(
+        self, headers: Dict[str, str], payload: Dict[str, Any]
+    ) -> Optional[str]:
+        """
+        Extract store identifier from webhook/event (not applicable for NCR).
+        
+        Note: NCR does not provide webhooks. This method is required by BaseIntegrationAdapter
+        but returns None since NCR uses API-based integration with enterprise_unit identifiers
+        stored in store mappings rather than webhook-based store identification.
+
+        Args:
+            headers: Request headers
+            payload: Parsed webhook payload
+
+        Returns:
+            None (NCR doesn't use webhooks for store identification)
+        """
+        # NCR doesn't use webhooks, so store identification is done via
+        # store mappings with enterprise_unit in metadata
+        return None
+
     def transform_product(self, raw_data: Dict[str, Any]) -> List[NormalizedProduct]:
         """
         Transform NCR product data to normalized format.
