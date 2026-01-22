@@ -92,15 +92,19 @@ class NCRAPIClient:
         # Signing key = secret_key + nonce
         signing_key = self.secret_key + nonce
         
-        # Build signable content (filter out empty values, join with newlines)
+        # Build signable content
+        # Note: For GET requests, content_md5 will be empty string but must still be included
+        # The signable content format is: METHOD\nURI\ncontent-type\ncontent-md5\norganization
+        # Empty values should still be included (as empty strings between newlines)
         params = [
-            method,           # PUT
-            uri,              # /catalog/v2/items/itemObject
+            method,           # GET, PUT, POST, etc.
+            uri,              # /catalog/items?pageNumber=0&pageSize=200
             content_type,     # application/json
-            content_md5,      # MD5 hash of body
+            content_md5,      # MD5 hash of body (empty string for GET requests)
             organization,     # nep-organization header value
         ]
-        signable_content = '\n'.join(p for p in params if p)
+        # Join with newlines - include all params even if empty (especially content_md5 for GET)
+        signable_content = '\n'.join(params)
         
         logger.debug(
             "NCR HMAC signing",
@@ -418,30 +422,39 @@ class NCRAPIClient:
         Returns:
             API response dictionary with items and pagination info
         """
-        url = f"{self.base_url}/items"
-        
         # Build query parameters
-        params: Dict[str, Any] = {
+        query_params: Dict[str, Any] = {
             "pageNumber": page_number,
             "pageSize": min(max(page_size, 10), 10000),  # Clamp between 10 and 10000
         }
         
         if item_code_pattern:
-            params["itemCodePattern"] = item_code_pattern
+            query_params["itemCodePattern"] = item_code_pattern
+        
+        # Build full URL with query string for signature calculation
+        # The URI in the signature MUST include the query string
+        base_url = f"{self.base_url}/items"
+        # Construct query string manually for signature
+        query_string = "&".join(f"{k}={v}" for k, v in query_params.items())
+        url_with_params = f"{base_url}?{query_string}"
         
         # Get request headers (NCR requires HMAC signature for GET requests too)
-        headers = self._get_request_headers("GET", url, b"")
+        # For GET requests, body is empty so Content-MD5 will be empty string
+        # but it must still be included in the signature calculation
+        # Pass the full URL with query params so the signature includes them
+        headers = self._get_request_headers("GET", url_with_params, b"")
         
         logger.debug(
             "NCR list items request",
-            url=url,
-            params=params,
+            url=base_url,
+            params=query_params,
+            has_auth=bool(self.shared_key and self.secret_key),
         )
         
         # Make GET request
         response = await self.client.get(
-            url,
-            params=params,
+            base_url,
+            params=query_params,
             headers=headers,
         )
         

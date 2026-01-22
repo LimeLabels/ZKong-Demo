@@ -21,7 +21,8 @@ router = APIRouter(prefix="/external", tags=["external-webhooks"])
 
 # Initialize services
 supabase_service = SupabaseService()
-price_scheduler = PriceScheduler(supabase_service=supabase_service)
+# PriceScheduler initializes its own SupabaseService internally
+price_scheduler = PriceScheduler()
 
 
 @router.post("/ncr/trigger-price-update")
