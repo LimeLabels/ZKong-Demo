@@ -88,16 +88,24 @@ class PriceScheduler:
         try:
             # Get schedules due for trigger (stored in UTC)
             current_time_utc = datetime.now(pytz.UTC)
+            
+            logger.debug(
+                "Checking for due schedules",
+                current_time_utc=current_time_utc.isoformat(),
+            )
+            
             schedules = self.supabase_service.get_schedules_due_for_trigger(
                 current_time_utc
             )
 
             if not schedules:
+                logger.debug("No schedules due for trigger")
                 return  # No schedules to process
 
             logger.info(
                 "Processing price adjustment schedules",
                 schedule_count=len(schedules),
+                schedule_ids=[str(s.id) for s in schedules],
             )
 
             # Process each schedule
@@ -718,6 +726,14 @@ class PriceScheduler:
         products_data: list,
     ):
         """Apply promotional prices to products - preserves all existing product data."""
+        logger.info(
+            "Applying promotional prices",
+            schedule_id=str(schedule.id),
+            store_mapping_id=str(store_mapping.id),
+            source_system=store_mapping.source_system,
+            products_count=len(products_data),
+            hipoink_store_code=store_mapping.hipoink_store_code,
+        )
         try:
             # Validate hipoink_store_code
             if (
@@ -1100,6 +1116,13 @@ class PriceScheduler:
             store_mapping: Store mapping with Square configuration
             use_original: If True, use original_price from product_data instead of 'pp'
         """
+        logger.info(
+            "Starting Square price update",
+            store_mapping_id=str(store_mapping.id),
+            products_count=len(products_data),
+            use_original=use_original,
+        )
+        
         if store_mapping.source_system != "square":
             logger.debug("Store mapping is not for Square, skipping Square update")
             return
@@ -1111,13 +1134,17 @@ class PriceScheduler:
             # Get Square credentials from store mapping
             square_credentials = square_adapter._get_square_credentials(store_mapping)
             if not square_credentials:
-                logger.debug(
+                logger.warning(
                     "No Square credentials available, skipping Square update",
                     store_mapping_id=str(store_mapping.id),
                 )
                 return
 
             merchant_id, access_token = square_credentials
+            logger.info(
+                "Got Square credentials",
+                merchant_id=merchant_id,
+            )
 
             updates = []
             failed_updates = []
@@ -1131,6 +1158,13 @@ class PriceScheduler:
                 else:
                     price = float(product_data.get("pp", 0))
 
+                logger.info(
+                    "Processing Square product price",
+                    object_id=object_id,
+                    price=price,
+                    use_original=use_original,
+                )
+
                 if price <= 0:
                     logger.warning(
                         "Invalid price for Square update",
@@ -1139,11 +1173,22 @@ class PriceScheduler:
                     )
                     continue
 
-                # If object_id is a barcode, we need to find the actual catalog object ID
-                # Get product from database to find Square IDs
+                # Try to find product by barcode first, then by source_id or source_variant_id
+                # This handles cases where object_id might be the catalog object ID, not barcode
                 existing_product = self.supabase_service.get_product_by_barcode(
                     object_id
                 )
+                
+                # If not found by barcode, try by source_id (catalog object ID)
+                if not existing_product:
+                    logger.debug(
+                        "Product not found by barcode, trying by source_id",
+                        object_id=object_id,
+                    )
+                    # Try to find by source_variant_id (Square variation ID)
+                    existing_product = self.supabase_service.get_product_by_source_variant_id(
+                        object_id
+                    )
 
                 if not existing_product:
                     logger.warning(

@@ -617,6 +617,33 @@ class SupabaseService:
             )
             return None
 
+    def get_product_by_source_variant_id(
+        self, source_variant_id: str
+    ) -> Optional[Product]:
+        """
+        Get product by source_variant_id (e.g., Square variation ID).
+        
+        Args:
+            source_variant_id: The source system's variant ID
+            
+        Returns:
+            Product if found, None otherwise
+        """
+        try:
+            query = self.client.table("products").select("*").eq("source_variant_id", source_variant_id)
+            result = query.limit(1).execute()
+            
+            if result.data and len(result.data) > 0:
+                return Product(**result.data[0])
+            return None
+        except Exception as e:
+            logger.error(
+                "Failed to get product by source_variant_id", 
+                source_variant_id=source_variant_id, 
+                error=str(e)
+            )
+            return None
+
     # Sync Queue
 
     def add_to_sync_queue(
@@ -955,6 +982,12 @@ class SupabaseService:
         Returns schedules where next_trigger_at <= current_time and is_active=True.
         """
         try:
+            # Log the query parameters for debugging
+            logger.debug(
+                "Querying due schedules",
+                current_time_iso=current_time.isoformat(),
+            )
+            
             result = (
                 self.client.table("price_adjustment_schedules")
                 .select("*")
@@ -963,8 +996,18 @@ class SupabaseService:
                 .order("next_trigger_at", desc=False)
                 .execute()
             )
-
-            return [PriceAdjustmentSchedule(**item) for item in result.data]
+            
+            schedules = [PriceAdjustmentSchedule(**item) for item in result.data]
+            
+            if schedules:
+                logger.info(
+                    "Found schedules due for trigger",
+                    count=len(schedules),
+                    schedule_ids=[str(s.id) for s in schedules],
+                    next_trigger_times=[s.next_trigger_at.isoformat() if s.next_trigger_at else None for s in schedules],
+                )
+            
+            return schedules
         except Exception as e:
             logger.error("Failed to get schedules due for trigger", error=str(e))
             return []
