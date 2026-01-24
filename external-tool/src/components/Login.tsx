@@ -66,7 +66,7 @@ export function Login() {
           <Text variant="heading2xl" as="h1">
             {isSignUp ? 'Create Account' : 'Sign In'}
           </Text>
-          <Text variant="bodyMd" tone="subdued">
+          <Text variant="bodyMd" tone="subdued" as="p">
             {isSignUp
               ? 'Create an account to manage your time-based pricing schedules'
               : 'Sign in to access your time-based pricing schedules'}
@@ -116,7 +116,7 @@ export function Login() {
             </Button>
 
             <InlineStack align="center" gap="200">
-              <Text variant="bodyMd" tone="subdued">
+              <Text variant="bodyMd" tone="subdued" as="p">
                 {isSignUp ? 'Already have an account?' : "Don't have an account?"}
               </Text>
               <Button
