@@ -258,3 +258,59 @@ async def get_my_store(user_data: dict = Depends(verify_token)):
             detail=f"Failed to get user store: {str(e)}",
         )
 
+
+class FindStoreMappingRequest(BaseModel):
+    """Request model for finding a store mapping by POS system and Hipoink code."""
+    source_system: str
+    hipoink_store_code: str
+
+
+@router.post("/find-store-mapping")
+async def find_store_mapping(
+    request: FindStoreMappingRequest,
+    user_data: dict = Depends(verify_token),
+):
+    """
+    Find an existing store mapping by POS system and Hipoink store code.
+    This is used during onboarding to connect users to existing mappings.
+    Does NOT create new mappings - only finds existing ones (1:1 relationship).
+    """
+    try:
+        # Find existing mapping by source system and Hipoink store code
+        mapping = supabase_service.get_store_mapping_by_hipoink_code(
+            source_system=request.source_system,
+            hipoink_store_code=request.hipoink_store_code.strip(),
+        )
+        
+        if not mapping:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"No store mapping found for {request.source_system} with Hipoink store code '{request.hipoink_store_code}'. "
+                       f"Store mappings must be created separately before users can connect to them.",
+            )
+        
+        # Check if this mapping is already connected to another user
+        if mapping.metadata and mapping.metadata.get("user_id"):
+            existing_user_id = mapping.metadata.get("user_id")
+            if existing_user_id != user_data["user_id"]:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=f"This store mapping is already connected to another user.",
+                )
+        
+        return {
+            "id": str(mapping.id),
+            "source_system": mapping.source_system,
+            "source_store_id": mapping.source_store_id,
+            "hipoink_store_code": mapping.hipoink_store_code or "",
+            "is_active": mapping.is_active,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Failed to find store mapping", error=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to find store mapping: {str(e)}",
+        )
+
