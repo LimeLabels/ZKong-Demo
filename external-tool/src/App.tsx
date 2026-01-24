@@ -60,8 +60,8 @@ function App() {
     }
   }
 
-  // Show loading spinner while checking auth state
-  if (loading || checkingStore) {
+  // Show loading spinner while checking auth state (but only if we have a user or are loading)
+  if (loading) {
     return (
       <Frame>
         <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh' }}>
@@ -79,9 +79,23 @@ function App() {
     return <EmailVerification />
   }
 
-  // Show login if not authenticated
-  if (!isAuthenticated) {
+  // Show login if not authenticated (this should be the first screen)
+  if (!isAuthenticated || !user) {
     return <Login />
+  }
+
+  // Show loading while checking store (only if authenticated)
+  if (checkingStore) {
+    return (
+      <Frame>
+        <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh' }}>
+          <BlockStack gap="400" align="center">
+            <Spinner size="large" />
+            <Text variant="bodyMd" tone="subdued" as="p">Checking store connection...</Text>
+          </BlockStack>
+        </div>
+      </Frame>
+    )
   }
 
   // Show onboarding if authenticated but no store connected

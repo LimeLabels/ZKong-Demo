@@ -92,9 +92,23 @@ export function Onboarding() {
       }, 2000)
     } catch (err: any) {
       console.error('Error connecting store:', err)
-      setError(
-        err.response?.data?.detail || 'Failed to connect store. Please try again.'
-      )
+      
+      // Provide more specific error messages
+      if (err.code === 'ERR_NETWORK' || err.message?.includes('Network Error')) {
+        setError(
+          'Cannot connect to the server. Please make sure the backend is running and check your network connection.'
+        )
+      } else if (err.response?.status === 404) {
+        setError('Store mapping not found. Please check your Hipoink store code and try again.')
+      } else if (err.response?.status === 409) {
+        setError('A store mapping with this information already exists. Please contact support.')
+      } else if (err.response?.data?.detail) {
+        // Use the detailed error from the backend
+        const detail = err.response.data.detail
+        setError(typeof detail === 'string' ? detail : JSON.stringify(detail))
+      } else {
+        setError(err.message || 'Failed to connect store. Please try again.')
+      }
     } finally {
       setSubmitting(false)
     }
@@ -132,7 +146,14 @@ export function Onboarding() {
 
           {error && (
             <Banner tone="critical" title="Error">
-              <Text as="p">{error}</Text>
+              <BlockStack gap="200">
+                <Text as="p">{error}</Text>
+                {error.includes('Cannot connect to the server') && (
+                  <Text as="p" variant="bodySm" tone="subdued">
+                    Current backend URL: {apiClient.defaults.baseURL || 'Not set'}
+                  </Text>
+                )}
+              </BlockStack>
             </Banner>
           )}
 

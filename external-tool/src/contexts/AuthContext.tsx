@@ -36,16 +36,35 @@ export function AuthProvider({ children }: AuthProviderProps) {
     // Check for existing session
     const initAuth = async () => {
       try {
-        const currentUser = await authService.getCurrentUser()
-        setUser(currentUser)
-        // Check if user needs email verification
-        if (currentUser && !currentUser.email_confirmed_at) {
-          setNeedsEmailVerification(true)
+        // Try to get session first (less likely to throw)
+        const session = await authService.getSession()
+        if (session?.user) {
+          setUser(session.user)
+          // Check if user needs email verification
+          if (!session.user.email_confirmed_at) {
+            setNeedsEmailVerification(true)
+          } else {
+            setNeedsEmailVerification(false)
+          }
         } else {
-          setNeedsEmailVerification(false)
+          // No session - try to get user anyway
+          try {
+            const currentUser = await authService.getCurrentUser()
+            setUser(currentUser)
+            if (currentUser && !currentUser.email_confirmed_at) {
+              setNeedsEmailVerification(true)
+            } else {
+              setNeedsEmailVerification(false)
+            }
+          } catch {
+            // No user found - show login
+            setUser(null)
+            setNeedsEmailVerification(false)
+          }
         }
       } catch (error) {
-        console.error('Error initializing auth:', error)
+        // Any error means no authenticated user - show login
+        console.warn('No authenticated session found:', error)
         setUser(null)
         setNeedsEmailVerification(false)
       } finally {
