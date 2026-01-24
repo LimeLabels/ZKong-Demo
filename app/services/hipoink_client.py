@@ -307,6 +307,19 @@ class HipoinkClient:
             # API endpoint
             endpoint = f"/api/{self.client_id}/product/create"
 
+            # Log request payload for debugging (excluding sign for security)
+            request_data_log = {k: v for k, v in request_data.items() if k != "sign"}
+            logger.debug(
+                "Hipoink API request payload",
+                endpoint=endpoint,
+                store_code=store_code,
+                payload=request_data_log,
+                f1=request_data.get("f1"),
+                f2=request_data.get("f2"),
+                f3=request_data.get("f3"),
+                f4=request_data.get("f4"),
+            )
+
             logger.info(
                 "Creating product in Hipoink",
                 product_code=product.pc,
