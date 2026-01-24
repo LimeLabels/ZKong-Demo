@@ -27,17 +27,6 @@ class SlackNotificationService:
         else:
             self.enabled = str(enabled_raw).lower() in ("true", "1", "yes", "on")
         
-        # Log initialization for debugging
-        logger.info(
-            "SlackNotificationService initialized",
-            enabled=self.enabled,
-            enabled_raw=repr(enabled_raw),
-            enabled_type=type(enabled_raw).__name__,
-            webhook_url_configured=bool(self.webhook_url),
-            webhook_url_length=len(self.webhook_url) if self.webhook_url else 0,
-            webhook_url_preview=self.webhook_url[:50] + "..." if self.webhook_url and len(self.webhook_url) > 50 else (self.webhook_url or "None"),
-        )
-        
         # Rate limiting: track last alert time per error key
         # Format: {error_key: last_alert_timestamp}
         self._rate_limit_cache: Dict[str, datetime] = {}
@@ -173,36 +162,19 @@ class SlackNotificationService:
         Returns:
             True if alert sent successfully, False otherwise
         """
-        # Log attempt to send Slack alert
-        logger.info(
-            "Attempting to send Slack alert",
-            error_type=error_type,
-            merchant_id=merchant_id,
-            store_code=store_code,
-            enabled=self.enabled,
-            webhook_url_configured=bool(self.webhook_url),
-        )
-
         # Check if alerts are enabled
         if not self.enabled:
-            logger.warning("Slack alerts disabled, skipping notification", enabled=self.enabled, enabled_type=type(self.enabled).__name__)
             return False
         
         # Check if webhook URL is configured
         if not self.webhook_url:
-            logger.warning("Slack webhook URL not configured, skipping notification", webhook_url_set=bool(self.webhook_url))
+            logger.warning("Slack webhook URL not configured, skipping notification")
             return False
         
         # Check rate limiting
         error_key = self._get_error_key(error_type, merchant_id, store_code)
         if not self._should_send_alert(error_key):
-            logger.info(
-                "Slack alert rate limited",
-                error_type=error_type,
-                merchant_id=merchant_id,
-                store_code=store_code,
-                error_key=error_key,
-            )
+            # Rate limited - silently skip (already logged at debug level if needed)
             return False
         
         # Format message
@@ -223,7 +195,7 @@ class SlackNotificationService:
                 )
                 response.raise_for_status()
                 
-                logger.info(
+                logger.debug(
                     "Slack error alert sent successfully",
                     error_type=error_type,
                     merchant_id=merchant_id,
@@ -365,7 +337,6 @@ def get_slack_service() -> SlackNotificationService:
     global _slack_service
     try:
         if _slack_service is None:
-            logger.info("Creating new SlackNotificationService instance")
             _slack_service = SlackNotificationService()
         return _slack_service
     except Exception as e:

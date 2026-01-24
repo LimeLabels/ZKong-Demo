@@ -227,16 +227,14 @@ class HipoinkClient:
                 
                 # Send Slack alert for Hipoink API errors
                 try:
-                    logger.info("Attempting to send Slack alert for Hipoink API error", store_code=store_code, error_code=error_code)
                     slack_service = get_slack_service()
-                    result = await slack_service.send_api_error_alert(
+                    await slack_service.send_api_error_alert(
                         error_message=f"{error_msg} (code: {error_code})",
                         api_name="hipoink",
                         store_code=store_code,
                     )
-                    logger.info("Slack alert send result", result=result, store_code=store_code)
                 except Exception as slack_error:
-                    logger.error("Failed to send Slack alert", error=str(slack_error), error_type=type(slack_error).__name__)
+                    logger.warning("Failed to send Slack alert", error=str(slack_error))
                 
                 raise error
 
@@ -331,16 +329,14 @@ class HipoinkClient:
                 
                 # Send Slack alert for Hipoink API errors
                 try:
-                    logger.info("Attempting to send Slack alert for Hipoink API error", store_code=store_code, error_code=error_code)
                     slack_service = get_slack_service()
-                    result = await slack_service.send_api_error_alert(
+                    await slack_service.send_api_error_alert(
                         error_message=f"{error_msg} (code: {error_code})",
                         api_name="hipoink",
                         store_code=store_code,
                     )
-                    logger.info("Slack alert send result", result=result, store_code=store_code)
                 except Exception as slack_error:
-                    logger.error("Failed to send Slack alert", error=str(slack_error), error_type=type(slack_error).__name__)
+                    logger.warning("Failed to send Slack alert", error=str(slack_error))
                 
                 raise error
 

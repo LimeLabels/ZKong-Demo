@@ -235,7 +235,6 @@ class SyncWorker:
 
                 # Send Slack alert for max retries exceeded
                 try:
-                    logger.info("Attempting to send Slack alert for max retries exceeded", queue_item_id=str(queue_item.id))
                     store_mapping = self.supabase_service.get_store_mapping_by_id(
                         queue_item.store_mapping_id  # type: ignore
                     )
@@ -243,7 +242,7 @@ class SyncWorker:
                     store_code = store_mapping.hipoink_store_code if store_mapping else None
                     
                     slack_service = get_slack_service()
-                    result = await slack_service.send_sync_failure_alert(
+                    await slack_service.send_sync_failure_alert(
                         error_message=f"Max retries exceeded: {str(e)}",
                         product_id=str(queue_item.product_id) if queue_item.product_id else None,
                         store_mapping_id=str(queue_item.store_mapping_id) if queue_item.store_mapping_id else None,
@@ -251,9 +250,8 @@ class SyncWorker:
                         merchant_id=merchant_id,
                         store_code=store_code,
                     )
-                    logger.info("Slack alert send result for max retries", result=result, queue_item_id=str(queue_item.id))
                 except Exception as slack_error:
-                    logger.error("Failed to send Slack alert", error=str(slack_error), error_type=type(slack_error).__name__)
+                    logger.warning("Failed to send Slack alert", error=str(slack_error))
 
                 raise PermanentError(f"Max retries exceeded: {str(e)}")
             else:
