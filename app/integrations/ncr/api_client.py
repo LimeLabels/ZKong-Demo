@@ -490,7 +490,7 @@ class NCRAPIClient:
                 "NCR API error listing items",
                 status=response.status_code,
                 body=error_body,
-                params=params,
+                params=query_params,
             )
             raise Exception(f"NCR API error {response.status_code}: {error_body}")
         
@@ -592,6 +592,292 @@ class NCRAPIClient:
         )
 
         return {"status": "success", "item_code": item_code, "deleted": True}
+
+    async def get_item_price(
+        self,
+        item_code: str,
+        price_code: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Get current price for an item from NCR API.
+        
+        Fetches the current effective price for an item. NCR returns the price
+        that is currently active based on effectiveDate.
+        
+        Args:
+            item_code: Item code of the product
+            price_code: Optional price code (defaults to item_code for base prices)
+        
+        Returns:
+            Dictionary with price information, or None if not found
+        """
+        # Use item_code as price_code if not specified (common pattern for base prices)
+        actual_price_code = price_code or item_code
+        
+        # Build URL - NCR API endpoint: GET /item-prices/{itemCode}/{priceCode}
+        # If enterprise_unit is set, we might need to include it in query params
+        url = f"{self.base_url}/item-prices/{item_code}/{actual_price_code}"
+        
+        # Add enterprise unit to query if available
+        query_params = {}
+        if self.enterprise_unit:
+            query_params["enterpriseUnitId"] = self.enterprise_unit
+        
+        # Get request headers (HMAC signature for GET)
+        query_string = "&".join(f"{k}={v}" for k, v in query_params.items())
+        url_with_params = f"{url}?{query_string}" if query_string else url
+        headers = self._get_request_headers("GET", url_with_params, b"")
+        
+        logger.debug(
+            "NCR get item price request",
+            item_code=item_code,
+            price_code=actual_price_code,
+            enterprise_unit=self.enterprise_unit,
+        )
+        
+        try:
+            # Make GET request
+            response = await self.client.get(
+                url,
+                params=query_params if query_params else None,
+                headers=headers,
+            )
+            
+            # Handle 404 (price not found) gracefully
+            if response.status_code == 404:
+                logger.debug(
+                    "Item price not found in NCR",
+                    item_code=item_code,
+                    price_code=actual_price_code,
+                )
+                return None
+            
+            # Handle other errors
+            if response.status_code >= 400:
+                error_body = response.text
+                logger.error(
+                    "NCR API error getting item price",
+                    status=response.status_code,
+                    body=error_body,
+                    item_code=item_code,
+                )
+                raise Exception(f"NCR API error {response.status_code}: {error_body}")
+            
+            response.raise_for_status()
+            data = response.json()
+            
+            logger.debug(
+                "NCR get item price response",
+                item_code=item_code,
+                price=data.get("price"),
+            )
+            
+            return data
+            
+        except Exception as e:
+            logger.error(
+                "Failed to get item price from NCR",
+                item_code=item_code,
+                error=str(e),
+            )
+            raise
+
+    async def get_item_prices_batch(
+        self,
+        item_codes: List[str],
+    ) -> Dict[str, Optional[Dict[str, Any]]]:
+        """
+        Get current prices for multiple items in batch.
+        
+        Fetches current effective prices for multiple items. This is more efficient
+        than calling get_item_price multiple times.
+        
+        Args:
+            item_codes: List of item codes to fetch prices for
+        
+        Returns:
+            Dictionary mapping item_code to price data (or None if not found)
+        """
+        prices: Dict[str, Optional[Dict[str, Any]]] = {}
+        
+        # NCR API might support batch queries, but for now we'll fetch individually
+        # In the future, if NCR supports batch GET, we can optimize this
+        for item_code in item_codes:
+            try:
+                price_data = await self.get_item_price(item_code)
+                prices[item_code] = price_data
+            except Exception as e:
+                logger.warning(
+                    "Failed to fetch price for item",
+                    item_code=item_code,
+                    error=str(e),
+                )
+                prices[item_code] = None
+        
+        return prices
+
+    async def pre_schedule_prices(
+        self,
+        price_events: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """
+        Pre-schedule multiple price changes in NCR using effectiveDate.
+        
+        This method schedules multiple price changes at once, each with its own
+        effectiveDate. NCR will automatically apply these prices at the specified times.
+        
+        Args:
+            price_events: List of price event dictionaries with:
+                - item_code: Item code
+                - price: Price value
+                - effective_date: ISO format datetime string (will be converted to UTC)
+                - currency: Optional currency (defaults to USD)
+        
+        Returns:
+            Dictionary with scheduling results:
+                - scheduled_count: Number of prices successfully scheduled
+                - failed_count: Number of prices that failed to schedule
+                - results: List of individual results
+        """
+        from app.integrations.ncr.models import ItemPriceIdData, ItemPriceWriteData, SaveMultipleItemPricesRequest
+        
+        if not self.enterprise_unit:
+            raise ValueError("enterprise_unit is required for price scheduling")
+        
+        scheduled_count = 0
+        failed_count = 0
+        results = []
+        
+        # Process price events in batches (NCR might have limits on batch size)
+        batch_size = 50  # Process 50 prices at a time
+        for i in range(0, len(price_events), batch_size):
+            batch = price_events[i:i + batch_size]
+            
+            # Build price data for batch
+            price_data_list = []
+            for event in batch:
+                item_code = event["item_code"]
+                price = float(event["price"])
+                effective_date = event["effective_date"]
+                currency = event.get("currency", "USD")
+                
+                # Ensure effective_date is in correct format (ISO 8601 with Z)
+                if isinstance(effective_date, str):
+                    # If it's already a string, ensure it ends with Z
+                    if not effective_date.endswith("Z"):
+                        # Try to parse and convert to UTC
+                        try:
+                            from datetime import datetime
+                            dt = datetime.fromisoformat(effective_date.replace("Z", "+00:00"))
+                            effective_date = dt.strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z'
+                        except:
+                            # If parsing fails, just add Z
+                            effective_date = effective_date + "Z" if not effective_date.endswith("Z") else effective_date
+                
+                # Use item_code as price_code (common pattern for base prices)
+                price_code = item_code
+                
+                price_data = ItemPriceWriteData(
+                    priceId=ItemPriceIdData(
+                        itemCode=item_code,
+                        priceCode=price_code,
+                        enterpriseUnitId=self.enterprise_unit,
+                    ),
+                    price=price,
+                    currency=currency,
+                    effectiveDate=effective_date,
+                    promotionPriceType="NON_CARD_PRICE",
+                    status="ACTIVE",
+                    basePrice=True,
+                    endDate="2100-12-31T23:59:59Z",  # Far future end date
+                )
+                
+                price_data_list.append(price_data)
+            
+            # Create batch request
+            request = SaveMultipleItemPricesRequest(itemPrices=price_data_list)
+            url = f"{self.base_url}/item-prices"
+            
+            # Serialize and send
+            payload = request.model_dump(exclude_none=True, by_alias=True)
+            body = json.dumps(payload).encode('utf-8')
+            headers = self._get_request_headers("PUT", url, body)
+            
+            try:
+                logger.info(
+                    "Pre-scheduling prices in NCR",
+                    batch_start=i,
+                    batch_size=len(batch),
+                    total_events=len(price_events),
+                )
+                
+                response = await self.client.put(
+                    url,
+                    content=body,
+                    headers=headers,
+                )
+                
+                response_text = response.text
+                response_data = None
+                
+                try:
+                    if response_text:
+                        response_data = response.json()
+                except Exception:
+                    response_data = {"raw_response": response_text}
+                
+                if response.status_code >= 400:
+                    logger.error(
+                        "NCR API error pre-scheduling prices",
+                        status=response.status_code,
+                        body=response_text,
+                        batch_start=i,
+                    )
+                    # Mark all in batch as failed
+                    for event in batch:
+                        failed_count += 1
+                        results.append({
+                            "item_code": event["item_code"],
+                            "status": "failed",
+                            "error": f"NCR API error {response.status_code}",
+                        })
+                else:
+                    # Success - mark all in batch as scheduled
+                    for event in batch:
+                        scheduled_count += 1
+                        results.append({
+                            "item_code": event["item_code"],
+                            "status": "scheduled",
+                            "effective_date": event["effective_date"],
+                        })
+                    
+                    logger.info(
+                        "Successfully pre-scheduled prices in NCR",
+                        batch_start=i,
+                        scheduled=len(batch),
+                    )
+                    
+            except Exception as e:
+                logger.error(
+                    "Exception pre-scheduling prices in NCR",
+                    error=str(e),
+                    batch_start=i,
+                )
+                # Mark all in batch as failed
+                for event in batch:
+                    failed_count += 1
+                    results.append({
+                        "item_code": event["item_code"],
+                        "status": "failed",
+                        "error": str(e),
+                    })
+        
+        return {
+            "scheduled_count": scheduled_count,
+            "failed_count": failed_count,
+            "total_count": len(price_events),
+            "results": results,
+        }
 
     async def close(self):
         """Close the HTTP client."""

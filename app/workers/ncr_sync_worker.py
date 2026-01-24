@@ -155,9 +155,26 @@ class NCRSyncWorker:
 
                     normalized_product = normalized_products[0]
                     
-                    # Get price from item-prices endpoint if available
-                    # For now, we'll use the price from the item data if available
-                    # In a full implementation, you might want to fetch prices separately
+                    # Fetch current price from NCR API (respects effectiveDate)
+                    # This ensures we get the actual current price, including scheduled prices
+                    try:
+                        current_price_data = await api_client.get_item_price(item_code)
+                        if current_price_data and "price" in current_price_data:
+                            current_price = float(current_price_data["price"])
+                            normalized_product.price = current_price
+                        else:
+                            # Fallback to price from item data if available
+                            if normalized_product.price is None or normalized_product.price == 0:
+                                normalized_product.price = ncr_item.get("price") or 0.0
+                    except Exception as e:
+                        logger.warning(
+                            "Failed to fetch price from NCR API, using item data",
+                            item_code=item_code,
+                            error=str(e),
+                        )
+                        # Fallback to price from item data if available
+                        if normalized_product.price is None or normalized_product.price == 0:
+                            normalized_product.price = ncr_item.get("price") or 0.0
                     
                     # Create or update product in database
                     is_new = existing_product is None
@@ -206,8 +223,17 @@ class NCRSyncWorker:
                         if normalized_product.sku != existing_product.sku:
                             needs_update = True
                         # Check if price changed (within tolerance)
-                        if abs((normalized_product.price or 0) - (existing_product.price or 0)) > 0.01:
+                        # This detects both scheduled price activations and manual changes
+                        price_diff = abs((normalized_product.price or 0) - (existing_product.price or 0))
+                        if price_diff > 0.01:
                             needs_update = True
+                            logger.info(
+                                "Price change detected",
+                                item_code=item_code,
+                                old_price=existing_product.price,
+                                new_price=normalized_product.price,
+                                difference=price_diff,
+                            )
                         
                         if needs_update:
                             # Update product
