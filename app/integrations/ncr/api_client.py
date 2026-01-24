@@ -458,6 +458,8 @@ class NCRAPIClient:
         
         # Build full URL with query string for signature calculation
         # The URI in the signature MUST include the query string
+        # IMPORTANT: We must use the SAME URL for signing and sending
+        # Using httpx's params= can cause signature mismatch due to different encoding/ordering
         base_url = f"{self.base_url}/items"
         # Construct query string manually for signature
         query_string = "&".join(f"{k}={v}" for k, v in query_params.items())
@@ -471,15 +473,15 @@ class NCRAPIClient:
         
         logger.debug(
             "NCR list items request",
-            url=base_url,
+            url=url_with_params,
             params=query_params,
             has_auth=bool(self.shared_key and self.secret_key),
         )
         
-        # Make GET request
+        # Make GET request using the exact URL that was signed
+        # Do NOT use params= argument as httpx may re-encode them differently
         response = await self.client.get(
-            base_url,
-            params=query_params,
+            url_with_params,
             headers=headers,
         )
         
@@ -619,11 +621,13 @@ class NCRAPIClient:
         url = f"{self.base_url}/item-prices/{item_code}/{actual_price_code}"
         
         # Add enterprise unit to query if available
+        # IMPORTANT: Build the full URL with query params for consistent signing
         query_params = {}
         if self.enterprise_unit:
             query_params["enterpriseUnitId"] = self.enterprise_unit
         
         # Get request headers (HMAC signature for GET)
+        # Build URL with query string that exactly matches what we'll send
         query_string = "&".join(f"{k}={v}" for k, v in query_params.items())
         url_with_params = f"{url}?{query_string}" if query_string else url
         headers = self._get_request_headers("GET", url_with_params, b"")
@@ -633,13 +637,14 @@ class NCRAPIClient:
             item_code=item_code,
             price_code=actual_price_code,
             enterprise_unit=self.enterprise_unit,
+            url=url_with_params,
         )
         
         try:
-            # Make GET request
+            # Make GET request using the exact URL that was signed
+            # Do NOT use params= argument as httpx may re-encode them differently
             response = await self.client.get(
-                url,
-                params=query_params if query_params else None,
+                url_with_params,
                 headers=headers,
             )
             
