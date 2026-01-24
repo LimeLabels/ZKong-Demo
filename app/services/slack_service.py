@@ -26,9 +26,11 @@ class SlackNotificationService:
         logger.info(
             "SlackNotificationService initialized",
             enabled=self.enabled,
-            enabled_raw=enabled_raw,
+            enabled_raw=repr(enabled_raw),
+            enabled_type=type(enabled_raw).__name__,
             webhook_url_configured=bool(self.webhook_url),
             webhook_url_length=len(self.webhook_url) if self.webhook_url else 0,
+            webhook_url_preview=self.webhook_url[:50] + "..." if self.webhook_url and len(self.webhook_url) > 50 else (self.webhook_url or "None"),
         )
         
         # Rate limiting: track last alert time per error key
@@ -143,7 +145,6 @@ class SlackNotificationService:
         
         return {
             "text": text,
-            "mrkdwn": True,  # Enable markdown formatting
         }
 
     async def send_error_alert(
