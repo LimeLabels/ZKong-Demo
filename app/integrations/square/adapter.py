@@ -180,6 +180,66 @@ class SquareIntegrationAdapter(BaseIntegrationAdapter):
         """
         return self.transformer.validate_normalized_product(product)
 
+    async def _fetch_measurement_units(
+        self,
+        access_token: str,
+        measurement_unit_ids: List[str],
+        base_url: str,
+    ) -> Dict[str, dict]:
+        """
+        Fetch CatalogMeasurementUnit objects from Square API.
+
+        Args:
+            access_token: Square OAuth access token
+            measurement_unit_ids: List of measurement unit IDs to fetch
+            base_url: Square API base URL (sandbox or production)
+
+        Returns:
+            Dict mapping measurement_unit_id -> unit data
+        """
+        if not measurement_unit_ids:
+            return {}
+
+        try:
+            url = f"{base_url}/v2/catalog/batch-retrieve"
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    url,
+                    headers={
+                        "Authorization": f"Bearer {access_token}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "object_ids": measurement_unit_ids,
+                        "include_related_objects": False,
+                    },
+                    timeout=30.0,
+                )
+                response.raise_for_status()
+                data = response.json()
+
+            cache = {}
+            for obj in data.get("objects", []):
+                if obj.get("type") == "MEASUREMENT_UNIT":
+                    oid = obj.get("id")
+                    if oid:
+                        cache[oid] = {
+                            "measurement_unit_data": obj.get("measurement_unit_data", {})
+                        }
+            logger.info(
+                "Fetched measurement units from Square",
+                unit_count=len(cache),
+                requested_count=len(measurement_unit_ids),
+            )
+            return cache
+        except Exception as e:
+            logger.warning(
+                "Failed to fetch measurement units from Square",
+                error=str(e),
+                unit_ids=measurement_unit_ids[:5],
+            )
+            return {}
+
     def get_supported_events(self) -> List[str]:
         """Return list of supported Square webhook events."""
         return [
@@ -290,6 +350,25 @@ class SquareIntegrationAdapter(BaseIntegrationAdapter):
                 if not cursor:
                     break
 
+        # 3b. Extract measurement_unit_ids from all items and fetch CatalogMeasurementUnit objects
+        measurement_unit_ids: set = set()
+        for item in all_items:
+            item_data = item.get("item_data") or {}
+            variations = item_data.get("variations") or []
+            for var in variations:
+                var_data = var.get("item_variation_data") or {}
+                unit_id = var_data.get("measurement_unit_id")
+                if unit_id:
+                    measurement_unit_ids.add(unit_id)
+
+        measurement_units_cache: Dict[str, dict] = {}
+        if measurement_unit_ids:
+            measurement_units_cache = await self._fetch_measurement_units(
+                access_token=access_token,
+                measurement_unit_ids=list(measurement_unit_ids),
+                base_url=base_url,
+            )
+
         # 4. Process Creates and Updates
         api_source_ids = set()
         processed_products = []
@@ -300,7 +379,9 @@ class SquareIntegrationAdapter(BaseIntegrationAdapter):
             
             try:
                 catalog_object = SquareCatalogObject(**item)
-                normalized_variants = self.transformer.extract_variations_from_catalog_object(catalog_object)
+                normalized_variants = self.transformer.extract_variations_from_catalog_object(
+                    catalog_object, measurement_units_cache=measurement_units_cache
+                )
 
                 for normalized in normalized_variants:
                     is_valid, errors = self.validate_normalized_product(normalized)

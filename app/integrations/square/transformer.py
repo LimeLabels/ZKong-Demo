@@ -4,7 +4,7 @@ Transforms Square catalog data into normalized format for Hipoink ESL API.
 Each Square variation becomes a separate Hipoink product.
 """
 
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional, Tuple, Literal
 from app.integrations.square.models import (
     SquareCatalogObject,
     SquareCatalogObjectVariation,
@@ -14,6 +14,16 @@ from app.integrations.base import NormalizedProduct
 import structlog
 
 logger = structlog.get_logger()
+
+# Unit type mapping (Square API → Display abbreviation)
+WEIGHT_UNITS = {
+    "IMPERIAL_WEIGHT_OUNCE": "oz",
+    "IMPERIAL_POUND": "lb",
+    "IMPERIAL_STONE": "stone",
+    "METRIC_MILLIGRAM": "mg",
+    "METRIC_GRAM": "g",
+    "METRIC_KILOGRAM": "kg",
+}
 
 
 class SquareTransformError(Exception):
@@ -26,8 +36,90 @@ class SquareTransformer:
     """Service for transforming Square webhook data to normalized format."""
 
     @staticmethod
+    def get_sell_type(
+        variation_data: dict,
+        measurement_units_cache: Dict[str, dict]
+    ) -> Literal["weight", "item"]:
+        """
+        Determine if item is sold by weight or per item.
+        
+        Args:
+            variation_data: The item_variation_data from Square
+            measurement_units_cache: Cache of measurement_unit_id → unit data
+        
+        Returns:
+            'weight' (use f1/f2) or 'item' (use f3/f4)
+        """
+        measurement_unit_id = variation_data.get("measurement_unit_id")
+        
+        if not measurement_unit_id:
+            return "item"  # No unit = sold as "each" → f3/f4
+        
+        # Look up the measurement unit
+        unit_data = measurement_units_cache.get(measurement_unit_id, {})
+        measurement_unit_data = unit_data.get("measurement_unit_data", {})
+        measurement_unit = measurement_unit_data.get("measurement_unit", {})
+        
+        if measurement_unit.get("weight_unit"):
+            return "weight"  # Has weight unit (oz, lb) → f1/f2
+        
+        return "item"  # Default to per-item
+
+    @staticmethod
+    def get_weight_unit_abbrev(measurement_unit_id: str, cache: Dict[str, dict]) -> str:
+        """Get the abbreviated unit string (oz, lb, g, kg)"""
+        unit_data = cache.get(measurement_unit_id, {})
+        measurement_unit_data = unit_data.get("measurement_unit_data", {})
+        measurement_unit = measurement_unit_data.get("measurement_unit", {})
+        weight_unit = measurement_unit.get("weight_unit", "")
+        return WEIGHT_UNITS.get(weight_unit, "ea")
+
+    @staticmethod
+    def calculate_dynamic_fields(
+        variation_data: dict,
+        measurement_units_cache: Dict[str, dict]
+    ) -> dict:
+        """
+        Calculate f1, f2, f3, f4 based on sell type.
+        
+        Returns:
+            Dict with keys: sell_type, f1, f2, f3, f4
+        """
+        sell_type = SquareTransformer.get_sell_type(variation_data, measurement_units_cache)
+        
+        # Get price in dollars (guard against price_money being None)
+        price_money = variation_data.get("price_money") or {}
+        price_cents = price_money.get("amount", 0) or 0
+        price_dollars = (price_cents / 100) if price_cents else 0.0
+        
+        result = {
+            "sell_type": sell_type,
+            "f1": None,
+            "f2": None,
+            "f3": None,
+            "f4": None
+        }
+        
+        if sell_type == "weight":
+            # Weight-based: use f1 (unit qty) and f2 (price per unit)
+            measurement_unit_id = variation_data.get("measurement_unit_id")
+            unit_abbrev = SquareTransformer.get_weight_unit_abbrev(
+                measurement_unit_id, measurement_units_cache
+            )
+            
+            result["f1"] = "1"  # Base unit quantity
+            result["f2"] = f"${price_dollars:.2f}/{unit_abbrev}"
+        else:
+            # Per-item: use f3 (item count) and f4 (price per item)
+            result["f3"] = "1"  # Single item
+            result["f4"] = f"${price_dollars:.2f}/ea"
+        
+        return result
+
+    @staticmethod
     def extract_variations_from_catalog_object(
         catalog_object: SquareCatalogObject,
+        measurement_units_cache: Optional[Dict[str, dict]] = None,
     ) -> List[NormalizedProduct]:
         """
         Extract and normalize variations from Square catalog object.
@@ -35,6 +127,7 @@ class SquareTransformer:
 
         Args:
             catalog_object: Square catalog object
+            measurement_units_cache: Optional cache of measurement_unit_id → unit data
 
         Returns:
             List of normalized products
@@ -70,7 +163,7 @@ class SquareTransformer:
                 },
             )
             normalized = SquareTransformer._normalize_variation(
-                catalog_object, synthetic_variation
+                catalog_object, synthetic_variation, measurement_units_cache
             )
             normalized_products.append(normalized)
             return normalized_products
@@ -80,7 +173,7 @@ class SquareTransformer:
             try:
                 variation = SquareCatalogObjectVariation(**variation_data)
                 normalized = SquareTransformer._normalize_variation(
-                    catalog_object, variation
+                    catalog_object, variation, measurement_units_cache
                 )
                 normalized_products.append(normalized)
             except Exception as e:
@@ -99,6 +192,7 @@ class SquareTransformer:
     def _normalize_variation(
         catalog_object: SquareCatalogObject,
         variation: SquareCatalogObjectVariation,
+        measurement_units_cache: Optional[Dict[str, dict]] = None,
     ) -> NormalizedProduct:
         """
         Normalize a single Square variation to normalized format.
@@ -135,7 +229,20 @@ class SquareTransformer:
         # SKU from variation
         sku = variation.sku
 
-        # Create normalized product
+        # Extract measurement_unit_id from variation data
+        measurement_unit_id = None
+        if variation.item_variation_data:
+            measurement_unit_id = variation.item_variation_data.get("measurement_unit_id")
+
+        # Calculate dynamic fields (f1-f4) based on sell type
+        dynamic_fields = {}
+        if variation.item_variation_data:
+            dynamic_fields = SquareTransformer.calculate_dynamic_fields(
+                variation.item_variation_data,
+                measurement_units_cache or {}
+            )
+
+        # Create normalized product with dynamic fields
         return NormalizedProduct(
             source_id=str(catalog_object.id),
             source_variant_id=str(variation.id) if variation.id else None,
@@ -145,6 +252,13 @@ class SquareTransformer:
             price=price_value,
             currency=currency,
             image_url=None,  # Square requires additional API call to get image URL
+            # Add dynamic fields to extra_data
+            sell_type=dynamic_fields.get("sell_type", "item"),
+            f1=dynamic_fields.get("f1"),
+            f2=dynamic_fields.get("f2"),
+            f3=dynamic_fields.get("f3"),
+            f4=dynamic_fields.get("f4"),
+            measurement_unit_id=measurement_unit_id,  # Store for reference
         )
 
     @staticmethod
