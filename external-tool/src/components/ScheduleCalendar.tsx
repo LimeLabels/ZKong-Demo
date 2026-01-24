@@ -17,6 +17,17 @@ import { CalendarIcon } from '@shopify/polaris-icons'
 import { apiClient } from '../services/api'
 import { useUserStore } from '../hooks/useUserStore'
 
+interface Product {
+  id: string
+  title: string
+  barcode: string | null
+  sku: string | null
+  price: number | null
+  image_url: string | null
+  variant_id: string | null
+  product_id: string | null
+}
+
 interface ScheduleTimeSlot {
   startTime: string
   endTime: string
@@ -57,6 +68,9 @@ export function ScheduleCalendar() {
     multiplierPercentage: null,
   })
 
+  const [products, setProducts] = useState<Product[]>([])
+  const [productsLoading, setProductsLoading] = useState(false)
+  const [selectedProductId, setSelectedProductId] = useState<string>('')
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [submitError, setSubmitError] = useState<string | null>(null)
   const [submitSuccess, setSubmitSuccess] = useState(false)
@@ -87,6 +101,71 @@ export function ScheduleCalendar() {
       })
     }
   }, [store])
+
+  /**
+   * Fetch products for the user's store when store is connected.
+   */
+  useEffect(() => {
+    const fetchProducts = async () => {
+      if (!store || !formData.platform) {
+        setProducts([]) // Clear products if no store/platform
+        return
+      }
+
+      try {
+        setProductsLoading(true)
+        const response = await apiClient.get('/api/products/my-products', {
+          params: {
+            limit: 100, // Get up to 100 products
+          },
+        })
+        setProducts(response.data || [])
+      } catch (error: any) {
+        console.error('Error fetching products:', error)
+        setProducts([]) // Clear products on error
+        // Don't show error to user - just log it, products are optional
+      } finally {
+        setProductsLoading(false)
+      }
+    }
+
+    if (store && formData.platform) {
+      fetchProducts()
+      // Reset product selection when platform changes
+      setSelectedProductId('')
+    }
+  }, [store, formData.platform])
+
+  /**
+   * Handle product selection - auto-populate itemCode/objectId and price.
+   */
+  const handleProductSelect = (productId: string) => {
+    setSelectedProductId(productId)
+    const product = products.find((p) => p.id === productId)
+    
+    if (product) {
+      setFormData((prev) => {
+        const updates: Partial<ScheduleFormData> = {}
+        
+        // Set itemCode/objectId based on platform
+        if (prev.platform === 'ncr') {
+          // For NCR, use barcode or SKU
+          updates.itemCode = product.barcode || product.sku || ''
+        } else if (prev.platform === 'square') {
+          // For Square, use variant_id or product_id
+          updates.objectId = product.variant_id || product.product_id || ''
+        }
+        
+        // Set price if available
+        if (product.price) {
+          updates.originalPrice = product.price
+          updates.price = product.price
+        }
+        
+        return { ...prev, ...updates }
+      })
+    }
+  }
 
   const repeatOptions = [
     { label: 'No Repeat', value: 'none' },
@@ -350,14 +429,47 @@ export function ScheduleCalendar() {
                 disabled={!!store}
               />
 
+              {/* Product Selector */}
+              {formData.platform && products.length > 0 && (
+                <Select
+                  label="Product"
+                  options={[
+                    { label: 'Select a product', value: '' },
+                    ...products.map((product) => ({
+                      label: `${product.title}${product.price ? ` - $${product.price.toFixed(2)}` : ''}`,
+                      value: product.id,
+                    })),
+                  ]}
+                  value={selectedProductId}
+                  onChange={handleProductSelect}
+                  disabled={productsLoading || isSubmitting}
+                  helpText="Select a product to auto-fill the item code and price"
+                />
+              )}
+
+              {/* Show loading state while fetching products */}
+              {formData.platform && productsLoading && (
+                <Banner tone="info">
+                  <Text as="p">Loading products...</Text>
+                </Banner>
+              )}
+
+              {/* Show message if no products found */}
+              {formData.platform && !productsLoading && products.length === 0 && (
+                <Banner tone="info">
+                  <Text as="p">No products found. You can manually enter the item code below.</Text>
+                </Banner>
+              )}
+
               {formData.platform === 'ncr' && (
                 <TextField
                   label="Item Code"
                   value={formData.itemCode}
                   onChange={(value) => setFormData((prev) => ({ ...prev, itemCode: value }))}
                   placeholder="ITEM-001"
-                  helpText="The item code (barcode) for the NCR product"
+                  helpText="The item code (barcode) for the NCR product. Auto-filled when you select a product above."
                   autoComplete="off"
+                  disabled={isSubmitting}
                 />
               )}
 
@@ -367,8 +479,9 @@ export function ScheduleCalendar() {
                   value={formData.objectId}
                   onChange={(value) => setFormData((prev) => ({ ...prev, objectId: value }))}
                   placeholder="catalog-object-id"
-                  helpText="The catalog object ID for the Square product"
+                  helpText="The catalog object ID for the Square product. Auto-filled when you select a product above."
                   autoComplete="off"
+                  disabled={isSubmitting}
                 />
               )}
             </>
