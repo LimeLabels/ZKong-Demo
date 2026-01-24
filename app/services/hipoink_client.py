@@ -309,7 +309,7 @@ class HipoinkClient:
 
             # Log request payload for debugging (excluding sign for security)
             request_data_log = {k: v for k, v in request_data.items() if k != "sign"}
-            logger.debug(
+            logger.info(
                 "Hipoink API request payload",
                 endpoint=endpoint,
                 store_code=store_code,
@@ -318,6 +318,7 @@ class HipoinkClient:
                 f2=request_data.get("f2"),
                 f3=request_data.get("f3"),
                 f4=request_data.get("f4"),
+                pp=request_data.get("pp"),
             )
 
             logger.info(
