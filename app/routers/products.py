@@ -3,7 +3,7 @@ API router for product search and retrieval.
 Allows searching products from Shopify or the database.
 """
 
-from fastapi import APIRouter, HTTPException, status, Query
+from fastapi import APIRouter, HTTPException, status, Query, Depends
 from typing import List, Optional
 from pydantic import BaseModel
 import structlog
@@ -11,6 +11,7 @@ import httpx
 
 from app.services.supabase_service import SupabaseService
 from app.services.shopify_api_client import ShopifyAPIClient
+from app.routers.auth import verify_token
 
 logger = structlog.get_logger()
 
@@ -197,4 +198,99 @@ async def search_products(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to search products: {str(e)}",
+        )
+
+
+@router.get("/my-products", response_model=List[ProductSearchResult])
+async def get_my_products(
+    q: Optional[str] = Query(None, description="Search query (barcode, SKU, or title)"),
+    limit: int = Query(20, description="Maximum number of results"),
+    user_data: dict = Depends(verify_token),
+):
+    """
+    Get products for the authenticated user's store.
+    Filters products by the user's connected store mapping.
+    """
+    user_id = user_data["user_id"]
+    
+    try:
+        # Get user's store mapping
+        result = (
+            supabase_service.client.table("store_mappings")
+            .select("*")
+            .eq("is_active", True)
+            .execute()
+        )
+        
+        # Find store mapping for this user
+        user_store_mapping = None
+        for item in result.data:
+            mapping = supabase_service.get_store_mapping_by_id(item["id"])
+            if (
+                mapping
+                and mapping.metadata
+                and mapping.metadata.get("user_id") == user_id
+            ):
+                user_store_mapping = mapping
+                break
+        
+        if not user_store_mapping:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="No store mapping found for this user. Please complete onboarding.",
+            )
+        
+        # Get products that belong to this store mapping
+        store_mapping_id = user_store_mapping.id  # type: ignore
+        
+        # Get product IDs that belong to this store mapping from sync_queue
+        sync_queue_result = (
+            supabase_service.client.table("sync_queue")
+            .select("product_id")
+            .eq("store_mapping_id", str(store_mapping_id))
+            .execute()
+        )
+        
+        product_ids = [item["product_id"] for item in sync_queue_result.data]
+        
+        if not product_ids:
+            return []
+        
+        # Query database - filter by product IDs that belong to this store
+        db_query = (
+            supabase_service.client.table("products")
+            .select("*")
+            .in_("id", product_ids)
+        )
+        
+        if q:
+            # Search database by title (case-insensitive)
+            db_query = db_query.ilike("title", f"%{q}%")
+        
+        db_results = db_query.limit(limit).execute()
+        
+        results = []
+        for item in db_results.data:
+            results.append(
+                ProductSearchResult(
+                    id=item.get("id", ""),
+                    title=item.get("title", ""),
+                    barcode=item.get("barcode"),
+                    sku=item.get("sku"),
+                    price=item.get("price"),
+                    image_url=item.get("image_url"),
+                    variant_id=item.get("source_variant_id"),
+                    product_id=item.get("source_id"),
+                )
+            )
+        
+        return results[:limit]
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Failed to get user products", error=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get user products: {str(e)}",
         )
