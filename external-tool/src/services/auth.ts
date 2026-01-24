@@ -133,7 +133,7 @@ export const getCurrentUser = async (): Promise<User | null> => {
 export const onAuthStateChange = (callback: (user: User | null) => void) => {
   const supabase = getSupabaseClient()
   
-  return supabase.auth.onAuthStateChange((event, session) => {
+  return supabase.auth.onAuthStateChange((_event, session) => {
     callback(session?.user ?? null)
   })
 }

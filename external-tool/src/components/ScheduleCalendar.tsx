@@ -277,7 +277,7 @@ export function ScheduleCalendar() {
       <Card>
         <BlockStack gap="400" align="center">
           <Spinner size="large" />
-          <Text variant="bodyMd" tone="subdued">
+          <Text variant="bodyMd" tone="subdued" as="p">
             Loading store information...
           </Text>
         </BlockStack>

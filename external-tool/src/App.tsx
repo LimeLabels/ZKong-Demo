@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { Page, Layout, Tabs, Frame, TopBar, Button, Text, Spinner, BlockStack } from '@shopify/polaris'
-import { LogOutIcon } from '@shopify/polaris-icons'
+import { ExitIcon } from '@shopify/polaris-icons'
 import { ScheduleCalendar } from './components/ScheduleCalendar'
 import { ScheduleList } from './components/ScheduleList'
 import { Login } from './components/Login'
@@ -66,7 +66,7 @@ function App() {
         <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh' }}>
           <BlockStack gap="400" align="center">
             <Spinner size="large" />
-            <Text variant="bodyMd" tone="subdued">Loading...</Text>
+            <Text variant="bodyMd" tone="subdued" as="p">Loading...</Text>
           </BlockStack>
         </div>
       </Frame>
@@ -108,11 +108,11 @@ function App() {
       showNavigationToggle={false}
       userMenu={
         <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-          <Text variant="bodyMd" tone="subdued">
+          <Text variant="bodyMd" tone="subdued" as="p">
             {user?.email}
           </Text>
           <Button
-            icon={LogOutIcon}
+            icon={ExitIcon}
             onClick={handleLogout}
             variant="plain"
             size="slim"

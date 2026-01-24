@@ -97,7 +97,7 @@ export function Onboarding() {
       <Card>
         <BlockStack gap="400" align="center">
           <Spinner size="large" />
-          <Text variant="bodyMd" tone="subdued">
+          <Text variant="bodyMd" tone="subdued" as="p">
             Loading available stores...
           </Text>
         </BlockStack>
@@ -119,7 +119,7 @@ export function Onboarding() {
         <Text variant="headingXl" as="h2">
           Connect Your Store
         </Text>
-        <Text variant="bodyMd" tone="subdued">
+        <Text variant="bodyMd" tone="subdued" as="p">
           Select the store you want to manage. This will connect your account to an
           existing store mapping.
         </Text>

@@ -3,7 +3,7 @@
  * Provides auth state and methods throughout the application.
  */
 
-import React, { createContext, useContext, useEffect, useState, ReactNode } from 'react'
+import { createContext, useContext, useEffect, useState, ReactNode } from 'react'
 import { User } from '@supabase/supabase-js'
 import * as authService from '../services/auth'
 
@@ -48,7 +48,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
 
     // Listen for auth state changes
     const { data: { subscription } } = authService.getSupabaseClient().auth.onAuthStateChange(
-      async (event, session) => {
+      async (_event, session) => {
         setUser(session?.user ?? null)
         setLoading(false)
       }
