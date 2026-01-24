@@ -229,37 +229,47 @@ export function ScheduleCalendar() {
         },
       ]
 
-      // Prepare time slots
+      // Prepare time slots - convert to 24-hour format (matching Shopify pattern)
       const timeSlots = formData.timeSlots.map((slot) => ({
         start_time: slot.startTime,
         end_time: slot.endTime,
       }))
 
-      // Prepare request payload
-      // Ensure dates are valid and end_date is after start_date
-      const startDate = new Date(formData.startDate)
-      const endDate = new Date(formData.endDate)
-      
-      if (isNaN(startDate.getTime())) {
+      // Validate dates
+      if (isNaN(formData.startDate.getTime())) {
         throw new Error('Invalid start date')
       }
-      if (isNaN(endDate.getTime())) {
+      if (isNaN(formData.endDate.getTime())) {
         throw new Error('Invalid end date')
       }
-      if (endDate < startDate) {
+      if (formData.endDate < formData.startDate) {
         throw new Error('End date must be after start date')
       }
 
-      const payload = {
+      // Build payload - match Shopify's pattern of only including optional fields when set
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const payload: any = {
         store_mapping_id: formData.storeMappingId,
         name: formData.name,
         products: products,
-        start_date: startDate.toISOString(),
-        end_date: endDate.toISOString(),
+        start_date: formData.startDate.toISOString(),
         repeat_type: formData.repeatType,
-        trigger_days: formData.repeatType === 'weekly' ? formData.selectedDays.map(String) : null,
         time_slots: timeSlots,
-        multiplier_percentage: formData.multiplierPercentage !== null ? formData.multiplierPercentage : undefined,
+      }
+
+      // Add optional fields only if they have meaningful values
+      if (formData.endDate) {
+        payload.end_date = formData.endDate.toISOString()
+      }
+      
+      // Only add trigger_days for weekly repeats when days are selected
+      if (formData.repeatType === 'weekly' && formData.selectedDays.length > 0) {
+        payload.trigger_days = formData.selectedDays.map(String)
+      }
+      
+      // Add multiplier_percentage if provided
+      if (formData.multiplierPercentage !== null) {
+        payload.multiplier_percentage = formData.multiplierPercentage
       }
       
       console.log('Submitting payload:', payload)
