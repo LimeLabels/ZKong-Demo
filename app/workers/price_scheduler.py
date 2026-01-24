@@ -993,8 +993,22 @@ class PriceScheduler:
             # Initialize Square adapter
             square_adapter = SquareIntegrationAdapter()
 
+            # Get Square credentials from store mapping
+            square_credentials = square_adapter._get_square_credentials(store_mapping)
+            if not square_credentials:
+                logger.debug(
+                    "No Square credentials available, skipping Square update",
+                    store_mapping_id=str(store_mapping.id),
+                )
+                return
+
+            merchant_id, access_token = square_credentials
+
+            updates = []
+            failed_updates = []
+
             for product_data in products_data:
-                object_id = product_data["pc"]  # Object ID (catalog object ID)
+                object_id = product_data["pc"]  # Object ID (catalog object ID or barcode)
 
                 # Determine price to use
                 if use_original:
@@ -1010,24 +1024,124 @@ class PriceScheduler:
                     )
                     continue
 
-                # TODO: Implement Square price update via API
-                # Square API requires updating catalog objects with new price_money
-                # For now, log that we would update it
+                # If object_id is a barcode, we need to find the actual catalog object ID
+                # Get product from database to find Square IDs
+                existing_product = self.supabase_service.get_product_by_barcode(
+                    object_id
+                )
+
+                if not existing_product:
+                    logger.warning(
+                        "Product not found in database for Square update",
+                        barcode=object_id,
+                    )
+                    failed_updates.append(
+                        {
+                            "object_id": object_id,
+                            "error": "Product not found in database",
+                        }
+                    )
+                    continue
+
+                # Check if product is from Square
+                if existing_product.source_system != "square":
+                    logger.debug(
+                        "Product is not from Square, skipping",
+                        barcode=object_id,
+                        source_system=existing_product.source_system,
+                    )
+                    continue
+
+                # Get Square catalog object ID (variation ID)
+                # Use variant_id if available, otherwise use source_id
+                catalog_object_id = existing_product.source_variant_id or existing_product.source_id
+
+                if not catalog_object_id:
+                    logger.warning(
+                        "Product missing Square catalog object ID",
+                        barcode=object_id,
+                        product_id=str(existing_product.id),
+                    )
+                    failed_updates.append(
+                        {
+                            "object_id": object_id,
+                            "error": "Missing catalog object ID",
+                        }
+                    )
+                    continue
+
+                # Update price in Square
+                try:
+                    result = await square_adapter.update_catalog_object_price(
+                        object_id=catalog_object_id,
+                        price=price,
+                        access_token=access_token,
+                    )
+                    updates.append(
+                        {
+                            "object_id": catalog_object_id,
+                            "barcode": object_id,
+                            "price": price,
+                            "result": result,
+                        }
+                    )
+                    logger.info(
+                        "Updated Square price",
+                        object_id=catalog_object_id,
+                        barcode=object_id,
+                        price=price,
+                        use_original=use_original,
+                    )
+                except Exception as e:
+                    logger.error(
+                        "Failed to update Square price",
+                        object_id=catalog_object_id,
+                        barcode=object_id,
+                        price=price,
+                        error=str(e),
+                    )
+                    failed_updates.append(
+                        {
+                            "object_id": catalog_object_id,
+                            "barcode": object_id,
+                            "error": str(e),
+                        }
+                    )
+                    # Continue with other products even if one fails
+                    continue
+
+            if updates:
                 logger.info(
-                    "Square price update (to be implemented)",
-                    object_id=object_id,
-                    price=price,
-                    use_original=use_original,
-                    note="Square price updates via API need to be implemented",
+                    "Updated Square prices",
+                    succeeded=len(updates),
+                    failed=len(failed_updates),
+                    store_mapping_id=str(store_mapping.id),
+                )
+
+            if failed_updates:
+                logger.warning(
+                    "Some Square price updates failed",
+                    failed_updates=failed_updates,
+                    store_mapping_id=str(store_mapping.id),
                 )
 
         except Exception as e:
             # Log error but don't fail the entire operation
-            logger.error(
-                "Failed to update Square prices (non-critical)",
-                store_mapping_id=str(store_mapping.id),
-                error=str(e),
-            )
+            error_str = str(e)
+            # Check if it's an authentication error
+            if "401" in error_str or "Unauthorized" in error_str:
+                logger.error(
+                    "Failed to update Square prices - Authentication error. "
+                    "Please check that square_access_token is correctly set in store mapping metadata",
+                    store_mapping_id=str(store_mapping.id),
+                    error=error_str,
+                )
+            else:
+                logger.error(
+                    "Failed to update Square prices (non-critical)",
+                    store_mapping_id=str(store_mapping.id),
+                    error=error_str,
+                )
 
 
 async def run_price_scheduler():
