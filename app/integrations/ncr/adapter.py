@@ -499,3 +499,116 @@ class NCRIntegrationAdapter(BaseIntegrationAdapter):
             # Always close the API client connection
             await api_client.close()
 
+    async def pre_schedule_prices(
+        self,
+        schedule: "PriceAdjustmentSchedule",
+        store_mapping_config: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """
+        Pre-schedule all price changes for a schedule in NCR using effectiveDate.
+        
+        This method calculates all price events from the schedule and pre-schedules
+        them in NCR. NCR will automatically apply these prices at the specified times,
+        eliminating the need for constant polling.
+        
+        Args:
+            schedule: Price adjustment schedule
+            store_mapping_config: Store mapping configuration with NCR credentials
+        
+        Returns:
+            Dictionary with scheduling results
+        """
+        from app.utils.price_schedule_calculator import calculate_all_price_events
+        from app.models.database import StoreMapping
+        import pytz
+        
+        # Extract NCR configuration
+        ncr_config = store_mapping_config.get("metadata", {}) or {}
+        
+        # Get store mapping to determine timezone
+        store_mapping_id = store_mapping_config.get("id")
+        if store_mapping_id:
+            store_mapping = self.supabase_service.get_store_mapping_by_id(store_mapping_id)
+            if store_mapping:
+                # Get timezone from store mapping
+                if store_mapping.metadata and "timezone" in store_mapping.metadata:
+                    try:
+                        store_timezone = pytz.timezone(store_mapping.metadata["timezone"])
+                    except:
+                        store_timezone = pytz.UTC
+                else:
+                    store_timezone = pytz.UTC
+            else:
+                store_timezone = pytz.UTC
+        else:
+            store_timezone = pytz.UTC
+        
+        # Calculate all price events
+        try:
+            price_events = calculate_all_price_events(schedule, store_timezone)
+        except Exception as e:
+            logger.error(
+                "Failed to calculate price events",
+                schedule_id=str(schedule.id) if schedule.id else None,
+                error=str(e),
+            )
+            raise
+        
+        if not price_events:
+            logger.warning(
+                "No price events to schedule",
+                schedule_id=str(schedule.id) if schedule.id else None,
+            )
+            return {
+                "status": "success",
+                "scheduled_count": 0,
+                "failed_count": 0,
+                "message": "No price events to schedule",
+            }
+        
+        # Initialize NCR API client
+        api_client = NCRAPIClient(
+            base_url=ncr_config.get("ncr_base_url", "https://api.ncr.com/catalog"),
+            shared_key=ncr_config.get("ncr_shared_key"),
+            secret_key=ncr_config.get("ncr_secret_key"),
+            organization=ncr_config.get("ncr_organization"),
+            enterprise_unit=ncr_config.get("ncr_enterprise_unit"),
+        )
+        
+        try:
+            # Convert price events to format expected by API client
+            price_events_data = []
+            for event in price_events:
+                # Convert datetime to ISO format string in UTC
+                effective_date_utc = event.effective_date.astimezone(pytz.UTC)
+                effective_date_str = effective_date_utc.strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z'
+                
+                price_events_data.append({
+                    "item_code": event.item_code,
+                    "price": event.price,
+                    "effective_date": effective_date_str,
+                    "currency": "USD",
+                })
+            
+            # Pre-schedule in NCR
+            result = await api_client.pre_schedule_prices(price_events_data)
+            
+            logger.info(
+                "Pre-scheduled prices in NCR",
+                schedule_id=str(schedule.id) if schedule.id else None,
+                scheduled_count=result["scheduled_count"],
+                failed_count=result["failed_count"],
+                total_count=result["total_count"],
+            )
+            
+            return {
+                "status": "success",
+                "scheduled_count": result["scheduled_count"],
+                "failed_count": result["failed_count"],
+                "total_count": result["total_count"],
+                "results": result["results"],
+            }
+            
+        finally:
+            await api_client.close()
+

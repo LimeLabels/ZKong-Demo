@@ -15,6 +15,7 @@ from app.services.hipoink_client import HipoinkClient
 from app.services.supabase_service import SupabaseService
 from app.models.database import PriceAdjustmentSchedule, StoreMapping
 from app.config import settings
+from app.integrations.ncr.adapter import NCRIntegrationAdapter
 
 logger = structlog.get_logger()
 
@@ -446,6 +447,49 @@ async def create_price_adjustment(request: CreatePriceAdjustmentRequest):
             next_trigger_at=next_trigger.isoformat() if next_trigger else None,
         )
 
+        # Pre-schedule prices in NCR if store mapping is for NCR
+        if store_mapping.source_system == "ncr":
+            try:
+                ncr_adapter = NCRIntegrationAdapter()
+                pre_schedule_result = await ncr_adapter.pre_schedule_prices(
+                    schedule=created_schedule,
+                    store_mapping_config={
+                        "id": str(store_mapping.id),
+                        "metadata": store_mapping.metadata or {},
+                    },
+                )
+                
+                # Update schedule metadata with pre-scheduling results
+                if created_schedule.metadata is None:
+                    created_schedule.metadata = {}
+                
+                created_schedule.metadata["ncr_pre_scheduled"] = {
+                    "scheduled_count": pre_schedule_result.get("scheduled_count", 0),
+                    "failed_count": pre_schedule_result.get("failed_count", 0),
+                    "total_count": pre_schedule_result.get("total_count", 0),
+                    "scheduled_at": datetime.now(pytz.UTC).isoformat(),
+                }
+                
+                # Update schedule in database with metadata
+                supabase_service.update_price_adjustment_schedule(
+                    created_schedule.id,  # type: ignore
+                    {"metadata": created_schedule.metadata},
+                )
+                
+                logger.info(
+                    "Pre-scheduled prices in NCR",
+                    schedule_id=str(created_schedule.id),
+                    scheduled_count=pre_schedule_result.get("scheduled_count", 0),
+                    failed_count=pre_schedule_result.get("failed_count", 0),
+                )
+            except Exception as e:
+                # Log error but don't fail schedule creation
+                logger.error(
+                    "Failed to pre-schedule prices in NCR (non-critical)",
+                    schedule_id=str(created_schedule.id),
+                    error=str(e),
+                )
+
         return PriceAdjustmentResponse(
             id=created_schedule.id,  # type: ignore
             name=created_schedule.name,
@@ -612,6 +656,50 @@ async def update_price_adjustment(
             )
 
         logger.info("Updated price adjustment schedule", schedule_id=str(schedule_id))
+        
+        # Pre-schedule prices in NCR if store mapping is for NCR
+        if store_mapping.source_system == "ncr":
+            try:
+                ncr_adapter = NCRIntegrationAdapter()
+                pre_schedule_result = await ncr_adapter.pre_schedule_prices(
+                    schedule=updated,
+                    store_mapping_config={
+                        "id": str(store_mapping.id),
+                        "metadata": store_mapping.metadata or {},
+                    },
+                )
+                
+                # Update schedule metadata with pre-scheduling results
+                if updated.metadata is None:
+                    updated.metadata = {}
+                
+                updated.metadata["ncr_pre_scheduled"] = {
+                    "scheduled_count": pre_schedule_result.get("scheduled_count", 0),
+                    "failed_count": pre_schedule_result.get("failed_count", 0),
+                    "total_count": pre_schedule_result.get("total_count", 0),
+                    "scheduled_at": datetime.now(pytz.UTC).isoformat(),
+                }
+                
+                # Update schedule in database with metadata
+                supabase_service.update_price_adjustment_schedule(
+                    schedule_id,
+                    {"metadata": updated.metadata},
+                )
+                
+                logger.info(
+                    "Pre-scheduled prices in NCR (update)",
+                    schedule_id=str(schedule_id),
+                    scheduled_count=pre_schedule_result.get("scheduled_count", 0),
+                    failed_count=pre_schedule_result.get("failed_count", 0),
+                )
+            except Exception as e:
+                # Log error but don't fail schedule update
+                logger.error(
+                    "Failed to pre-schedule prices in NCR (non-critical)",
+                    schedule_id=str(schedule_id),
+                    error=str(e),
+                )
+        
         return updated
 
     except HTTPException:
