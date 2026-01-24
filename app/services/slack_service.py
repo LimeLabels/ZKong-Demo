@@ -168,6 +168,16 @@ class SlackNotificationService:
         Returns:
             True if alert sent successfully, False otherwise
         """
+        # Log attempt to send Slack alert
+        logger.info(
+            "Attempting to send Slack alert",
+            error_type=error_type,
+            merchant_id=merchant_id,
+            store_code=store_code,
+            enabled=self.enabled,
+            webhook_url_configured=bool(self.webhook_url),
+        )
+
         # Check if alerts are enabled
         if not self.enabled:
             logger.warning("Slack alerts disabled, skipping notification", enabled=self.enabled, enabled_type=type(self.enabled).__name__)
@@ -348,6 +358,15 @@ _slack_service: Optional[SlackNotificationService] = None
 def get_slack_service() -> SlackNotificationService:
     """Get or create global Slack notification service instance."""
     global _slack_service
-    if _slack_service is None:
-        _slack_service = SlackNotificationService()
-    return _slack_service
+    try:
+        if _slack_service is None:
+            logger.info("Creating new SlackNotificationService instance")
+            _slack_service = SlackNotificationService()
+        return _slack_service
+    except Exception as e:
+        logger.error(
+            "Failed to initialize SlackNotificationService",
+            error=str(e),
+            error_type=type(e).__name__,
+        )
+        raise
