@@ -394,15 +394,33 @@ class PriceScheduler:
                 end_date = end_date.astimezone(store_timezone)
 
         # Check if schedule has ended
-        if end_date and current_time > end_date:
-            logger.info(
-                "Schedule has ended",
-                schedule_id=str(schedule.id),
-                end_date=end_date.isoformat(),
-                current_time=current_time.isoformat(),
-            )
-            return None
-
+        # IMPORTANT: If end_date has time component (e.g. from frontend creation time), 
+        # we should treat it as inclusive or end-of-day.
+        if end_date:
+            # If end_date is exactly the same as start_date (common UI pattern for single day),
+            # or if we want to be generous, verify if it's strictly past the end date.
+            # But better yet, let's normalize end_date to end-of-day if it seems to be mid-day
+            # and potentially causing issues.
+            
+            # Use a grace period or check date component only if times are close?
+            # Safer: Compare with end of the day of end_date if the time component seems arbitrary
+            # But strictly speaking, if user set specific time, we should respect it.
+            # However, the frontend sends new Date() which captures creation time.
+            
+            # Let's adjust end_date to end of day for comparison if it's the same day as current
+            # This fixes the issue where "today" end date expires "today's" later schedules
+            end_of_end_date = end_date.replace(hour=23, minute=59, second=59, microsecond=999999)
+            
+            if current_time > end_of_end_date:
+                logger.info(
+                    "Schedule has ended (past end of end_date day)",
+                    schedule_id=str(schedule.id),
+                    end_date=end_date.isoformat(),
+                    end_of_end_date=end_of_end_date.isoformat(),
+                    current_time=current_time.isoformat(),
+                )
+                return None
+        
         # Check if schedule hasn't started yet
         if current_time < start_date:
             if schedule.time_slots:
