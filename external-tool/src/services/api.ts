@@ -23,11 +23,17 @@ export const updateApiBaseUrl = () => {
 
 // Request interceptor for adding auth tokens if needed
 apiClient.interceptors.request.use(
-  (config) => {
-    // Add any auth tokens here if needed
-    const token = localStorage.getItem('auth_token')
-    if (token) {
-      config.headers.Authorization = `Bearer ${token}`
+  async (config) => {
+    // Get Supabase session token
+    try {
+      const { getSession } = await import('./auth')
+      const session = await getSession()
+      if (session?.access_token) {
+        config.headers.Authorization = `Bearer ${session.access_token}`
+      }
+    } catch (error) {
+      // If auth service is not available, continue without token
+      console.warn('Failed to get auth token:', error)
     }
     return config
   },
@@ -39,10 +45,22 @@ apiClient.interceptors.request.use(
 // Response interceptor for error handling
 apiClient.interceptors.response.use(
   (response) => response,
-  (error) => {
+  async (error) => {
     if (error.response) {
       // Server responded with error
       console.error('API Error:', error.response.data)
+      
+      // Handle 401 Unauthorized - redirect to login
+      if (error.response.status === 401) {
+        // Clear any stored auth data
+        try {
+          const { signOut } = await import('./auth')
+          await signOut()
+        } catch (authError) {
+          console.warn('Failed to sign out:', authError)
+        }
+        // Redirect to login will be handled by App component
+      }
     } else if (error.request) {
       // Request made but no response
       console.error('Network Error:', error.request)

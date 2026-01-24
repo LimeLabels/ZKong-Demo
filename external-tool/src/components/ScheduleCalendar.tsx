@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import {
   Card,
   Button,
@@ -11,9 +11,11 @@ import {
   Banner,
   BlockStack,
   InlineStack,
+  Spinner,
 } from '@shopify/polaris'
 import { CalendarIcon } from '@shopify/polaris-icons'
 import { apiClient } from '../services/api'
+import { useUserStore } from '../hooks/useUserStore'
 
 interface ScheduleTimeSlot {
   startTime: string
@@ -37,6 +39,8 @@ interface ScheduleFormData {
 }
 
 export function ScheduleCalendar() {
+  const { store, loading: storeLoading } = useUserStore()
+  
   const [formData, setFormData] = useState<ScheduleFormData>({
     platform: '',
     name: '',
@@ -56,6 +60,16 @@ export function ScheduleCalendar() {
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [submitError, setSubmitError] = useState<string | null>(null)
   const [submitSuccess, setSubmitSuccess] = useState(false)
+
+  // Auto-populate store mapping ID when store is loaded
+  useEffect(() => {
+    if (store && !formData.storeMappingId) {
+      setFormData((prev) => ({
+        ...prev,
+        storeMappingId: store.id,
+      }))
+    }
+  }, [store])
 
   const platformOptions = [
     { label: 'Select Platform', value: '' },
@@ -258,10 +272,43 @@ export function ScheduleCalendar() {
     }))
   }
 
+  if (storeLoading) {
+    return (
+      <Card>
+        <BlockStack gap="400" align="center">
+          <Spinner size="large" />
+          <Text variant="bodyMd" tone="subdued">
+            Loading store information...
+          </Text>
+        </BlockStack>
+      </Card>
+    )
+  }
+
+  if (!store) {
+    return (
+      <Card>
+        <Banner tone="critical" title="No Store Connected">
+          <Text as="p">
+            Please connect a store in the onboarding section before creating schedules.
+          </Text>
+        </Banner>
+      </Card>
+    )
+  }
+
   return (
     <BlockStack gap="500">
       <Card>
         <FormLayout>
+          {store && (
+            <Banner tone="info" title="Store Connected">
+              <Text as="p">
+                Managing schedules for: <strong>{store.source_store_id}</strong> ({store.source_system})
+              </Text>
+            </Banner>
+          )}
+
           <Select
             label="Platform"
             options={platformOptions}
@@ -293,8 +340,9 @@ export function ScheduleCalendar() {
                 value={formData.storeMappingId}
                 onChange={(value) => setFormData((prev) => ({ ...prev, storeMappingId: value }))}
                 placeholder="uuid-here"
-                helpText="The store mapping UUID from your backend"
+                helpText="Automatically set to your connected store"
                 autoComplete="off"
+                disabled={!!store}
               />
 
               {formData.platform === 'ncr' && (
