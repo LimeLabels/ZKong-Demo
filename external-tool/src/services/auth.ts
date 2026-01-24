@@ -139,11 +139,6 @@ export const onAuthStateChange = (callback: (user: User | null) => void) => {
 }
 
 /**
- * Export the supabase client getter for use in other modules.
- */
-export { getSupabaseClient }
-
-/**
  * Get the access token for API requests.
  * @returns Access token or null
  */
