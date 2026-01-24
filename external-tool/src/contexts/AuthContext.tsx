@@ -14,6 +14,7 @@ interface AuthContextType {
   signUp: (email: string, password: string) => Promise<void>
   signOut: () => Promise<void>
   isAuthenticated: boolean
+  needsEmailVerification: boolean
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined)
@@ -28,6 +29,7 @@ interface AuthProviderProps {
 export function AuthProvider({ children }: AuthProviderProps) {
   const [user, setUser] = useState<User | null>(null)
   const [loading, setLoading] = useState(true)
+  const [needsEmailVerification, setNeedsEmailVerification] = useState(false)
 
   // Initialize auth state
   useEffect(() => {
@@ -36,9 +38,16 @@ export function AuthProvider({ children }: AuthProviderProps) {
       try {
         const currentUser = await authService.getCurrentUser()
         setUser(currentUser)
+        // Check if user needs email verification
+        if (currentUser && !currentUser.email_confirmed_at) {
+          setNeedsEmailVerification(true)
+        } else {
+          setNeedsEmailVerification(false)
+        }
       } catch (error) {
         console.error('Error initializing auth:', error)
         setUser(null)
+        setNeedsEmailVerification(false)
       } finally {
         setLoading(false)
       }
@@ -49,7 +58,14 @@ export function AuthProvider({ children }: AuthProviderProps) {
     // Listen for auth state changes
     const { data: { subscription } } = authService.getSupabaseClient().auth.onAuthStateChange(
       async (_event, session) => {
-        setUser(session?.user ?? null)
+        const currentUser = session?.user ?? null
+        setUser(currentUser)
+        // Check if user needs email verification
+        if (currentUser && !currentUser.email_confirmed_at) {
+          setNeedsEmailVerification(true)
+        } else {
+          setNeedsEmailVerification(false)
+        }
         setLoading(false)
       }
     )
@@ -79,7 +95,12 @@ export function AuthProvider({ children }: AuthProviderProps) {
   const signUp = async (email: string, password: string) => {
     setLoading(true)
     try {
-      await authService.signUp(email, password)
+      const result = await authService.signUp(email, password)
+      // If user is created but email not confirmed, show verification screen
+      if (result.user && !result.user.email_confirmed_at) {
+        setNeedsEmailVerification(true)
+        setUser(result.user)
+      }
       // User state will be updated via auth state change listener
     } catch (error) {
       setLoading(false)
@@ -109,7 +130,8 @@ export function AuthProvider({ children }: AuthProviderProps) {
     signIn,
     signUp,
     signOut,
-    isAuthenticated: !!user,
+    isAuthenticated: !!user && !needsEmailVerification,
+    needsEmailVerification,
   }
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>

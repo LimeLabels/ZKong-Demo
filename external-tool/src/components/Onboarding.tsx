@@ -1,9 +1,9 @@
 /**
- * Onboarding component for connecting user's store to an existing mapping.
- * Allows users to select and connect to a store mapping.
+ * Onboarding component for connecting user's store.
+ * Allows users to enter their Hipoink store code and select POS system to find/create a store mapping.
  */
 
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import {
   Card,
   FormLayout,
@@ -12,59 +12,35 @@ import {
   Text,
   Banner,
   BlockStack,
-  Spinner,
+  TextField,
 } from '@shopify/polaris'
 import { apiClient } from '../services/api'
-import { useAuth } from '../contexts/AuthContext'
-
-interface StoreMapping {
-  id: string
-  source_system: string
-  source_store_id: string
-  hipoink_store_code: string | null
-  is_active: boolean
-}
 
 export function Onboarding() {
-  const { user } = useAuth()
-  const [storeMappings, setStoreMappings] = useState<StoreMapping[]>([])
-  const [selectedMappingId, setSelectedMappingId] = useState<string>('')
-  const [loading, setLoading] = useState(true)
+  const [hipoinkStoreCode, setHipoinkStoreCode] = useState('')
+  const [posSystem, setPosSystem] = useState<string>('')
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [success, setSuccess] = useState(false)
 
-  /**
-   * Fetch available store mappings that the user can connect to.
-   */
-  useEffect(() => {
-    const fetchStoreMappings = async () => {
-      try {
-        setLoading(true)
-        // Fetch all active store mappings
-        const response = await apiClient.get('/api/store-mappings/', {
-          params: { is_active: true },
-        })
-        setStoreMappings(response.data || [])
-      } catch (err: any) {
-        console.error('Error fetching store mappings:', err)
-        setError('Failed to load store mappings. Please try again.')
-      } finally {
-        setLoading(false)
-      }
-    }
-
-    if (user) {
-      fetchStoreMappings()
-    }
-  }, [user])
+  const posSystemOptions = [
+    { label: 'Select POS System', value: '' },
+    { label: 'NCR POS', value: 'ncr' },
+    { label: 'Square', value: 'square' },
+    { label: 'Shopify', value: 'shopify' },
+  ]
 
   /**
-   * Connect user to selected store mapping.
+   * Search for existing store mapping or create new one and connect user.
    */
   const handleConnect = async () => {
-    if (!selectedMappingId) {
-      setError('Please select a store')
+    if (!hipoinkStoreCode.trim()) {
+      setError('Please enter your Hipoink store code')
+      return
+    }
+
+    if (!posSystem) {
+      setError('Please select your POS system')
       return
     }
 
@@ -73,10 +49,42 @@ export function Onboarding() {
     setSuccess(false)
 
     try {
-      // Call backend to associate user with store mapping
-      await apiClient.post('/api/auth/connect-store', {
-        store_mapping_id: selectedMappingId,
+      // First, search for existing store mapping by Hipoink store code and POS system
+      const searchResponse = await apiClient.get('/api/store-mappings/', {
+        params: {
+          is_active: true,
+          source_system: posSystem,
+        },
       })
+
+      // Find matching store mapping by Hipoink store code
+      const existingMapping = searchResponse.data?.find(
+        (mapping: any) => mapping.hipoink_store_code === hipoinkStoreCode.trim()
+      )
+
+      let storeMappingId: string
+
+      if (existingMapping) {
+        // Use existing mapping
+        storeMappingId = existingMapping.id
+      } else {
+        // Create new store mapping
+        // Note: We'll need source_store_id - for now, we'll use the Hipoink code as a placeholder
+        // In production, you might want to add a field for the actual store ID
+        const createResponse = await apiClient.post('/api/store-mappings/', {
+          source_system: posSystem,
+          source_store_id: `${posSystem}-${hipoinkStoreCode.trim()}`, // Placeholder
+          hipoink_store_code: hipoinkStoreCode.trim(),
+          is_active: true,
+        })
+        storeMappingId = createResponse.data.id
+      }
+
+      // Connect user to the store mapping
+      await apiClient.post('/api/auth/connect-store', {
+        store_mapping_id: storeMappingId,
+      })
+
       setSuccess(true)
       // Reload page after a short delay to refresh user data
       setTimeout(() => {
@@ -92,27 +100,6 @@ export function Onboarding() {
     }
   }
 
-  if (loading) {
-    return (
-      <Card>
-        <BlockStack gap="400" align="center">
-          <Spinner size="large" />
-          <Text variant="bodyMd" tone="subdued" as="p">
-            Loading available stores...
-          </Text>
-        </BlockStack>
-      </Card>
-    )
-  }
-
-  const mappingOptions = [
-    { label: 'Select a store', value: '' },
-    ...storeMappings.map((mapping) => ({
-      label: `${mapping.source_store_id} (${mapping.source_system})`,
-      value: mapping.id,
-    })),
-  ]
-
   return (
     <Card>
       <BlockStack gap="500">
@@ -120,22 +107,27 @@ export function Onboarding() {
           Connect Your Store
         </Text>
         <Text variant="bodyMd" tone="subdued" as="p">
-          Select the store you want to manage. This will connect your account to an
-          existing store mapping.
+          Enter your Hipoink store code and select your POS system to connect your account.
         </Text>
 
         <FormLayout>
+          <TextField
+            label="Hipoink Store Code"
+            value={hipoinkStoreCode}
+            onChange={setHipoinkStoreCode}
+            placeholder="Enter your Hipoink store code"
+            autoComplete="off"
+            disabled={submitting}
+            helpText="The store code used in your Hipoink ESL system"
+          />
+
           <Select
-            label="Store"
-            options={mappingOptions}
-            value={selectedMappingId}
-            onChange={setSelectedMappingId}
-            disabled={submitting || storeMappings.length === 0}
-            helpText={
-              storeMappings.length === 0
-                ? 'No available stores found. Please contact support.'
-                : 'Select the store you want to manage'
-            }
+            label="POS System"
+            options={posSystemOptions}
+            value={posSystem}
+            onChange={setPosSystem}
+            disabled={submitting}
+            helpText="Select the point-of-sale system you're using"
           />
 
           {error && (
@@ -156,7 +148,7 @@ export function Onboarding() {
             variant="primary"
             onClick={handleConnect}
             loading={submitting}
-            disabled={!selectedMappingId || storeMappings.length === 0}
+            disabled={!hipoinkStoreCode.trim() || !posSystem}
           >
             Connect Store
           </Button>
