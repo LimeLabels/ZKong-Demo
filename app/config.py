@@ -37,7 +37,7 @@ class Settings(BaseSettings):
     square_webhook_secret: str = ""  # Webhook signature key from Square
     square_application_id: str = ""  # Square Application ID
     square_application_secret: str = ""  # Square Application Secret
-    square_environment: str = "sandbox"  # "sandbox" or "production"
+    square_environment: str = "production"  # "sandbox" or "production"
 
     # Application Configuration
     app_environment: str = "development"
@@ -51,6 +51,10 @@ class Settings(BaseSettings):
 
     # Rate Limiting
     hipoink_rate_limit_per_second: int = 10
+
+    # Slack Configuration
+    slack_webhook_url: str = ""  # Slack Incoming Webhook URL
+    slack_alerts_enabled: str = "false"  # Enable/disable Slack alerts ("true" or "false")
 
     class Config:
         env_file = ".env"

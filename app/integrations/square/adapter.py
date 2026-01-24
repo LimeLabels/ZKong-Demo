@@ -27,6 +27,7 @@ from app.integrations.square.models import (
 from app.integrations.square.transformer import SquareTransformer
 from app.config import settings
 from app.services.supabase_service import SupabaseService
+from app.services.slack_service import get_slack_service
 from app.models.database import Product, StoreMapping
 
 logger = structlog.get_logger()
@@ -606,6 +607,18 @@ class SquareIntegrationAdapter(BaseIntegrationAdapter):
             access_token = os.getenv("SQUARE_ACCESS_TOKEN")
 
         if not access_token:
+            # Send Slack alert for missing token
+            try:
+                slack_service = get_slack_service()
+                await slack_service.send_api_error_alert(
+                    error_message="No access token found",
+                    api_name="square",
+                    merchant_id=merchant_id,
+                    status_code=401,
+                )
+            except Exception as slack_error:
+                logger.warning("Failed to send Slack alert", error=str(slack_error))
+            
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="No access token found",
@@ -634,6 +647,19 @@ class SquareIntegrationAdapter(BaseIntegrationAdapter):
                 
                 if response.status_code != 200:
                     logger.error("Square API Error", status=response.status_code, body=response.text)
+                    
+                    # Send Slack alert for Square API errors
+                    try:
+                        slack_service = get_slack_service()
+                        await slack_service.send_api_error_alert(
+                            error_message=f"Square API error: {response.status_code} - {response.text[:200]}",
+                            api_name="square",
+                            merchant_id=merchant_id,
+                            status_code=response.status_code,
+                        )
+                    except Exception as slack_error:
+                        logger.warning("Failed to send Slack alert", error=str(slack_error))
+                    
                     break
                     
                 data = response.json()

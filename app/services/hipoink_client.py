@@ -14,6 +14,7 @@ import httpx
 import structlog
 from typing import Optional, List, Dict, Any
 from app.config import settings
+from app.services.slack_service import get_slack_service
 from app.utils.retry import retry_with_backoff, TransientError, PermanentError
 
 logger = structlog.get_logger()
@@ -220,9 +221,22 @@ class HipoinkClient:
             error_code = response_data.get("error_code")
             if error_code != 0:
                 error_msg = response_data.get("error_msg", "Unknown error")
-                raise HipoinkAPIError(
+                error = HipoinkAPIError(
                     f"Hipoink API error: {error_msg} (code: {error_code})"
                 )
+                
+                # Send Slack alert for Hipoink API errors
+                try:
+                    slack_service = get_slack_service()
+                    await slack_service.send_api_error_alert(
+                        error_message=f"{error_msg} (code: {error_code})",
+                        api_name="hipoink",
+                        store_code=store_code,
+                    )
+                except Exception as slack_error:
+                    logger.warning("Failed to send Slack alert", error=str(slack_error))
+                
+                raise error
 
             logger.info(
                 "Successfully created products in Hipoink",
@@ -233,10 +247,33 @@ class HipoinkClient:
             return response_data
 
         except httpx.HTTPStatusError as e:
+            # Send Slack alert for HTTP errors
+            try:
+                slack_service = get_slack_service()
+                await slack_service.send_api_error_alert(
+                    error_message=f"HTTP {e.response.status_code}: {str(e)}",
+                    api_name="hipoink",
+                    store_code=store_code,
+                    status_code=e.response.status_code,
+                )
+            except Exception as slack_error:
+                logger.warning("Failed to send Slack alert", error=str(slack_error))
+            
             if 500 <= e.response.status_code < 600:
                 raise TransientError(f"Hipoink API error: {e.response.status_code}")
             raise PermanentError(f"Hipoink API error: {e.response.status_code}")
         except Exception as e:
+            # Send Slack alert for unexpected errors
+            try:
+                slack_service = get_slack_service()
+                await slack_service.send_api_error_alert(
+                    error_message=str(e),
+                    api_name="hipoink",
+                    store_code=store_code,
+                )
+            except Exception as slack_error:
+                logger.warning("Failed to send Slack alert", error=str(slack_error))
+            
             raise HipoinkAPIError(f"Product creation failed: {str(e)}")
 
     @retry_with_backoff(max_attempts=3, initial_delay=1.0, multiplier=2.0)
@@ -286,9 +323,22 @@ class HipoinkClient:
             error_code = response_data.get("error_code")
             if error_code != 0:
                 error_msg = response_data.get("error_msg", "Unknown error")
-                raise HipoinkAPIError(
+                error = HipoinkAPIError(
                     f"Hipoink API error: {error_msg} (code: {error_code})"
                 )
+                
+                # Send Slack alert for Hipoink API errors
+                try:
+                    slack_service = get_slack_service()
+                    await slack_service.send_api_error_alert(
+                        error_message=f"{error_msg} (code: {error_code})",
+                        api_name="hipoink",
+                        store_code=store_code,
+                    )
+                except Exception as slack_error:
+                    logger.warning("Failed to send Slack alert", error=str(slack_error))
+                
+                raise error
 
             logger.info(
                 "Successfully created product in Hipoink",
@@ -299,10 +349,33 @@ class HipoinkClient:
             return response_data
 
         except httpx.HTTPStatusError as e:
+            # Send Slack alert for HTTP errors
+            try:
+                slack_service = get_slack_service()
+                await slack_service.send_api_error_alert(
+                    error_message=f"HTTP {e.response.status_code}: {str(e)}",
+                    api_name="hipoink",
+                    store_code=store_code,
+                    status_code=e.response.status_code,
+                )
+            except Exception as slack_error:
+                logger.warning("Failed to send Slack alert", error=str(slack_error))
+            
             if 500 <= e.response.status_code < 600:
                 raise TransientError(f"Hipoink API error: {e.response.status_code}")
             raise PermanentError(f"Hipoink API error: {e.response.status_code}")
         except Exception as e:
+            # Send Slack alert for unexpected errors
+            try:
+                slack_service = get_slack_service()
+                await slack_service.send_api_error_alert(
+                    error_message=str(e),
+                    api_name="hipoink",
+                    store_code=store_code,
+                )
+            except Exception as slack_error:
+                logger.warning("Failed to send Slack alert", error=str(slack_error))
+            
             raise HipoinkAPIError(f"Product creation failed: {str(e)}")
 
     @retry_with_backoff(max_attempts=3, initial_delay=1.0, multiplier=2.0)

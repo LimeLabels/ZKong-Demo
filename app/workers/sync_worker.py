@@ -15,6 +15,7 @@ from app.services.hipoink_client import (
     HipoinkAPIError,
     HipoinkProductItem,
 )
+from app.services.slack_service import get_slack_service
 from app.models.database import SyncQueueItem, Product, StoreMapping
 from app.utils.retry import PermanentError, TransientError
 
@@ -176,6 +177,27 @@ class SyncWorker:
             )
             self.supabase_service.create_sync_log(log_entry)
 
+            # Send Slack alert for permanent errors
+            try:
+                store_mapping = self.supabase_service.get_store_mapping_by_id(
+                    queue_item.store_mapping_id  # type: ignore
+                )
+                merchant_id = store_mapping.source_store_id if store_mapping else None
+                store_code = store_mapping.hipoink_store_code if store_mapping else None
+                
+                slack_service = get_slack_service()
+                await slack_service.send_sync_failure_alert(
+                    error_message=str(e),
+                    product_id=str(queue_item.product_id) if queue_item.product_id else None,
+                    store_mapping_id=str(queue_item.store_mapping_id) if queue_item.store_mapping_id else None,
+                    operation=queue_item.operation,
+                    merchant_id=merchant_id,
+                    store_code=store_code,
+                )
+            except Exception as slack_error:
+                # Don't fail sync processing if Slack fails
+                logger.warning("Failed to send Slack alert", error=str(slack_error))
+
             raise
 
         except (TransientError, HipoinkAPIError) as e:
@@ -210,6 +232,26 @@ class SyncWorker:
                     duration_ms=duration_ms,
                 )
                 self.supabase_service.create_sync_log(log_entry)
+
+                # Send Slack alert for max retries exceeded
+                try:
+                    store_mapping = self.supabase_service.get_store_mapping_by_id(
+                        queue_item.store_mapping_id  # type: ignore
+                    )
+                    merchant_id = store_mapping.source_store_id if store_mapping else None
+                    store_code = store_mapping.hipoink_store_code if store_mapping else None
+                    
+                    slack_service = get_slack_service()
+                    await slack_service.send_sync_failure_alert(
+                        error_message=f"Max retries exceeded: {str(e)}",
+                        product_id=str(queue_item.product_id) if queue_item.product_id else None,
+                        store_mapping_id=str(queue_item.store_mapping_id) if queue_item.store_mapping_id else None,
+                        operation=queue_item.operation,
+                        merchant_id=merchant_id,
+                        store_code=store_code,
+                    )
+                except Exception as slack_error:
+                    logger.warning("Failed to send Slack alert", error=str(slack_error))
 
                 raise PermanentError(f"Max retries exceeded: {str(e)}")
             else:
