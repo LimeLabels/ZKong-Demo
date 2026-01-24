@@ -19,7 +19,17 @@ class SlackNotificationService:
     def __init__(self):
         """Initialize Slack notification service."""
         self.webhook_url = getattr(settings, "slack_webhook_url", None)
-        self.enabled = getattr(settings, "slack_alerts_enabled", "false").lower() == "true"
+        enabled_raw = getattr(settings, "slack_alerts_enabled", "false")
+        self.enabled = str(enabled_raw).lower() == "true"
+        
+        # Log initialization for debugging
+        logger.info(
+            "SlackNotificationService initialized",
+            enabled=self.enabled,
+            enabled_raw=enabled_raw,
+            webhook_url_configured=bool(self.webhook_url),
+            webhook_url_length=len(self.webhook_url) if self.webhook_url else 0,
+        )
         
         # Rate limiting: track last alert time per error key
         # Format: {error_key: last_alert_timestamp}
@@ -159,21 +169,23 @@ class SlackNotificationService:
         """
         # Check if alerts are enabled
         if not self.enabled:
-            logger.debug("Slack alerts disabled, skipping notification")
+            logger.warning("Slack alerts disabled, skipping notification", enabled=self.enabled, enabled_type=type(self.enabled).__name__)
             return False
         
         # Check if webhook URL is configured
         if not self.webhook_url:
-            logger.warning("Slack webhook URL not configured, skipping notification")
+            logger.warning("Slack webhook URL not configured, skipping notification", webhook_url_set=bool(self.webhook_url))
             return False
         
         # Check rate limiting
         error_key = self._get_error_key(error_type, merchant_id, store_code)
         if not self._should_send_alert(error_key):
-            logger.debug(
+            logger.info(
                 "Slack alert rate limited",
                 error_type=error_type,
                 merchant_id=merchant_id,
+                store_code=store_code,
+                error_key=error_key,
             )
             return False
         
@@ -196,9 +208,10 @@ class SlackNotificationService:
                 response.raise_for_status()
                 
                 logger.info(
-                    "Slack error alert sent",
+                    "Slack error alert sent successfully",
                     error_type=error_type,
                     merchant_id=merchant_id,
+                    store_code=store_code,
                 )
                 return True
                 
