@@ -20,7 +20,12 @@ class SlackNotificationService:
         """Initialize Slack notification service."""
         self.webhook_url = getattr(settings, "slack_webhook_url", None)
         enabled_raw = getattr(settings, "slack_alerts_enabled", "false")
-        self.enabled = str(enabled_raw).lower() == "true"
+        
+        # Handle both string and boolean values from Pydantic
+        if isinstance(enabled_raw, bool):
+            self.enabled = enabled_raw
+        else:
+            self.enabled = str(enabled_raw).lower() in ("true", "1", "yes", "on")
         
         # Log initialization for debugging
         logger.info(
