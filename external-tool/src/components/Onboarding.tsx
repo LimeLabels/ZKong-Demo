@@ -31,7 +31,8 @@ export function Onboarding() {
   ]
 
   /**
-   * Search for existing store mapping or create new one and connect user.
+   * Find existing store mapping and connect user.
+   * Does NOT create new mappings - only connects to existing ones (1:1 relationship).
    */
   const handleConnect = async () => {
     if (!hipoinkStoreCode.trim()) {
@@ -49,36 +50,14 @@ export function Onboarding() {
     setSuccess(false)
 
     try {
-      // First, search for existing store mapping by Hipoink store code and POS system
-      const searchResponse = await apiClient.get('/api/store-mappings/', {
-        params: {
-          is_active: true,
-          source_system: posSystem,
-        },
+      // Find existing store mapping by POS system and Hipoink store code
+      // This does NOT create new mappings - only finds existing ones
+      const findResponse = await apiClient.post('/api/auth/find-store-mapping', {
+        source_system: posSystem,
+        hipoink_store_code: hipoinkStoreCode.trim(),
       })
 
-      // Find matching store mapping by Hipoink store code
-      const existingMapping = searchResponse.data?.find(
-        (mapping: any) => mapping.hipoink_store_code === hipoinkStoreCode.trim()
-      )
-
-      let storeMappingId: string
-
-      if (existingMapping) {
-        // Use existing mapping
-        storeMappingId = existingMapping.id
-      } else {
-        // Create new store mapping
-        // Note: We'll need source_store_id - for now, we'll use the Hipoink code as a placeholder
-        // In production, you might want to add a field for the actual store ID
-        const createResponse = await apiClient.post('/api/store-mappings/', {
-          source_system: posSystem,
-          source_store_id: `${posSystem}-${hipoinkStoreCode.trim()}`, // Placeholder
-          hipoink_store_code: hipoinkStoreCode.trim(),
-          is_active: true,
-        })
-        storeMappingId = createResponse.data.id
-      }
+      const storeMappingId = findResponse.data.id
 
       // Connect user to the store mapping
       await apiClient.post('/api/auth/connect-store', {
@@ -99,9 +78,15 @@ export function Onboarding() {
           'Cannot connect to the server. Please make sure the backend is running and check your network connection.'
         )
       } else if (err.response?.status === 404) {
-        setError('Store mapping not found. Please check your Hipoink store code and try again.')
+        // Store mapping not found - explain that mappings must be created separately
+        const detail = err.response?.data?.detail || 'Store mapping not found'
+        setError(
+          `${detail}. Store mappings must be created separately before users can connect to them.`
+        )
       } else if (err.response?.status === 409) {
-        setError('A store mapping with this information already exists. Please contact support.')
+        setError(
+          'This store mapping is already connected to another user. Please contact support if you believe this is an error.'
+        )
       } else if (err.response?.data?.detail) {
         // Use the detailed error from the backend
         const detail = err.response.data.detail

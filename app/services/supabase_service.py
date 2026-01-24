@@ -199,6 +199,43 @@ class SupabaseService:
             )
             return []
 
+    def get_store_mapping_by_hipoink_code(
+        self, source_system: str, hipoink_store_code: str
+    ) -> Optional[StoreMapping]:
+        """
+        Get store mapping by source system and Hipoink store code.
+        Used for onboarding to find existing mappings (1:1 relationship).
+
+        Args:
+            source_system: Source system name (e.g., 'ncr', 'square', 'shopify')
+            hipoink_store_code: Hipoink ESL store code
+
+        Returns:
+            StoreMapping if found, None otherwise
+        """
+        try:
+            result = (
+                self.client.table("store_mappings")
+                .select("*")
+                .eq("source_system", source_system)
+                .eq("hipoink_store_code", hipoink_store_code)
+                .eq("is_active", True)
+                .limit(1)
+                .execute()
+            )
+
+            if result.data and len(result.data) > 0:
+                return StoreMapping(**result.data[0])
+            return None
+        except Exception as e:
+            logger.error(
+                "Failed to get store mapping by Hipoink code",
+                source_system=source_system,
+                hipoink_store_code=hipoink_store_code,
+                error=str(e),
+            )
+            return None
+
     def get_store_mapping_by_shop_domain(
         self, shop_domain: str
     ) -> Optional[StoreMapping]:
