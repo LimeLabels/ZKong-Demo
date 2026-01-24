@@ -22,7 +22,7 @@ class Settings(BaseSettings):
 
     # Shopify Configuration
     shopify_webhook_secret: str = (
-        ""  # Optional for testing, required for webhook verification
+        ""  # Required for webhook verification in production
     )
     shopify_api_key: str = ""  # Shopify app API key (for OAuth)
     shopify_api_secret: str = ""  # Shopify app API secret (for OAuth)
