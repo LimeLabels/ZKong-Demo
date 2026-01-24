@@ -94,7 +94,7 @@ export default function SquareOnboarding() {
               className={`${styles.input} ${errors.hipoinkStoreCode ? styles.error : ''}`}
               value={hipoinkStoreCode}
               onChange={(e) => setHipoinkStoreCode(e.target.value)}
-              placeholder="e.g., 001"
+              placeholder="e.g., ST-7842"
               disabled={isSubmitting}
             />
             {errors.hipoinkStoreCode && (
