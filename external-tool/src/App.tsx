@@ -5,11 +5,12 @@ import { ScheduleCalendar } from './components/ScheduleCalendar'
 import { ScheduleList } from './components/ScheduleList'
 import { Login } from './components/Login'
 import { Onboarding } from './components/Onboarding'
+import { EmailVerification } from './components/EmailVerification'
 import { useAuth } from './contexts/AuthContext'
 import { apiClient } from './services/api'
 
 function App() {
-  const { user, loading, signOut, isAuthenticated } = useAuth()
+  const { user, loading, signOut, isAuthenticated, needsEmailVerification } = useAuth()
   const [selectedTab, setSelectedTab] = useState(0)
   const [hasStore, setHasStore] = useState<boolean | null>(null)
   const [checkingStore, setCheckingStore] = useState(true)
@@ -71,6 +72,11 @@ function App() {
         </div>
       </Frame>
     )
+  }
+
+  // Show email verification screen if user needs to verify email
+  if (needsEmailVerification) {
+    return <EmailVerification />
   }
 
   // Show login if not authenticated
