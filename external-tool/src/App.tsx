@@ -14,22 +14,29 @@ function App() {
   const [selectedTab, setSelectedTab] = useState(0)
   const [hasStore, setHasStore] = useState<boolean | null>(null)
   const [checkingStore, setCheckingStore] = useState(true)
+  const [storeChecked, setStoreChecked] = useState(false) // Track if we've already checked
 
   /**
    * Check if user has a connected store.
+   * Only check once when user becomes authenticated, not on every render or tab switch.
    */
   useEffect(() => {
-    const checkUserStore = async () => {
+    // Only check if we haven't checked yet and user is authenticated
+    if (storeChecked || loading || !isAuthenticated || !user) {
       if (!isAuthenticated || !user) {
         setHasStore(false)
         setCheckingStore(false)
-        return
+        setStoreChecked(false) // Reset when user logs out
       }
+      return
+    }
 
+    const checkUserStore = async () => {
       try {
         setCheckingStore(true)
         const response = await apiClient.get('/api/auth/my-store')
         setHasStore(!!response.data)
+        setStoreChecked(true) // Mark as checked
       } catch (error: any) {
         // 404 means no store connected
         if (error.response?.status === 404) {
@@ -38,15 +45,14 @@ function App() {
           console.error('Error checking user store:', error)
           setHasStore(false)
         }
+        setStoreChecked(true) // Mark as checked even on error
       } finally {
         setCheckingStore(false)
       }
     }
 
-    if (!loading) {
-      checkUserStore()
-    }
-  }, [isAuthenticated, user, loading])
+    checkUserStore()
+  }, [isAuthenticated, user, loading, storeChecked])
 
   /**
    * Handle logout.
@@ -55,6 +61,7 @@ function App() {
     try {
       await signOut()
       setHasStore(null)
+      setStoreChecked(false) // Reset store check on logout
     } catch (error) {
       console.error('Error signing out:', error)
     }

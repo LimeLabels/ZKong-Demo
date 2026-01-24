@@ -61,13 +61,30 @@ export function ScheduleCalendar() {
   const [submitError, setSubmitError] = useState<string | null>(null)
   const [submitSuccess, setSubmitSuccess] = useState(false)
 
-  // Auto-populate store mapping ID when store is loaded
+  // Auto-populate store mapping ID and platform when store is loaded
   useEffect(() => {
-    if (store && !formData.storeMappingId) {
-      setFormData((prev) => ({
-        ...prev,
-        storeMappingId: store.id,
-      }))
+    if (store) {
+      setFormData((prev) => {
+        const updates: Partial<ScheduleFormData> = {
+          storeMappingId: store.id,
+        }
+        
+        // Auto-set platform based on store's source system
+        // Map source_system to platform value (ncr, square, shopify)
+        if (store.source_system && !prev.platform) {
+          const systemMap: Record<string, 'ncr' | 'square' | ''> = {
+            'ncr': 'ncr',
+            'square': 'square',
+            'shopify': 'square', // Shopify uses similar structure to Square
+          }
+          const platform = systemMap[store.source_system.toLowerCase()] || ''
+          if (platform) {
+            updates.platform = platform
+          }
+        }
+        
+        return { ...prev, ...updates }
+      })
     }
   }, [store])
 
@@ -309,20 +326,14 @@ export function ScheduleCalendar() {
             </Banner>
           )}
 
-          <Select
-            label="Platform"
-            options={platformOptions}
-            value={formData.platform}
-            onChange={(value) =>
-              setFormData((prev) => ({
-                ...prev,
-                platform: value as 'ncr' | 'square' | '',
-                itemCode: '', // Clear when platform changes
-                objectId: '', // Clear when platform changes
-              }))
-            }
-            helpText="Select the platform (NCR POS or Square) for this pricing schedule"
-          />
+          {/* Platform is auto-set from store, show as read-only info */}
+          {formData.platform && (
+            <Banner tone="info">
+              <Text as="p">
+                Platform: <strong>{formData.platform.toUpperCase()}</strong> (automatically set from your store)
+              </Text>
+            </Banner>
+          )}
 
           {formData.platform && (
             <>
@@ -569,11 +580,6 @@ export function ScheduleCalendar() {
             </Button>
           )}
 
-          {!formData.platform && (
-            <Banner tone="info" title="Select Platform">
-              <p>Please select a platform (NCR POS or Square) to continue creating a schedule.</p>
-            </Banner>
-          )}
         </FormLayout>
       </Card>
     </BlockStack>
