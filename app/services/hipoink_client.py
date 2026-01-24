@@ -17,6 +17,8 @@ from app.config import settings
 from app.services.slack_service import get_slack_service
 from app.utils.retry import retry_with_backoff, TransientError, PermanentError
 
+
+
 logger = structlog.get_logger()
 
 
@@ -68,7 +70,7 @@ class HipoinkProductItem:
         self.pim = product_image_url
         self.pqr = product_qrcode_url
 
-        # Add f1-f16 fields if provided
+        # Add f1-f16 fields if providedd
         for i in range(1, 17):
             field_name = f"f{i}"
             if field_name in kwargs:
