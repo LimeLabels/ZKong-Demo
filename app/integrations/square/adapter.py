@@ -27,7 +27,7 @@ from app.integrations.square.models import (
 from app.integrations.square.transformer import SquareTransformer
 from app.config import settings
 from app.services.supabase_service import SupabaseService
-from app.models.database import Product
+from app.models.database import Product, StoreMapping
 
 logger = structlog.get_logger()
 
@@ -242,6 +242,60 @@ class SquareIntegrationAdapter(BaseIntegrationAdapter):
             )
             return {}
 
+    async def _ensure_valid_token(
+        self, store_mapping: StoreMapping
+    ) -> Optional[str]:
+        """
+        Ensure store mapping has a valid, non-expiring access token.
+        Refreshes token if expiring soon.
+
+        Args:
+            store_mapping: Store mapping to check/refresh token for
+
+        Returns:
+            Valid access token or None if refresh failed
+        """
+        from app.integrations.square.token_refresh import SquareTokenRefreshService
+
+        token_refresh_service = SquareTokenRefreshService()
+
+        # Check if token is expiring soon
+        expires_at = None
+        if store_mapping.metadata:
+            expires_at = store_mapping.metadata.get("square_expires_at")
+
+        if token_refresh_service.is_token_expiring_soon(expires_at):
+            logger.info(
+                "Token expiring soon, refreshing before API call",
+                store_mapping_id=str(store_mapping.id),
+                merchant_id=store_mapping.source_store_id,
+            )
+
+            # Refresh token
+            success, updated_mapping = (
+                await token_refresh_service.refresh_token_and_update(store_mapping)
+            )
+
+            if success and updated_mapping:
+                # Use updated mapping
+                store_mapping = updated_mapping
+                logger.info(
+                    "Token refreshed successfully before API call",
+                    store_mapping_id=str(store_mapping.id),
+                )
+            else:
+                logger.error(
+                    "Failed to refresh token before API call",
+                    store_mapping_id=str(store_mapping.id),
+                )
+                return None
+
+        # Get access token from (possibly updated) store mapping
+        if store_mapping.metadata:
+            return store_mapping.metadata.get("square_access_token")
+
+        return None
+
     async def sync_all_products_from_square(
         self,
         merchant_id: str,
@@ -257,7 +311,7 @@ class SquareIntegrationAdapter(BaseIntegrationAdapter):
         
         Args:
             merchant_id: Square merchant ID
-            access_token: Square OAuth access token
+            access_token: Square OAuth access token (optional if store_mapping_id provided)
             store_mapping_id: Store mapping UUID
             base_url: Square API base URL (sandbox or production)
         
@@ -269,6 +323,17 @@ class SquareIntegrationAdapter(BaseIntegrationAdapter):
             merchant_id=merchant_id,
             store_mapping_id=str(store_mapping_id),
         )
+        
+        # If access_token not provided, get from store mapping and ensure it's valid
+        if not access_token and store_mapping_id:
+            store_mapping = self.supabase_service.get_store_mapping_by_id(store_mapping_id)
+            if store_mapping:
+                # Ensure valid token (auto-refresh if needed)
+                access_token = await self._ensure_valid_token(store_mapping)
+                if not access_token:
+                    raise Exception("Failed to obtain valid access token")
+            else:
+                raise Exception(f"Store mapping not found: {store_mapping_id}")
         
         # 1. Fetch all items with pagination
         all_items = []
@@ -514,7 +579,7 @@ class SquareIntegrationAdapter(BaseIntegrationAdapter):
     ) -> Dict[str, Any]:
         """
         Handle catalog update with pagination, safe token retrieval, 
-        and deletion detection.
+        deletion detection, and automatic token refresh.
         """
         # Validate payload structure
         CatalogVersionUpdatedWebhook(**payload)
@@ -526,17 +591,17 @@ class SquareIntegrationAdapter(BaseIntegrationAdapter):
                 detail="Merchant ID missing",
             )
 
-        # 1. Safe Token Retrieval (Fix for Potential Crash)
+        # 1. Get store mapping
         store_mapping = self.supabase_service.get_store_mapping("square", merchant_id)
-        access_token = None
         store_mapping_id = None
+        access_token = None
 
         if store_mapping:
             store_mapping_id = store_mapping.id
-            if store_mapping.metadata:
-                access_token = store_mapping.metadata.get("square_access_token")
+            # 2. Ensure valid token (auto-refresh if needed)
+            access_token = await self._ensure_valid_token(store_mapping)
         
-        # Fallback to env var if DB token is missing
+        # Fallback to env var if DB token is missing (for backward compatibility)
         if not access_token:
             access_token = os.getenv("SQUARE_ACCESS_TOKEN")
 
