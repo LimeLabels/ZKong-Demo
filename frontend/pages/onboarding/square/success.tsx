@@ -186,16 +186,23 @@ export default function SquareOnboardingSuccess() {
         <div className={styles.actions}>
           <button
             className={styles.buttonPrimary}
-            onClick={() => (window.location.href = process.env.NEXT_PUBLIC_ESL_DASHBOARD_LINK || '/dashboard')}
+            onClick={() => {
+              // Use production by default, or sandbox if NEXT_PUBLIC_SQUARE_ENVIRONMENT is set to 'sandbox'
+              const squareEnv = process.env.NEXT_PUBLIC_SQUARE_ENVIRONMENT || 'production';
+              const dashboardUrl = squareEnv === 'sandbox' 
+                ? 'https://squareupsandbox.com/dashboard'
+                : 'https://squareup.com/dashboard';
+              window.location.href = dashboardUrl;
+            }}
           >
-            Go to ESL Dashboard
+            Open Square Dashboard
           </button>
 
           <button
             className={styles.buttonSecondary}
-            onClick={() => (window.location.href = 'https://squareupsandbox.com/dashboard')}
+            onClick={() => (window.location.href = process.env.NEXT_PUBLIC_ESL_DASHBOARD_LINK || '/dashboard')}
           >
-            Open Square Dashboard
+            Go to ESL Dashboard
           </button>
         </div>
 
