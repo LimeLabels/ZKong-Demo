@@ -88,12 +88,6 @@ export function ScheduleCalendar() {
     }
   }, [store])
 
-  const platformOptions = [
-    { label: 'Select Platform', value: '' },
-    { label: 'NCR POS', value: 'ncr' },
-    { label: 'Square', value: 'square' },
-  ]
-
   const repeatOptions = [
     { label: 'No Repeat', value: 'none' },
     { label: 'Daily', value: 'daily' },
