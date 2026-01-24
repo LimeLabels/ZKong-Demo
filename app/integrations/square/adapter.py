@@ -8,8 +8,10 @@ import hashlib
 import base64
 import httpx
 import os
+import asyncio
 from typing import List, Dict, Any, Optional
 from fastapi import Request, HTTPException, status
+from uuid import UUID
 import structlog
 
 from app.integrations.base import (
@@ -239,6 +241,232 @@ class SquareIntegrationAdapter(BaseIntegrationAdapter):
                 unit_ids=measurement_unit_ids[:5],
             )
             return {}
+
+    async def sync_all_products_from_square(
+        self,
+        merchant_id: str,
+        access_token: str,
+        store_mapping_id: UUID,
+        base_url: str,
+    ) -> Dict[str, Any]:
+        """
+        Fetch all products from Square Catalog API and sync to database.
+        
+        This function is called during initial onboarding to sync all existing
+        products from Square to the database and queue them for Hipoink sync.
+        
+        Args:
+            merchant_id: Square merchant ID
+            access_token: Square OAuth access token
+            store_mapping_id: Store mapping UUID
+            base_url: Square API base URL (sandbox or production)
+        
+        Returns:
+            Dict with sync statistics (total_items, products_created, products_updated, errors)
+        """
+        logger.info(
+            "Starting initial product sync from Square",
+            merchant_id=merchant_id,
+            store_mapping_id=str(store_mapping_id),
+        )
+        
+        # 1. Fetch all items with pagination
+        all_items = []
+        cursor = None
+        page_count = 0
+        
+        async with httpx.AsyncClient() as client:
+            while True:
+                page_count += 1
+                url = f"{base_url}/v2/catalog/list?types=ITEM"
+                if cursor:
+                    url += f"&cursor={cursor}"
+                
+                try:
+                    response = await client.get(
+                        url,
+                        headers={
+                            "Authorization": f"Bearer {access_token}",
+                            "Content-Type": "application/json",
+                        },
+                        timeout=30.0,
+                    )
+                    
+                    if response.status_code != 200:
+                        logger.error(
+                            "Square API error during pagination",
+                            status=response.status_code,
+                            body=response.text,
+                            page=page_count,
+                        )
+                        break
+                    
+                    data = response.json()
+                    items = data.get("objects", [])
+                    all_items.extend(items)
+                    
+                    logger.debug(
+                        "Fetched page of items",
+                        page=page_count,
+                        items_in_page=len(items),
+                        total_items_so_far=len(all_items),
+                    )
+                    
+                    cursor = data.get("cursor")
+                    if not cursor:
+                        break  # No more pages
+                    
+                    # Rate limiting: wait 100ms between requests
+                    await asyncio.sleep(0.1)
+                    
+                except httpx.TimeoutException:
+                    logger.error("Timeout fetching Square catalog page", page=page_count)
+                    break
+                except Exception as e:
+                    logger.error(
+                        "Error fetching Square catalog",
+                        page=page_count,
+                        error=str(e),
+                        error_type=type(e).__name__,
+                    )
+                    break
+        
+        logger.info(
+            "Finished fetching items from Square",
+            total_items=len(all_items),
+            total_pages=page_count,
+        )
+        
+        if not all_items:
+            return {
+                "status": "success",
+                "total_items": 0,
+                "products_created": 0,
+                "products_updated": 0,
+                "queued_for_sync": 0,
+                "errors": 0,
+                "message": "No items found in Square catalog",
+            }
+        
+        # 2. Collect measurement unit IDs
+        measurement_unit_ids = set()
+        for item in all_items:
+            item_data = item.get("item_data") or {}
+            variations = item_data.get("variations") or []
+            for var in variations:
+                var_data = var.get("item_variation_data") or {}
+                unit_id = var_data.get("measurement_unit_id")
+                if unit_id:
+                    measurement_unit_ids.add(unit_id)
+        
+        # 3. Fetch measurement units in batch
+        measurement_units_cache: Dict[str, dict] = {}
+        if measurement_unit_ids:
+            measurement_units_cache = await self._fetch_measurement_units(
+                access_token=access_token,
+                measurement_unit_ids=list(measurement_unit_ids),
+                base_url=base_url,
+            )
+            logger.info(
+                "Fetched measurement units",
+                unit_count=len(measurement_units_cache),
+                requested_count=len(measurement_unit_ids),
+            )
+        
+        # 4. Process each item
+        products_created = 0
+        products_updated = 0
+        errors = 0
+        queued_count = 0
+        
+        for item in all_items:
+            item_id = item.get("id")
+            
+            try:
+                catalog_object = SquareCatalogObject(**item)
+                normalized_variants = self.transformer.extract_variations_from_catalog_object(
+                    catalog_object,
+                    measurement_units_cache=measurement_units_cache,
+                )
+                
+                for normalized in normalized_variants:
+                    # Validate
+                    is_valid, validation_errors = self.validate_normalized_product(normalized)
+                    
+                    # Check if product already exists
+                    existing = self.supabase_service.get_product_by_source(
+                        source_system="square",
+                        source_id=normalized.source_id,
+                        source_variant_id=normalized.source_variant_id,
+                    )
+                    
+                    # Create or update product
+                    product = Product(
+                        source_system="square",
+                        source_id=normalized.source_id,
+                        source_variant_id=normalized.source_variant_id,
+                        title=normalized.title,
+                        barcode=normalized.barcode,
+                        sku=normalized.sku,
+                        price=normalized.price,
+                        currency=normalized.currency,
+                        image_url=normalized.image_url,
+                        raw_data={"item_data": item},
+                        normalized_data=normalized.to_dict(),
+                        status="validated" if is_valid else "pending",
+                        validation_errors={"errors": validation_errors} if validation_errors else None,
+                    )
+                    
+                    saved = self.supabase_service.create_or_update_product(product)
+                    
+                    if existing:
+                        products_updated += 1
+                    else:
+                        products_created += 1
+                    
+                    # Add to sync queue if valid
+                    if is_valid and store_mapping_id:
+                        try:
+                            self.supabase_service.add_to_sync_queue(
+                                product_id=saved.id,  # type: ignore
+                                store_mapping_id=store_mapping_id,
+                                operation="create",  # Use "create" for initial sync
+                            )
+                            queued_count += 1
+                        except Exception as e:
+                            logger.error(
+                                "Failed to add product to sync queue",
+                                product_id=str(saved.id),
+                                error=str(e),
+                            )
+                
+            except Exception as e:
+                logger.error(
+                    "Error processing item",
+                    item_id=item_id,
+                    error=str(e),
+                    error_type=type(e).__name__,
+                )
+                errors += 1
+        
+        logger.info(
+            "Initial product sync completed",
+            merchant_id=merchant_id,
+            total_items=len(all_items),
+            products_created=products_created,
+            products_updated=products_updated,
+            queued_for_sync=queued_count,
+            errors=errors,
+        )
+        
+        return {
+            "status": "success",
+            "total_items": len(all_items),
+            "products_created": products_created,
+            "products_updated": products_updated,
+            "queued_for_sync": queued_count,
+            "errors": errors,
+        }
 
     def get_supported_events(self) -> List[str]:
         """Return list of supported Square webhook events."""

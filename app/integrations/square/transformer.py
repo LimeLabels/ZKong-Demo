@@ -200,6 +200,9 @@ class SquareTransformer:
         Args:
             catalog_object: Parent catalog object
             variation: Variation to normalize
+            measurement_units_cache: Optional dict mapping measurement_unit_id -> unit data.
+                Used for calculating weight-based pricing fields (f1-f4).
+                If None, products will default to per-item pricing.
 
         Returns:
             Normalized product object

@@ -3,7 +3,7 @@ Square OAuth authentication endpoints.
 Handles OAuth flow for Square POS integration.
 """
 
-from fastapi import APIRouter, Request, HTTPException, status, Query
+from fastapi import APIRouter, Request, HTTPException, status, Query, BackgroundTasks
 from fastapi.responses import RedirectResponse, JSONResponse
 from typing import Optional
 import structlog
@@ -13,6 +13,7 @@ import json
 import base64
 from datetime import datetime
 from urllib.parse import urlencode, quote
+from uuid import UUID
 
 from app.config import settings
 from app.services.supabase_service import SupabaseService
@@ -112,6 +113,7 @@ async def square_oauth_initiate(
 async def square_oauth_callback(
     code: str = Query(..., description="Authorization code from Square"),
     state: Optional[str] = Query(None, description="State parameter"),
+    background_tasks: BackgroundTasks = BackgroundTasks(),
 ):
     """
     Handle Square OAuth callback.
@@ -281,7 +283,30 @@ async def square_oauth_callback(
                 hipoink_store_code=hipoink_store_code,
             )
         
-        # 8) Redirect to frontend success page with URL-encoded parameters
+        # 8) Trigger initial product sync in background (non-blocking)
+        if mapping_id:
+            try:
+                background_tasks.add_task(
+                    trigger_initial_product_sync,
+                    merchant_id=merchant_id,
+                    access_token=access_token,
+                    store_mapping_id=UUID(mapping_id),
+                    base_url=base_api_url,
+                )
+                logger.info(
+                    "Initial product sync scheduled",
+                    merchant_id=merchant_id,
+                    mapping_id=mapping_id,
+                )
+            except Exception as e:
+                # Don't fail OAuth callback if sync scheduling fails
+                logger.error(
+                    "Failed to schedule initial product sync",
+                    merchant_id=merchant_id,
+                    error=str(e),
+                )
+        
+        # 9) Redirect to frontend success page with URL-encoded parameters
         frontend_url = getattr(settings, "frontend_url", None) or "http://localhost:3000"
         if frontend_url.startswith("http://localhost:8000") or ":8000" in frontend_url:
             frontend_url = "http://localhost:3000"
@@ -312,6 +337,101 @@ async def square_oauth_callback(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"OAuth callback failed: {str(e)}",
+        )
+
+
+async def trigger_initial_product_sync(
+    merchant_id: str,
+    access_token: str,
+    store_mapping_id: UUID,
+    base_url: str,
+):
+    """
+    Background task to sync all products from Square after OAuth completion.
+    
+    This function runs asynchronously after the OAuth callback response is sent,
+    ensuring the user sees the success page immediately while products sync in the background.
+    
+    Args:
+        merchant_id: Square merchant ID
+        access_token: Square OAuth access token
+        store_mapping_id: Store mapping UUID
+        base_url: Square API base URL (sandbox or production)
+    """
+    supabase_service = SupabaseService()
+    
+    try:
+        # Update metadata to indicate sync started
+        store_mapping = supabase_service.get_store_mapping_by_id(store_mapping_id)
+        if store_mapping:
+            metadata = store_mapping.metadata or {}
+            metadata["initial_sync_status"] = "in_progress"
+            metadata["initial_sync_started_at"] = datetime.utcnow().isoformat()
+            
+            supabase_service.client.table("store_mappings").update(
+                {"metadata": metadata}
+            ).eq("id", str(store_mapping_id)).execute()
+        
+        from app.integrations.square.adapter import SquareIntegrationAdapter
+        
+        adapter = SquareIntegrationAdapter()
+        result = await adapter.sync_all_products_from_square(
+            merchant_id=merchant_id,
+            access_token=access_token,
+            store_mapping_id=store_mapping_id,
+            base_url=base_url,
+        )
+        
+        # Update metadata to indicate sync completed
+        # Re-fetch store mapping to ensure we have latest data
+        store_mapping = supabase_service.get_store_mapping_by_id(store_mapping_id)
+        if store_mapping:
+            metadata = store_mapping.metadata or {}
+            metadata["initial_sync_status"] = "completed"
+            metadata["initial_sync_completed_at"] = datetime.utcnow().isoformat()
+            metadata["initial_sync_stats"] = {
+                "total_items": result.get("total_items", 0),
+                "products_created": result.get("products_created", 0),
+                "products_updated": result.get("products_updated", 0),
+                "queued_for_sync": result.get("queued_for_sync", 0),
+                "errors": result.get("errors", 0),
+            }
+            
+            supabase_service.client.table("store_mappings").update(
+                {"metadata": metadata}
+            ).eq("id", str(store_mapping_id)).execute()
+        
+        logger.info(
+            "Initial product sync completed",
+            merchant_id=merchant_id,
+            store_mapping_id=str(store_mapping_id),
+            total_items=result.get("total_items", 0),
+            products_created=result.get("products_created", 0),
+            products_updated=result.get("products_updated", 0),
+            queued_for_sync=result.get("queued_for_sync", 0),
+            errors=result.get("errors", 0),
+        )
+    except Exception as e:
+        # Update metadata to indicate sync failed
+        try:
+            store_mapping = supabase_service.get_store_mapping_by_id(store_mapping_id)
+            if store_mapping:
+                metadata = store_mapping.metadata or {}
+                metadata["initial_sync_status"] = "failed"
+                metadata["initial_sync_error"] = str(e)
+                
+                supabase_service.client.table("store_mappings").update(
+                    {"metadata": metadata}
+                ).eq("id", str(store_mapping_id)).execute()
+        except Exception as update_error:
+            logger.error("Failed to update sync status", error=str(update_error))
+        
+        logger.error(
+            "Initial product sync failed",
+            merchant_id=merchant_id,
+            store_mapping_id=str(store_mapping_id),
+            error=str(e),
+            error_type=type(e).__name__,
         )
 
 
@@ -425,4 +545,87 @@ async def get_square_locations(
         "merchant_id": merchant_id,
         "locations": locations,
         "primary_location_id": store_mapping.metadata.get("square_location_id"),
+    }
+
+
+@api_router.get("/sync-status")
+async def get_square_sync_status(
+    merchant_id: str = Query(..., description="Square merchant ID"),
+):
+    """
+    Get the current sync status for a Square merchant.
+    Returns sync progress, product counts, and queue status.
+    """
+    supabase_service = SupabaseService()
+
+    # Get store mapping
+    store_mapping = supabase_service.get_store_mapping("square", merchant_id)
+
+    if not store_mapping:
+        return {
+            "status": "not_found",
+            "message": "Store mapping not found",
+            "stats": None,
+        }
+
+    # Check metadata for sync status
+    metadata = store_mapping.metadata or {}
+    sync_status = metadata.get("initial_sync_status", "pending")
+    sync_started_at = metadata.get("initial_sync_started_at")
+    sync_completed_at = metadata.get("initial_sync_completed_at")
+    sync_stats = metadata.get("initial_sync_stats")
+
+    # Count products in database for this merchant
+    # Note: We can't directly filter by merchant_id in products table,
+    # but we can count all Square products and pending queue items
+    all_square_products = supabase_service.get_products_by_system("square")
+    total_products = len(all_square_products)
+
+    # Count products in sync queue for this store mapping
+    try:
+        pending_queue_items = supabase_service.get_pending_sync_queue_items(limit=1000)
+        queued_count = sum(
+            1
+            for item in pending_queue_items
+            if str(item.store_mapping_id) == str(store_mapping.id)
+        )
+    except Exception as e:
+        logger.warning("Failed to get queue count", error=str(e))
+        queued_count = 0
+
+    # Determine overall status
+    if sync_status == "in_progress":
+        status = "syncing"
+    elif sync_status == "completed":
+        status = "complete"
+    elif sync_status == "failed":
+        status = "failed"
+    elif sync_completed_at:
+        # If sync was completed but status not set, assume complete
+        status = "complete"
+    else:
+        # Default to pending if no sync has started
+        status = "pending"
+
+    return {
+        "status": status,
+        "merchant_id": merchant_id,
+        "store_mapping_id": str(store_mapping.id),
+        "stats": {
+            "total_products": total_products,
+            "queued_for_sync": queued_count,
+            "sync_started_at": sync_started_at,
+            "sync_completed_at": sync_completed_at,
+            **(
+                sync_stats
+                if sync_stats
+                else {
+                    "total_items": 0,
+                    "products_created": 0,
+                    "products_updated": 0,
+                    "queued_for_sync": queued_count,
+                    "errors": 0,
+                }
+            ),
+        },
     }
