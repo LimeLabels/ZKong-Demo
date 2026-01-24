@@ -125,6 +125,15 @@ class PriceScheduler:
             current_time_utc: Current datetime in UTC
         """
         try:
+            logger.info(
+                "Processing schedule",
+                schedule_id=str(schedule.id),
+                schedule_name=schedule.name,
+                order_number=schedule.order_number,
+                repeat_type=schedule.repeat_type,
+                time_slots=schedule.time_slots,
+            )
+            
             # Get store mapping
             store_mapping = self.supabase_service.get_store_mapping_by_id(
                 schedule.store_mapping_id  # type: ignore
@@ -139,6 +148,13 @@ class PriceScheduler:
 
             # Get store timezone
             store_timezone = get_store_timezone(store_mapping)
+            
+            logger.info(
+                "Schedule timezone info",
+                schedule_id=str(schedule.id),
+                store_timezone=str(store_timezone),
+                has_timezone_in_metadata=bool(store_mapping.metadata and "timezone" in store_mapping.metadata),
+            )
 
             # Convert current time to store timezone
             current_time = current_time_utc.astimezone(store_timezone)
@@ -147,11 +163,30 @@ class PriceScheduler:
             in_time_slot, is_start = self._check_time_slot(
                 schedule, current_time, store_timezone
             )
+            
+            logger.info(
+                "Time slot check result",
+                schedule_id=str(schedule.id),
+                current_time_utc=current_time_utc.isoformat(),
+                current_time_local=current_time.isoformat(),
+                in_time_slot=in_time_slot,
+                is_start=is_start,
+            )
 
             if not in_time_slot:
                 # Not in a time slot - calculate next trigger and skip
+                logger.info(
+                    "Schedule not in time slot, calculating next trigger",
+                    schedule_id=str(schedule.id),
+                    current_time=current_time.isoformat(),
+                )
                 next_trigger = self._calculate_next_trigger(
                     schedule, current_time, store_timezone
+                )
+                logger.info(
+                    "Next trigger calculated (not in slot)",
+                    schedule_id=str(schedule.id),
+                    next_trigger=next_trigger.isoformat() if next_trigger else "None - schedule will be deactivated",
                 )
                 # Convert to UTC for storage
                 next_trigger_utc = (
@@ -253,30 +288,67 @@ class PriceScheduler:
         """
         current_time_str = current_time.strftime("%H:%M")
         current_time_only = datetime.strptime(current_time_str, "%H:%M").time()
+        
+        # Log for debugging
+        logger.debug(
+            "Checking time slots",
+            current_time=current_time.isoformat(),
+            current_time_str=current_time_str,
+            time_slots=schedule.time_slots,
+        )
 
         for slot in schedule.time_slots:
             start_time = datetime.strptime(slot["start_time"], "%H:%M").time()
             end_time = datetime.strptime(slot["end_time"], "%H:%M").time()
 
-            # Check if we're at the start time (within 1 minute)
+            # Check if we're at the start time (within 2 minutes - increased tolerance for scheduler polling)
             start_datetime = store_timezone.localize(
                 datetime.combine(current_time.date(), start_time)
             )
-            time_diff = abs((current_time - start_datetime).total_seconds())
-            if time_diff <= 60:  # Within 1 minute of start
-                return (True, True)
-
-            # Check if we're at the end time (within 1 minute)
+            time_diff_start = abs((current_time - start_datetime).total_seconds())
+            
+            # Check if we're at the end time (within 2 minutes)
             end_datetime = store_timezone.localize(
                 datetime.combine(current_time.date(), end_time)
             )
-            time_diff = abs((current_time - end_datetime).total_seconds())
-            if time_diff <= 60:  # Within 1 minute of end
+            time_diff_end = abs((current_time - end_datetime).total_seconds())
+            
+            logger.debug(
+                "Time slot comparison",
+                slot_start=slot["start_time"],
+                slot_end=slot["end_time"],
+                time_diff_start_seconds=time_diff_start,
+                time_diff_end_seconds=time_diff_end,
+            )
+            
+            if time_diff_start <= 120:  # Within 2 minutes of start
+                logger.info("At start of time slot", slot=slot, time_diff=time_diff_start)
+                return (True, True)
+
+            if time_diff_end <= 120:  # Within 2 minutes of end
+                logger.info("At end of time slot", slot=slot, time_diff=time_diff_end)
                 return (True, False)
 
-            # Check if we're within the time slot
-            if start_time <= current_time_only <= end_time:
-                return (True, False)
+            # Check if we're within the time slot (between start and end)
+            # For short slots, we should apply promotional prices at the start
+            if start_time <= current_time_only < end_time:
+                # We're in the middle of the slot - this is a start event if we haven't triggered yet
+                # Check if last_triggered_at is before today's start time
+                if schedule.last_triggered_at is None:
+                    # Never triggered - treat as start
+                    logger.info("In time slot, no previous trigger - treating as start", slot=slot)
+                    return (True, True)
+                else:
+                    # Check if last trigger was today
+                    last_trigger_local = schedule.last_triggered_at.astimezone(store_timezone)
+                    if last_trigger_local.date() < current_time.date():
+                        # Last trigger was before today - treat as start
+                        logger.info("In time slot, last trigger was different day - treating as start", slot=slot)
+                        return (True, True)
+                    else:
+                        # Already triggered today - we're in the middle, waiting for end
+                        logger.info("In time slot, already triggered today - waiting for end", slot=slot)
+                        return (True, False)
 
         return (False, False)
 
@@ -290,6 +362,15 @@ class PriceScheduler:
         Calculate the next trigger time for a schedule.
         All datetime operations are performed in the store's timezone.
         """
+        logger.info(
+            "Calculating next trigger",
+            schedule_id=str(schedule.id),
+            repeat_type=schedule.repeat_type,
+            current_time=current_time.isoformat(),
+            start_date=schedule.start_date.isoformat() if schedule.start_date else None,
+            end_date=schedule.end_date.isoformat() if schedule.end_date else None,
+        )
+        
         # Ensure schedule dates are in store timezone
         start_date = schedule.start_date
         if start_date.tzinfo is None:
@@ -306,6 +387,12 @@ class PriceScheduler:
 
         # Check if schedule has ended
         if end_date and current_time > end_date:
+            logger.info(
+                "Schedule has ended",
+                schedule_id=str(schedule.id),
+                end_date=end_date.isoformat(),
+                current_time=current_time.isoformat(),
+            )
             return None
 
         # Check if schedule hasn't started yet
@@ -389,6 +476,12 @@ class PriceScheduler:
 
         # For no repeat, check if there are more time slots today
         if schedule.repeat_type == "none":
+            logger.info(
+                "Processing 'none' repeat type schedule",
+                schedule_id=str(schedule.id),
+                current_time=current_time.isoformat(),
+                time_slots=schedule.time_slots,
+            )
             if schedule.time_slots:
                 for slot in schedule.time_slots:
                     slot_time = current_time.replace(
@@ -398,6 +491,11 @@ class PriceScheduler:
                         microsecond=0,
                     )
                     if slot_time > current_time:
+                        logger.info(
+                            "Found future slot start time",
+                            schedule_id=str(schedule.id),
+                            next_trigger=slot_time.isoformat(),
+                        )
                         return slot_time
 
                 # Check end time of last slot
@@ -409,8 +507,25 @@ class PriceScheduler:
                     microsecond=0,
                 )
                 if current_time < last_end:
+                    logger.info(
+                        "Current time before last slot end, returning end time",
+                        schedule_id=str(schedule.id),
+                        next_trigger=last_end.isoformat(),
+                    )
                     return last_end
+                
+                logger.info(
+                    "No more triggers for 'none' repeat schedule - past all slots",
+                    schedule_id=str(schedule.id),
+                    current_time=current_time.isoformat(),
+                    last_slot_end=last_end.isoformat(),
+                )
 
+        logger.info(
+            "No next trigger found, schedule will be deactivated",
+            schedule_id=str(schedule.id),
+            repeat_type=schedule.repeat_type,
+        )
         return None
 
     def _update_schedule_next_trigger(
