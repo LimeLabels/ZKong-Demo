@@ -11,7 +11,7 @@ import os
 import asyncio
 from typing import List, Dict, Any, Optional, Tuple
 from fastapi import Request, HTTPException, status
-from uuid import UUID
+from uuid import UUID, uuid4
 import structlog
 
 from app.integrations.base import (
@@ -998,7 +998,12 @@ class SquareIntegrationAdapter(BaseIntegrationAdapter):
 
                 # Update the catalog object
                 update_url = f"{base_url}/v2/catalog/object"
+                
+                # Generate idempotency key for Square API
+                idempotency_key = str(uuid4())
+                
                 update_payload = {
+                    "idempotency_key": idempotency_key,
                     "object": catalog_object,
                 }
 
