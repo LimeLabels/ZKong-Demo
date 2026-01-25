@@ -1150,7 +1150,7 @@ class PriceScheduler:
             square_adapter = SquareIntegrationAdapter()
 
             # Get Square credentials from store mapping
-            square_credentials = square_adapter._get_square_credentials(store_mapping)
+            square_credentials = await square_adapter._get_square_credentials(store_mapping)
             if not square_credentials:
                 logger.warning(
                     "No Square credentials available, skipping Square update",
