@@ -50,7 +50,7 @@ interface ScheduleFormData {
 }
 
 export function ScheduleCalendar() {
-  const { store, loading: storeLoading } = useUserStore()
+  const { store, stores, switchStore, loading: storeLoading } = useUserStore()
   
   const [formData, setFormData] = useState<ScheduleFormData>({
     platform: '',
@@ -75,7 +75,7 @@ export function ScheduleCalendar() {
   const [submitError, setSubmitError] = useState<string | null>(null)
   const [submitSuccess, setSubmitSuccess] = useState(false)
 
-  // Auto-populate store mapping ID and platform when store is loaded
+  // Auto-populate store mapping ID and platform when store is loaded or switched
   useEffect(() => {
     if (store) {
       setFormData((prev) => {
@@ -85,7 +85,7 @@ export function ScheduleCalendar() {
         
         // Auto-set platform based on store's source system
         // Map source_system to platform value (ncr, square, shopify)
-        if (store.source_system && !prev.platform) {
+        if (store.source_system) {
           const systemMap: Record<string, 'ncr' | 'square' | ''> = {
             'ncr': 'ncr',
             'square': 'square',
@@ -99,6 +99,9 @@ export function ScheduleCalendar() {
         
         return { ...prev, ...updates }
       })
+      
+      // Reset product selection when store changes
+      setSelectedProductId('')
     }
   }, [store])
 
@@ -401,6 +404,20 @@ export function ScheduleCalendar() {
     <BlockStack gap="500">
       <Card>
         <FormLayout>
+          {/* Store Selector - show when user has multiple stores */}
+          {stores.length > 1 && (
+            <Select
+              label="Select Store"
+              options={stores.map((s) => ({
+                label: `${s.store_name || s.source_store_id} (${s.source_system})`,
+                value: s.id,
+              }))}
+              value={store?.id || ''}
+              onChange={(value) => switchStore(value)}
+              helpText="Switch between your connected stores"
+            />
+          )}
+
           {store && (
             <Banner tone="info" title="Store Connected">
               <Text as="p">

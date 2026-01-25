@@ -1093,12 +1093,6 @@ class SupabaseService:
         Returns schedules where next_trigger_at <= current_time and is_active=True.
         """
         try:
-            # Log the query parameters for debugging
-            logger.debug(
-                "Querying due schedules",
-                current_time_iso=current_time.isoformat(),
-            )
-            
             result = (
                 self.client.table("price_adjustment_schedules")
                 .select("*")

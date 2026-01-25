@@ -89,17 +89,11 @@ class PriceScheduler:
             # Get schedules due for trigger (stored in UTC)
             current_time_utc = datetime.now(pytz.UTC)
             
-            logger.debug(
-                "Checking for due schedules",
-                current_time_utc=current_time_utc.isoformat(),
-            )
-            
             schedules = self.supabase_service.get_schedules_due_for_trigger(
                 current_time_utc
             )
 
             if not schedules:
-                logger.debug("No schedules due for trigger")
                 return  # No schedules to process
 
             logger.info(
@@ -776,6 +770,31 @@ class PriceScheduler:
             for product_data in products_data:
                 barcode = product_data["pc"]
 
+                # For Square, product_data["pc"] is the object_id (source_id/source_variant_id)
+                # We need to find the product in DB to get the real barcode for Hipoink
+                if store_mapping.source_system == "square":
+                    # Try to find by source_variant_id first (most common for Square products)
+                    existing_product = self.supabase_service.get_product_by_source_variant_id(barcode)
+                    if not existing_product:
+                        # Fallback to source_id
+                        products_by_source = self.supabase_service.get_products_by_source_id("square", barcode)
+                        if products_by_source:
+                            existing_product = products_by_source[0]
+                    
+                    if existing_product and existing_product.barcode:
+                        barcode = existing_product.barcode
+                        # Also update the product_data pc for consistency in loop if needed, 
+                        # but be careful not to break other logic that expects the ID
+                    else:
+                        logger.warning(
+                            "Could not find barcode for Square product",
+                            square_id=product_data["pc"],
+                            schedule_id=str(schedule.id)
+                        )
+                        # If we can't find the barcode, we can't update ESL properly.
+                        # We'll continue with the Square ID as barcode, which will create an orphan product.
+                        # This is what was happening before.
+
                 # Calculate price: if multiplier_percentage is provided, use it; otherwise use provided price
                 if schedule.multiplier_percentage is not None:
                     original_price = product_data.get("original_price")
@@ -869,15 +888,16 @@ class PriceScheduler:
                     store_code=str(store_code),
                 )
 
-            # Update Shopify prices if credentials are available
-            shopify_credentials = self._get_shopify_credentials(store_mapping)
-            if shopify_credentials:
-                # Use updated_products_data which has the calculated prices (including multiplier)
-                await self._update_shopify_prices(
-                    updated_products_data,
-                    new_price=None,  # Will use 'pp' from updated_products_data (includes calculated price)
-                    shopify_credentials=shopify_credentials,
-                )
+            # Update Shopify prices if credentials are available (and store is Shopify)
+            if store_mapping.source_system == "shopify":
+                shopify_credentials = self._get_shopify_credentials(store_mapping)
+                if shopify_credentials:
+                    # Use updated_products_data which has the calculated prices (including multiplier)
+                    await self._update_shopify_prices(
+                        updated_products_data,
+                        new_price=None,  # Will use 'pp' from updated_products_data (includes calculated price)
+                        shopify_credentials=shopify_credentials,
+                    )
 
             # Update NCR prices if store mapping is for NCR
             if store_mapping.source_system == "ncr":
@@ -908,6 +928,13 @@ class PriceScheduler:
         products_data: list,
     ):
         """Restore original prices to products - preserves all existing product data."""
+        logger.info(
+            "Restoring original prices",
+            schedule_id=str(schedule.id),
+            store_mapping_id=str(store_mapping.id),
+            source_system=store_mapping.source_system,
+            products_count=len(products_data),
+        )
         try:
             # Validate hipoink_store_code
             if (
@@ -929,6 +956,20 @@ class PriceScheduler:
             hipoink_products = []
             for product_data in products_data:
                 barcode = product_data["pc"]
+                
+                # For Square, product_data["pc"] is the object_id
+                if store_mapping.source_system == "square":
+                    # Try to find by source_variant_id first
+                    existing_product = self.supabase_service.get_product_by_source_variant_id(barcode)
+                    if not existing_product:
+                        # Fallback to source_id
+                        products_by_source = self.supabase_service.get_products_by_source_id("square", barcode)
+                        if products_by_source:
+                            existing_product = products_by_source[0]
+                    
+                    if existing_product and existing_product.barcode:
+                        barcode = existing_product.barcode
+
                 original_price = product_data.get("original_price")
 
                 if original_price is None:
@@ -1125,18 +1166,11 @@ class PriceScheduler:
     ):
         """
         Update prices in Square for products.
-        
-        This method is called by the price scheduler to update Square prices when schedules trigger.
-        Square supports webhooks, but this provides a fallback polling mechanism.
-
-        Args:
-            products_data: List of product data dicts with 'pc' (object_id) and 'pp' (price) or 'original_price'
-            store_mapping: Store mapping with Square configuration
-            use_original: If True, use original_price from product_data instead of 'pp'
         """
         logger.info(
-            "Starting Square price update",
+            "=== SQUARE PRICE UPDATE STARTING ===",
             store_mapping_id=str(store_mapping.id),
+            source_system=store_mapping.source_system,
             products_count=len(products_data),
             use_original=use_original,
         )
@@ -1150,11 +1184,13 @@ class PriceScheduler:
             square_adapter = SquareIntegrationAdapter()
 
             # Get Square credentials from store mapping
-            square_credentials = square_adapter._get_square_credentials(store_mapping)
+            square_credentials = await square_adapter._get_square_credentials(store_mapping)
             if not square_credentials:
-                logger.warning(
-                    "No Square credentials available, skipping Square update",
+                logger.error(
+                    "=== SQUARE UPDATE ABORTED: NO CREDENTIALS ===",
                     store_mapping_id=str(store_mapping.id),
+                    has_metadata=bool(store_mapping.metadata),
+                    metadata_keys=list(store_mapping.metadata.keys()) if store_mapping.metadata else [],
                 )
                 return
 
@@ -1270,6 +1306,24 @@ class PriceScheduler:
                         price=price,
                         use_original=use_original,
                     )
+                    
+                    # Update local product price in database immediately
+                    if existing_product and existing_product.id:
+                        try:
+                            existing_product.price = price
+                            self.supabase_service.create_or_update_product(existing_product)
+                            logger.info(
+                                "=== LOCAL DB PRICE UPDATED ===",
+                                product_id=str(existing_product.id),
+                                barcode=existing_product.barcode,
+                                new_price=price,
+                            )
+                        except Exception as db_e:
+                            logger.error(
+                                "Failed to update local DB price after Square update",
+                                error=str(db_e),
+                            )
+
                 except Exception as e:
                     logger.error(
                         "Failed to update Square price",

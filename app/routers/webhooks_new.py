@@ -77,17 +77,25 @@ async def handle_webhook(
 
         # Verify signature
         # For Square, pass request URL for signature verification (Square doesn't send it in headers)
-        request_url = str(request.url) if integration_name == "square" else None
-        if signature and not adapter.verify_signature(body_bytes, signature, headers, request_url=request_url):
-            logger.warning(
-                "Invalid webhook signature",
-                integration=integration_name,
-                event_type=event_type,
-            )
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid webhook signature",
-            )
+        # For other integrations (Shopify, NCR), don't pass request_url
+        if signature:
+            if integration_name == "square":
+                request_url = str(request.url)
+                is_valid = adapter.verify_signature(body_bytes, signature, headers, request_url=request_url)
+            else:
+                # Shopify, NCR, etc. don't accept request_url parameter
+                is_valid = adapter.verify_signature(body_bytes, signature, headers)
+            
+            if not is_valid:
+                logger.warning(
+                    "Invalid webhook signature",
+                    integration=integration_name,
+                    event_type=event_type,
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Invalid webhook signature",
+                )
 
         # Parse payload
         try:

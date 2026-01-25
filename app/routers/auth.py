@@ -259,6 +259,53 @@ async def get_my_store(user_data: dict = Depends(verify_token)):
         )
 
 
+@router.get("/my-stores")
+async def get_my_stores(user_data: dict = Depends(verify_token)):
+    """
+    Get ALL store mappings associated with the current user.
+    Returns a list of stores so users can switch between them.
+    """
+    user_id = user_data["user_id"]
+    
+    try:
+        # Find all store mappings where metadata contains user_id
+        result = (
+            supabase_service.client.table("store_mappings")
+            .select("*")
+            .eq("is_active", True)
+            .execute()
+        )
+        
+        # Filter in Python since Supabase JSON queries can be tricky
+        user_stores = []
+        for item in result.data:
+            mapping = supabase_service.get_store_mapping_by_id(UUID(item["id"]))
+            if (
+                mapping
+                and mapping.metadata
+                and mapping.metadata.get("user_id") == user_id
+            ):
+                # Get store name from metadata if available
+                store_name = mapping.metadata.get("store_name") or mapping.metadata.get("square_location_name") or mapping.source_store_id
+                
+                user_stores.append({
+                    "id": str(mapping.id),
+                    "source_system": mapping.source_system,
+                    "source_store_id": mapping.source_store_id,
+                    "hipoink_store_code": mapping.hipoink_store_code or "",
+                    "is_active": mapping.is_active,
+                    "store_name": store_name,
+                })
+        
+        return user_stores
+    except Exception as e:
+        logger.error("Failed to get user stores", error=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get user stores: {str(e)}",
+        )
+
+
 class FindStoreMappingRequest(BaseModel):
     """Request model for finding a store mapping by POS system and Hipoink code."""
     source_system: str

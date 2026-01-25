@@ -11,7 +11,7 @@ import os
 import asyncio
 from typing import List, Dict, Any, Optional, Tuple
 from fastapi import Request, HTTPException, status
-from uuid import UUID
+from uuid import UUID, uuid4
 import structlog
 
 from app.integrations.base import (
@@ -920,11 +920,12 @@ class SquareIntegrationAdapter(BaseIntegrationAdapter):
             "message": f"Order event {event_type} acknowledged",
         }
 
-    def _get_square_credentials(
+    async def _get_square_credentials(
         self, store_mapping: Any
     ) -> Optional[Tuple[str, str]]:
         """
         Get Square credentials from store mapping metadata.
+        Ensures token is valid and refreshes if necessary.
 
         Args:
             store_mapping: Store mapping object
@@ -938,12 +939,11 @@ class SquareIntegrationAdapter(BaseIntegrationAdapter):
 
         merchant_id = store_mapping.source_store_id  # Square merchant/location ID
         
-        # Try to get access token from metadata first
-        access_token = None
-        if store_mapping.metadata:
-            access_token = store_mapping.metadata.get("square_access_token")
+        # Ensure valid token (auto-refresh if needed)
+        # This handles checking expiration and refreshing if needed
+        access_token = await self._ensure_valid_token(store_mapping)
         
-        # Fallback to env var if DB token is missing
+        # Fallback to env var if DB token is missing (and couldn't be refreshed)
         if not access_token:
             access_token = os.getenv("SQUARE_ACCESS_TOKEN")
 
@@ -1035,7 +1035,12 @@ class SquareIntegrationAdapter(BaseIntegrationAdapter):
 
                 # Update the catalog object
                 update_url = f"{base_url}/v2/catalog/object"
+                
+                # Generate idempotency key for Square API
+                idempotency_key = str(uuid4())
+                
                 update_payload = {
+                    "idempotency_key": idempotency_key,
                     "object": catalog_object,
                 }
 
