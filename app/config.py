@@ -22,7 +22,7 @@ class Settings(BaseSettings):
 
     # Shopify Configuration
     shopify_webhook_secret: str = (
-        ""  # Optional for testing, required for webhook verification
+        ""  # Required for webhook verification in production
     )
     shopify_api_key: str = ""  # Shopify app API key (for OAuth)
     shopify_api_secret: str = ""  # Shopify app API secret (for OAuth)
@@ -48,7 +48,7 @@ class Settings(BaseSettings):
     square_webhook_secret: str = ""  # Webhook signature key from Square
     square_application_id: str = ""  # Square Application ID
     square_application_secret: str = ""  # Square Application Secret
-    square_environment: str = "sandbox"  # "sandbox" or "production"
+    square_environment: str = "production"  # "sandbox" or "production"
 
     # Application Configuration
     app_environment: str = "development"
@@ -63,11 +63,15 @@ class Settings(BaseSettings):
     # Rate Limiting
     hipoink_rate_limit_per_second: int = 10
 
+    # Slack Configuration
+    slack_webhook_url: str = ""  # Slack Incoming Webhook URL
+    slack_alerts_enabled: str = "false"  # Enable/disable Slack alerts ("true" or "false")
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
         case_sensitive = False
-        extra = "ignore"  # Ignore extra env vars like deprecated NCR_ACCESS_TOKEN
+        extra = "ignore"  # Ignore extra environment variables (like NEXT_PUBLIC_* for frontend, deprecated NCR_ACCESS_TOKEN)
 
 
 # Global settings instance

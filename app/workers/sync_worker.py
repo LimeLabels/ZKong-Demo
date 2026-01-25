@@ -15,6 +15,7 @@ from app.services.hipoink_client import (
     HipoinkAPIError,
     HipoinkProductItem,
 )
+from app.services.slack_service import get_slack_service
 from app.models.database import SyncQueueItem, Product, StoreMapping
 from app.utils.retry import PermanentError, TransientError
 
@@ -176,6 +177,27 @@ class SyncWorker:
             )
             self.supabase_service.create_sync_log(log_entry)
 
+            # Send Slack alert for permanent errors
+            try:
+                store_mapping = self.supabase_service.get_store_mapping_by_id(
+                    queue_item.store_mapping_id  # type: ignore
+                )
+                merchant_id = store_mapping.source_store_id if store_mapping else None
+                store_code = store_mapping.hipoink_store_code if store_mapping else None
+                
+                slack_service = get_slack_service()
+                await slack_service.send_sync_failure_alert(
+                    error_message=str(e),
+                    product_id=str(queue_item.product_id) if queue_item.product_id else None,
+                    store_mapping_id=str(queue_item.store_mapping_id) if queue_item.store_mapping_id else None,
+                    operation=queue_item.operation,
+                    merchant_id=merchant_id,
+                    store_code=store_code,
+                )
+            except Exception as slack_error:
+                # Don't fail sync processing if Slack fails
+                logger.warning("Failed to send Slack alert", error=str(slack_error))
+
             raise
 
         except (TransientError, HipoinkAPIError) as e:
@@ -210,6 +232,26 @@ class SyncWorker:
                     duration_ms=duration_ms,
                 )
                 self.supabase_service.create_sync_log(log_entry)
+
+                # Send Slack alert for max retries exceeded
+                try:
+                    store_mapping = self.supabase_service.get_store_mapping_by_id(
+                        queue_item.store_mapping_id  # type: ignore
+                    )
+                    merchant_id = store_mapping.source_store_id if store_mapping else None
+                    store_code = store_mapping.hipoink_store_code if store_mapping else None
+                    
+                    slack_service = get_slack_service()
+                    await slack_service.send_sync_failure_alert(
+                        error_message=f"Max retries exceeded: {str(e)}",
+                        product_id=str(queue_item.product_id) if queue_item.product_id else None,
+                        store_mapping_id=str(queue_item.store_mapping_id) if queue_item.store_mapping_id else None,
+                        operation=queue_item.operation,
+                        merchant_id=merchant_id,
+                        store_code=store_code,
+                    )
+                except Exception as slack_error:
+                    logger.warning("Failed to send Slack alert", error=str(slack_error))
 
                 raise PermanentError(f"Max retries exceeded: {str(e)}")
             else:
@@ -266,64 +308,74 @@ class SyncWorker:
         base_price = float(normalized.get("price") or product.price or 0.0)
         final_price = base_price
 
-        # Calculate f1-f4 fields
-        # f1: price per unit (price / unit_amount)
-        # f2: price/ounce (price / ounce_amount)
-        # f3: unit amount
-        # f4: ounce amount
+        # f1-f4 dynamic fields: Square uses pre-calculated (weight vs per-item); Shopify uses unit/ounce logic
+        f1 = None
+        f2 = None
+        f3 = None
+        f4 = None
 
-        # Extract unit and ounce amounts from product data
-        unit_amount = None
-        ounce_amount = None
+        if product.source_system == "square":
+            # Square: use pre-calculated f1-f4 from transformer (weight vs per-item)
+            f1 = normalized.get("f1")
+            f2 = normalized.get("f2")
+            f3 = normalized.get("f3")
+            f4 = normalized.get("f4")
+            # Fallback: older Square products may lack f1-f4 in normalized_data
+            if f1 is None and f2 is None and f3 is None and f4 is None:
+                raw = product.raw_data
+                if isinstance(raw, dict):
+                    item_data = raw.get("item_data") or {}
+                    variations = item_data.get("variations") or []
+                    for var in variations:
+                        if str(var.get("id")) != str(product.source_variant_id):
+                            continue
+                        vd = var.get("item_variation_data") or {}
+                        pm = vd.get("price_money") or {}
+                        cents = pm.get("amount", 0) or 0
+                        dollars = (cents / 100) if cents else 0.0
+                        if vd.get("measurement_unit_id"):
+                            f1 = "1"
+                            f2 = f"${dollars:.2f}/unit"
+                        else:
+                            f3 = "1"
+                            f4 = f"${dollars:.2f}/ea"
+                        break
+        else:
+            # Shopify (and other sources): existing unit/ounce calculation
+            unit_amount = None
+            ounce_amount = None
+            if product.normalized_data:
+                unit_amount = product.normalized_data.get("unit_amount")
+                ounce_amount = product.normalized_data.get("ounce_amount")
 
-        # Try to get from normalized_data or raw_data
-        if product.normalized_data:
-            unit_amount = product.normalized_data.get("unit_amount")
-            ounce_amount = product.normalized_data.get("ounce_amount")
-
-        if not unit_amount and product.raw_data:
-            # Try to extract from Shopify variant data
-            if isinstance(product.raw_data, dict):
+            if not unit_amount and product.raw_data and isinstance(product.raw_data, dict):
                 variants = product.raw_data.get("variants", [])
                 if variants and isinstance(variants, list):
-                    # Find matching variant
                     variant_id = product.source_variant_id
                     for variant in variants:
-                        if str(variant.get("id")) == str(variant_id):
-                            # Shopify uses grams and weight
-                            grams = variant.get("grams", 0)
-                            weight = variant.get("weight", 0.0)
-                            weight_unit = variant.get("weight_unit", "kg")
+                        if str(variant.get("id")) != str(variant_id):
+                            continue
+                        grams = variant.get("grams", 0)
+                        weight = variant.get("weight", 0.0)
+                        weight_unit = (variant.get("weight_unit") or "kg").lower()
+                        if grams > 0:
+                            ounce_amount = grams / 28.3495
+                        elif weight > 0:
+                            if weight_unit == "kg":
+                                ounce_amount = weight * 35.274
+                            elif weight_unit == "lb":
+                                ounce_amount = weight * 16
+                            elif weight_unit == "oz":
+                                ounce_amount = weight
+                        unit_amount = variant.get("inventory_quantity", 1)
+                        break
 
-                            # Convert to ounces (1 oz = 28.3495 grams)
-                            if grams > 0:
-                                ounce_amount = grams / 28.3495
-                            elif weight > 0:
-                                if weight_unit.lower() == "kg":
-                                    ounce_amount = weight * 35.274  # kg to oz
-                                elif weight_unit.lower() == "lb":
-                                    ounce_amount = weight * 16  # lb to oz
-                                elif weight_unit.lower() == "oz":
-                                    ounce_amount = weight
-
-                            # Unit amount could be quantity or package size
-                            # For now, use 1 if not specified
-                            unit_amount = variant.get("inventory_quantity", 1)
-                            break
-
-        # Calculate f1-f4
-        f1 = None  # price per unit
-        f2 = None  # price per ounce
-        f3 = None  # unit amount
-        f4 = None  # ounce amount
-
-        if unit_amount and unit_amount > 0:
-            f1 = str(round(final_price / unit_amount, 2))
-            f3 = str(unit_amount)
-
-        if ounce_amount and ounce_amount > 0:
-            f2 = str(round(final_price / ounce_amount, 2))
-            f4 = str(round(ounce_amount, 2))
+            if unit_amount and unit_amount > 0:
+                f1 = str(round(final_price / unit_amount, 2))
+                f3 = str(unit_amount)
+            if ounce_amount and ounce_amount > 0:
+                f2 = str(round(final_price / ounce_amount, 2))
+                f4 = str(round(ounce_amount, 2))
 
         # Build Hipoink product item
         # Map Shopify fields to Hipoink API fields

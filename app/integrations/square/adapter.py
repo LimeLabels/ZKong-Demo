@@ -8,8 +8,10 @@ import hashlib
 import base64
 import httpx
 import os
+import asyncio
 from typing import List, Dict, Any, Optional, Tuple
 from fastapi import Request, HTTPException, status
+from uuid import UUID
 import structlog
 
 from app.integrations.base import (
@@ -25,7 +27,8 @@ from app.integrations.square.models import (
 from app.integrations.square.transformer import SquareTransformer
 from app.config import settings
 from app.services.supabase_service import SupabaseService
-from app.models.database import Product
+from app.services.slack_service import get_slack_service
+from app.models.database import Product, StoreMapping
 
 logger = structlog.get_logger()
 
@@ -180,6 +183,357 @@ class SquareIntegrationAdapter(BaseIntegrationAdapter):
         """
         return self.transformer.validate_normalized_product(product)
 
+    async def _fetch_measurement_units(
+        self,
+        access_token: str,
+        measurement_unit_ids: List[str],
+        base_url: str,
+    ) -> Dict[str, dict]:
+        """
+        Fetch CatalogMeasurementUnit objects from Square API.
+
+        Args:
+            access_token: Square OAuth access token
+            measurement_unit_ids: List of measurement unit IDs to fetch
+            base_url: Square API base URL (sandbox or production)
+
+        Returns:
+            Dict mapping measurement_unit_id -> unit data
+        """
+        if not measurement_unit_ids:
+            return {}
+
+        try:
+            url = f"{base_url}/v2/catalog/batch-retrieve"
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    url,
+                    headers={
+                        "Authorization": f"Bearer {access_token}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "object_ids": measurement_unit_ids,
+                        "include_related_objects": False,
+                    },
+                    timeout=30.0,
+                )
+                response.raise_for_status()
+                data = response.json()
+
+            cache = {}
+            for obj in data.get("objects", []):
+                if obj.get("type") == "MEASUREMENT_UNIT":
+                    oid = obj.get("id")
+                    if oid:
+                        cache[oid] = {
+                            "measurement_unit_data": obj.get("measurement_unit_data", {})
+                        }
+            logger.info(
+                "Fetched measurement units from Square",
+                unit_count=len(cache),
+                requested_count=len(measurement_unit_ids),
+            )
+            return cache
+        except Exception as e:
+            logger.warning(
+                "Failed to fetch measurement units from Square",
+                error=str(e),
+                unit_ids=measurement_unit_ids[:5],
+            )
+            return {}
+
+    async def _ensure_valid_token(
+        self, store_mapping: StoreMapping
+    ) -> Optional[str]:
+        """
+        Ensure store mapping has a valid, non-expiring access token.
+        Refreshes token if expiring soon.
+
+        Args:
+            store_mapping: Store mapping to check/refresh token for
+
+        Returns:
+            Valid access token or None if refresh failed
+        """
+        from app.integrations.square.token_refresh import SquareTokenRefreshService
+
+        token_refresh_service = SquareTokenRefreshService()
+
+        # Check if token is expiring soon
+        expires_at = None
+        if store_mapping.metadata:
+            expires_at = store_mapping.metadata.get("square_expires_at")
+
+        if token_refresh_service.is_token_expiring_soon(expires_at):
+            logger.info(
+                "Token expiring soon, refreshing before API call",
+                store_mapping_id=str(store_mapping.id),
+                merchant_id=store_mapping.source_store_id,
+            )
+
+            # Refresh token
+            success, updated_mapping = (
+                await token_refresh_service.refresh_token_and_update(store_mapping)
+            )
+
+            if success and updated_mapping:
+                # Use updated mapping
+                store_mapping = updated_mapping
+                logger.info(
+                    "Token refreshed successfully before API call",
+                    store_mapping_id=str(store_mapping.id),
+                )
+            else:
+                logger.error(
+                    "Failed to refresh token before API call",
+                    store_mapping_id=str(store_mapping.id),
+                )
+                return None
+
+        # Get access token from (possibly updated) store mapping
+        if store_mapping.metadata:
+            return store_mapping.metadata.get("square_access_token")
+
+        return None
+
+    async def sync_all_products_from_square(
+        self,
+        merchant_id: str,
+        access_token: str,
+        store_mapping_id: UUID,
+        base_url: str,
+    ) -> Dict[str, Any]:
+        """
+        Fetch all products from Square Catalog API and sync to database.
+        
+        This function is called during initial onboarding to sync all existing
+        products from Square to the database and queue them for Hipoink sync.
+        
+        Args:
+            merchant_id: Square merchant ID
+            access_token: Square OAuth access token (optional if store_mapping_id provided)
+            store_mapping_id: Store mapping UUID
+            base_url: Square API base URL (sandbox or production)
+        
+        Returns:
+            Dict with sync statistics (total_items, products_created, products_updated, errors)
+        """
+        logger.info(
+            "Starting initial product sync from Square",
+            merchant_id=merchant_id,
+            store_mapping_id=str(store_mapping_id),
+        )
+        
+        # If access_token not provided, get from store mapping and ensure it's valid
+        if not access_token and store_mapping_id:
+            store_mapping = self.supabase_service.get_store_mapping_by_id(store_mapping_id)
+            if store_mapping:
+                # Ensure valid token (auto-refresh if needed)
+                access_token = await self._ensure_valid_token(store_mapping)
+                if not access_token:
+                    raise Exception("Failed to obtain valid access token")
+            else:
+                raise Exception(f"Store mapping not found: {store_mapping_id}")
+        
+        # 1. Fetch all items with pagination
+        all_items = []
+        cursor = None
+        page_count = 0
+        
+        async with httpx.AsyncClient() as client:
+            while True:
+                page_count += 1
+                url = f"{base_url}/v2/catalog/list?types=ITEM"
+                if cursor:
+                    url += f"&cursor={cursor}"
+                
+                try:
+                    response = await client.get(
+                        url,
+                        headers={
+                            "Authorization": f"Bearer {access_token}",
+                            "Content-Type": "application/json",
+                        },
+                        timeout=30.0,
+                    )
+                    
+                    if response.status_code != 200:
+                        logger.error(
+                            "Square API error during pagination",
+                            status=response.status_code,
+                            body=response.text,
+                            page=page_count,
+                        )
+                        break
+                    
+                    data = response.json()
+                    items = data.get("objects", [])
+                    all_items.extend(items)
+                    
+                    logger.debug(
+                        "Fetched page of items",
+                        page=page_count,
+                        items_in_page=len(items),
+                        total_items_so_far=len(all_items),
+                    )
+                    
+                    cursor = data.get("cursor")
+                    if not cursor:
+                        break  # No more pages
+                    
+                    # Rate limiting: wait 100ms between requests
+                    await asyncio.sleep(0.1)
+                    
+                except httpx.TimeoutException:
+                    logger.error("Timeout fetching Square catalog page", page=page_count)
+                    break
+                except Exception as e:
+                    logger.error(
+                        "Error fetching Square catalog",
+                        page=page_count,
+                        error=str(e),
+                        error_type=type(e).__name__,
+                    )
+                    break
+        
+        logger.info(
+            "Finished fetching items from Square",
+            total_items=len(all_items),
+            total_pages=page_count,
+        )
+        
+        if not all_items:
+            return {
+                "status": "success",
+                "total_items": 0,
+                "products_created": 0,
+                "products_updated": 0,
+                "queued_for_sync": 0,
+                "errors": 0,
+                "message": "No items found in Square catalog",
+            }
+        
+        # 2. Collect measurement unit IDs
+        measurement_unit_ids = set()
+        for item in all_items:
+            item_data = item.get("item_data") or {}
+            variations = item_data.get("variations") or []
+            for var in variations:
+                var_data = var.get("item_variation_data") or {}
+                unit_id = var_data.get("measurement_unit_id")
+                if unit_id:
+                    measurement_unit_ids.add(unit_id)
+        
+        # 3. Fetch measurement units in batch
+        measurement_units_cache: Dict[str, dict] = {}
+        if measurement_unit_ids:
+            measurement_units_cache = await self._fetch_measurement_units(
+                access_token=access_token,
+                measurement_unit_ids=list(measurement_unit_ids),
+                base_url=base_url,
+            )
+            logger.info(
+                "Fetched measurement units",
+                unit_count=len(measurement_units_cache),
+                requested_count=len(measurement_unit_ids),
+            )
+        
+        # 4. Process each item
+        products_created = 0
+        products_updated = 0
+        errors = 0
+        queued_count = 0
+        
+        for item in all_items:
+            item_id = item.get("id")
+            
+            try:
+                catalog_object = SquareCatalogObject(**item)
+                normalized_variants = self.transformer.extract_variations_from_catalog_object(
+                    catalog_object,
+                    measurement_units_cache=measurement_units_cache,
+                )
+                
+                for normalized in normalized_variants:
+                    # Validate
+                    is_valid, validation_errors = self.validate_normalized_product(normalized)
+                    
+                    # Check if product already exists
+                    existing = self.supabase_service.get_product_by_source(
+                        source_system="square",
+                        source_id=normalized.source_id,
+                        source_variant_id=normalized.source_variant_id,
+                    )
+                    
+                    # Create or update product
+                    product = Product(
+                        source_system="square",
+                        source_id=normalized.source_id,
+                        source_variant_id=normalized.source_variant_id,
+                        title=normalized.title,
+                        barcode=normalized.barcode,
+                        sku=normalized.sku,
+                        price=normalized.price,
+                        currency=normalized.currency,
+                        image_url=normalized.image_url,
+                        raw_data={"item_data": item},
+                        normalized_data=normalized.to_dict(),
+                        status="validated" if is_valid else "pending",
+                        validation_errors={"errors": validation_errors} if validation_errors else None,
+                    )
+                    
+                    saved = self.supabase_service.create_or_update_product(product)
+                    
+                    if existing:
+                        products_updated += 1
+                    else:
+                        products_created += 1
+                    
+                    # Add to sync queue if valid
+                    if is_valid and store_mapping_id:
+                        try:
+                            self.supabase_service.add_to_sync_queue(
+                                product_id=saved.id,  # type: ignore
+                                store_mapping_id=store_mapping_id,
+                                operation="create",  # Use "create" for initial sync
+                            )
+                            queued_count += 1
+                        except Exception as e:
+                            logger.error(
+                                "Failed to add product to sync queue",
+                                product_id=str(saved.id),
+                                error=str(e),
+                            )
+                
+            except Exception as e:
+                logger.error(
+                    "Error processing item",
+                    item_id=item_id,
+                    error=str(e),
+                    error_type=type(e).__name__,
+                )
+                errors += 1
+        
+        logger.info(
+            "Initial product sync completed",
+            merchant_id=merchant_id,
+            total_items=len(all_items),
+            products_created=products_created,
+            products_updated=products_updated,
+            queued_for_sync=queued_count,
+            errors=errors,
+        )
+        
+        return {
+            "status": "success",
+            "total_items": len(all_items),
+            "products_created": products_created,
+            "products_updated": products_updated,
+            "queued_for_sync": queued_count,
+            "errors": errors,
+        }
+
     def get_supported_events(self) -> List[str]:
         """Return list of supported Square webhook events."""
         return [
@@ -226,7 +580,7 @@ class SquareIntegrationAdapter(BaseIntegrationAdapter):
     ) -> Dict[str, Any]:
         """
         Handle catalog update with pagination, safe token retrieval, 
-        and deletion detection.
+        deletion detection, and automatic token refresh.
         """
         # Validate payload structure
         CatalogVersionUpdatedWebhook(**payload)
@@ -238,21 +592,33 @@ class SquareIntegrationAdapter(BaseIntegrationAdapter):
                 detail="Merchant ID missing",
             )
 
-        # 1. Safe Token Retrieval (Fix for Potential Crash)
+        # 1. Get store mapping
         store_mapping = self.supabase_service.get_store_mapping("square", merchant_id)
-        access_token = None
         store_mapping_id = None
+        access_token = None
 
         if store_mapping:
             store_mapping_id = store_mapping.id
-            if store_mapping.metadata:
-                access_token = store_mapping.metadata.get("square_access_token")
+            # 2. Ensure valid token (auto-refresh if needed)
+            access_token = await self._ensure_valid_token(store_mapping)
         
-        # Fallback to env var if DB token is missing
+        # Fallback to env var if DB token is missing (for backward compatibility)
         if not access_token:
             access_token = os.getenv("SQUARE_ACCESS_TOKEN")
 
         if not access_token:
+            # Send Slack alert for missing token
+            try:
+                slack_service = get_slack_service()
+                await slack_service.send_api_error_alert(
+                    error_message="No access token found",
+                    api_name="square",
+                    merchant_id=merchant_id,
+                    status_code=401,
+                )
+            except Exception as slack_error:
+                logger.warning("Failed to send Slack alert", error=str(slack_error))
+            
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="No access token found",
@@ -281,6 +647,19 @@ class SquareIntegrationAdapter(BaseIntegrationAdapter):
                 
                 if response.status_code != 200:
                     logger.error("Square API Error", status=response.status_code, body=response.text)
+                    
+                    # Send Slack alert for Square API errors
+                    try:
+                        slack_service = get_slack_service()
+                        await slack_service.send_api_error_alert(
+                            error_message=f"Square API error: {response.status_code} - {response.text[:200]}",
+                            api_name="square",
+                            merchant_id=merchant_id,
+                            status_code=response.status_code,
+                        )
+                    except Exception as slack_error:
+                        logger.warning("Failed to send Slack alert", error=str(slack_error))
+                    
                     break
                     
                 data = response.json()
@@ -289,6 +668,25 @@ class SquareIntegrationAdapter(BaseIntegrationAdapter):
                 cursor = data.get("cursor")
                 if not cursor:
                     break
+
+        # 3b. Extract measurement_unit_ids from all items and fetch CatalogMeasurementUnit objects
+        measurement_unit_ids: set = set()
+        for item in all_items:
+            item_data = item.get("item_data") or {}
+            variations = item_data.get("variations") or []
+            for var in variations:
+                var_data = var.get("item_variation_data") or {}
+                unit_id = var_data.get("measurement_unit_id")
+                if unit_id:
+                    measurement_unit_ids.add(unit_id)
+
+        measurement_units_cache: Dict[str, dict] = {}
+        if measurement_unit_ids:
+            measurement_units_cache = await self._fetch_measurement_units(
+                access_token=access_token,
+                measurement_unit_ids=list(measurement_unit_ids),
+                base_url=base_url,
+            )
 
         # 4. Process Creates and Updates
         api_source_ids = set()
@@ -300,7 +698,9 @@ class SquareIntegrationAdapter(BaseIntegrationAdapter):
             
             try:
                 catalog_object = SquareCatalogObject(**item)
-                normalized_variants = self.transformer.extract_variations_from_catalog_object(catalog_object)
+                normalized_variants = self.transformer.extract_variations_from_catalog_object(
+                    catalog_object, measurement_units_cache=measurement_units_cache
+                )
 
                 for normalized in normalized_variants:
                     is_valid, errors = self.validate_normalized_product(normalized)

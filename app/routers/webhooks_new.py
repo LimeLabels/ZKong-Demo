@@ -9,6 +9,7 @@ import structlog
 import json
 
 from app.integrations.registry import integration_registry
+from app.services.slack_service import get_slack_service
 
 logger = structlog.get_logger()
 
@@ -31,6 +32,9 @@ async def handle_webhook(
         POST /webhooks/square/inventory.updated
         POST /webhooks/ncr/product/create
     """
+    payload = None  # Initialize payload variable for exception handler
+    merchant_id = None  # Initialize merchant_id for exception handler
+    
     try:
         # Get the integration adapter
         adapter = integration_registry.get_adapter(integration_name)
@@ -88,6 +92,8 @@ async def handle_webhook(
         # Parse payload
         try:
             payload = json.loads(body_bytes.decode("utf-8"))
+            # Try to extract merchant_id from payload
+            merchant_id = payload.get("merchant_id") or payload.get("shop")
         except json.JSONDecodeError as e:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -116,6 +122,19 @@ async def handle_webhook(
             event_type=event_type,
             error=str(e),
         )
+        
+        # Send Slack alert for webhook errors
+        try:
+            slack_service = get_slack_service()
+            await slack_service.send_webhook_error_alert(
+                error_message=str(e),
+                integration=integration_name,
+                event_type=event_type,
+                merchant_id=merchant_id,
+            )
+        except Exception as slack_error:
+            logger.warning("Failed to send Slack alert", error=str(slack_error))
+        
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to process webhook: {str(e)}",

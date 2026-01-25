@@ -14,6 +14,25 @@ class SquareMoney(BaseModel):
     currency: str = "USD"
 
 
+class MeasurementUnit(BaseModel):
+    """Square measurement unit (weight, volume, etc.)"""
+    weight_unit: Optional[str] = None  # IMPERIAL_WEIGHT_OUNCE, IMPERIAL_POUND, etc.
+    custom_unit: Optional[dict] = None
+
+
+class MeasurementUnitData(BaseModel):
+    """Container for measurement unit info"""
+    measurement_unit: Optional[MeasurementUnit] = None
+    precision: Optional[int] = None
+
+
+class CatalogMeasurementUnit(BaseModel):
+    """Full measurement unit catalog object"""
+    type: str  # "MEASUREMENT_UNIT"
+    id: str
+    measurement_unit_data: Optional[MeasurementUnitData] = None
+
+
 class SquareItemData(BaseModel):
     """Square item data within a catalog object."""
 
@@ -53,6 +72,13 @@ class SquareCatalogObjectVariation(BaseModel):
             return None
         price_data = self.item_variation_data.get("price_money")
         return SquareMoney(**price_data) if price_data else None
+
+    @property
+    def measurement_unit_id(self) -> Optional[str]:
+        """Extract measurement_unit_id from item_variation_data."""
+        if not self.item_variation_data:
+            return None
+        return self.item_variation_data.get("measurement_unit_id")
 
 
 class SquareCatalogObject(BaseModel):
