@@ -776,6 +776,31 @@ class PriceScheduler:
             for product_data in products_data:
                 barcode = product_data["pc"]
 
+                # For Square, product_data["pc"] is the object_id (source_id/source_variant_id)
+                # We need to find the product in DB to get the real barcode for Hipoink
+                if store_mapping.source_system == "square":
+                    # Try to find by source_variant_id first (most common for Square products)
+                    existing_product = self.supabase_service.get_product_by_source_variant_id(barcode)
+                    if not existing_product:
+                        # Fallback to source_id
+                        products_by_source = self.supabase_service.get_products_by_source_id("square", barcode)
+                        if products_by_source:
+                            existing_product = products_by_source[0]
+                    
+                    if existing_product and existing_product.barcode:
+                        barcode = existing_product.barcode
+                        # Also update the product_data pc for consistency in loop if needed, 
+                        # but be careful not to break other logic that expects the ID
+                    else:
+                        logger.warning(
+                            "Could not find barcode for Square product",
+                            square_id=product_data["pc"],
+                            schedule_id=str(schedule.id)
+                        )
+                        # If we can't find the barcode, we can't update ESL properly.
+                        # We'll continue with the Square ID as barcode, which will create an orphan product.
+                        # This is what was happening before.
+
                 # Calculate price: if multiplier_percentage is provided, use it; otherwise use provided price
                 if schedule.multiplier_percentage is not None:
                     original_price = product_data.get("original_price")
@@ -929,6 +954,20 @@ class PriceScheduler:
             hipoink_products = []
             for product_data in products_data:
                 barcode = product_data["pc"]
+                
+                # For Square, product_data["pc"] is the object_id
+                if store_mapping.source_system == "square":
+                    # Try to find by source_variant_id first
+                    existing_product = self.supabase_service.get_product_by_source_variant_id(barcode)
+                    if not existing_product:
+                        # Fallback to source_id
+                        products_by_source = self.supabase_service.get_products_by_source_id("square", barcode)
+                        if products_by_source:
+                            existing_product = products_by_source[0]
+                    
+                    if existing_product and existing_product.barcode:
+                        barcode = existing_product.barcode
+
                 original_price = product_data.get("original_price")
 
                 if original_price is None:
