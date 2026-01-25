@@ -1284,84 +1284,62 @@ class PriceScheduler:
                     )
                     continue
 
-                # Update price in Square with retry logic for 401
-                max_retries = 1
-                retry_count = 0
-                
-                while retry_count <= max_retries:
-                    try:
-                        result = await square_adapter.update_catalog_object_price(
-                            object_id=catalog_object_id,
-                            price=price,
-                            access_token=access_token,
-                        )
-                        updates.append(
-                            {
-                                "object_id": catalog_object_id,
-                                "barcode": object_id,
-                                "price": price,
-                                "result": result,
-                            }
-                        )
-                        logger.info(
-                            "Updated Square price",
-                            object_id=catalog_object_id,
-                            barcode=object_id,
-                            price=price,
-                            use_original=use_original,
-                        )
-                        
-                        # Update local product price in database immediately
-                        # This ensures DB is consistent even if webhook fails/delays
-                        if existing_product and existing_product.id:
-                            try:
-                                existing_product.price = price
-                                self.supabase_service.create_or_update_product(existing_product)
-                                logger.debug(
-                                    "Updated local DB price",
-                                    product_id=str(existing_product.id),
-                                    price=price,
-                                )
-                            except Exception as db_e:
-                                logger.error(
-                                    "Failed to update local DB price after Square update",
-                                    error=str(db_e),
-                                )
-                                
-                        break # Success, exit retry loop
-                    except Exception as e:
-                        error_str = str(e)
-                        # Check for 401/Unauthorized and retry once
-                        if ("401" in error_str or "Unauthorized" in error_str) and retry_count < max_retries:
-                            logger.warning(
-                                "Square 401 Unauthorized, attempting token refresh",
-                                object_id=catalog_object_id,
+                # Update price in Square
+                try:
+                    result = await square_adapter.update_catalog_object_price(
+                        object_id=catalog_object_id,
+                        price=price,
+                        access_token=access_token,
+                    )
+                    updates.append(
+                        {
+                            "object_id": catalog_object_id,
+                            "barcode": object_id,
+                            "price": price,
+                            "result": result,
+                        }
+                    )
+                    logger.info(
+                        "Updated Square price",
+                        object_id=catalog_object_id,
+                        barcode=object_id,
+                        price=price,
+                        use_original=use_original,
+                    )
+                    
+                    # Update local product price in database immediately
+                    if existing_product and existing_product.id:
+                        try:
+                            existing_product.price = price
+                            self.supabase_service.create_or_update_product(existing_product)
+                            logger.debug(
+                                "Updated local DB price",
+                                product_id=str(existing_product.id),
+                                price=price,
                             )
-                            # Force refresh token
-                            new_token = await square_adapter.refresh_access_token(store_mapping)
-                            if new_token:
-                                access_token = new_token
-                                retry_count += 1
-                                continue # Retry with new token
-                            else:
-                                logger.error("Failed to refresh Square token")
-                                # Don't break, let it fall through to logging the error
-                        
-                        logger.error(
-                            "Failed to update Square price",
-                            object_id=catalog_object_id,
-                            barcode=object_id,
-                            price=price,
-                            error=error_str,
-                        )
-                        failed_updates.append(
-                            {
-                                "object_id": catalog_object_id,
-                                "barcode": object_id,
-                                "error": error_str,
-                            }
-                        )
-                        break # Exit retry loop on other errors or if refresh failed
+                        except Exception as db_e:
+                            logger.error(
+                                "Failed to update local DB price after Square update",
+                                error=str(db_e),
+                            )
+
+                except Exception as e:
+                    logger.error(
+                        "Failed to update Square price",
+                        object_id=catalog_object_id,
+                        barcode=object_id,
+                        price=price,
+                        error=str(e),
+                    )
+                    failed_updates.append(
+                        {
+                            "object_id": catalog_object_id,
+                            "barcode": object_id,
+                            "error": str(e),
+                        }
+                    )
+                    # Continue with other products even if one fails
+                    continue
 
             if updates:
                 logger.info(
