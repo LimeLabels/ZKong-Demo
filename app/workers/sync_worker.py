@@ -115,6 +115,25 @@ class SyncWorker:
                     f"Store mapping not found: {queue_item.store_mapping_id}"
                 )
 
+            # Validate store mapping is active
+            if not store_mapping.is_active:
+                raise Exception(
+                    f"Store mapping is not active: {store_mapping.id}"
+                )
+
+            # Validate hipoink_store_code is set
+            if not store_mapping.hipoink_store_code:
+                raise Exception(
+                    f"Store mapping missing hipoink_store_code: {store_mapping.id}"
+                )
+
+            # Validate product source_system matches store mapping source_system
+            if product.source_system != store_mapping.source_system:
+                raise Exception(
+                    f"Product source_system ({product.source_system}) doesn't match "
+                    f"store mapping source_system ({store_mapping.source_system})"
+                )
+
             # Handle different operations
             hipoink_product_code = None
             if queue_item.operation == "delete":
@@ -377,6 +396,12 @@ class SyncWorker:
                 f2 = str(round(final_price / ounce_amount, 2))
                 f4 = str(round(ounce_amount, 2))
 
+        # Check if product already exists in Hipoink for this store
+        existing_hipoink = self.supabase_service.get_hipoink_product_by_product_id(
+            product.id,  # type: ignore
+            store_mapping.id,  # type: ignore
+        )
+
         # Build Hipoink product item
         # Map Shopify fields to Hipoink API fields
         hipoink_product = HipoinkProductItem(
@@ -398,7 +423,24 @@ class SyncWorker:
             f4=f4,  # ounce amount
         )
 
-        # Create product in Hipoink
+        # If product already exists in Hipoink, treat as update
+        if existing_hipoink:
+            logger.info(
+                "Product already exists in Hipoink, treating as update",
+                product_id=str(product.id),
+                store_mapping_id=str(store_mapping.id),
+                hipoink_product_code=existing_hipoink.hipoink_product_code,
+                operation=queue_item.operation,
+            )
+            # Update the operation to "update" if it was "create"
+            # This ensures the product gets updated with latest data
+            if queue_item.operation == "create":
+                logger.debug(
+                    "Converting create operation to update",
+                    product_id=str(product.id),
+                )
+
+        # Create or update product in Hipoink (create_product handles both)
         response = await self.hipoink_client.create_product(
             store_code=store_mapping.hipoink_store_code,
             product=hipoink_product,
@@ -492,18 +534,19 @@ class SyncWorker:
                     product_id=str(product.id),
                 )
 
-            # Delete product from Supabase database after successful ESL deletion
-            deleted = self.supabase_service.delete_product(product.id)  # type: ignore
+            # Hard delete product from Supabase database
+            # This removes the product completely, freeing up SKU/barcode for reuse
+            deleted = self.supabase_service.delete_product(product.id)
             if deleted:
                 logger.info(
-                    "Deleted product from Supabase database",
+                    "Hard deleted product from Supabase database",
                     product_id=str(product.id),
                     source_system=product.source_system,
                     source_id=product.source_id,
                 )
             else:
                 logger.warning(
-                    "Failed to delete product from Supabase database",
+                    "Failed to hard delete product from database (may not exist)",
                     product_id=str(product.id),
                 )
 

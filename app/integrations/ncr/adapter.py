@@ -280,17 +280,24 @@ class NCRIntegrationAdapter(BaseIntegrationAdapter):
             # This ensures the product will be synced to electronic shelf labels (ESL)
             store_mapping_id = store_mapping_config.get("id")
             if is_valid and store_mapping_id:
-                self.supabase_service.add_to_sync_queue(
+                queue_item = self.supabase_service.add_to_sync_queue(
                     product_id=saved_product.id,  # type: ignore
                     store_mapping_id=store_mapping_id,
                     operation="create",
                 )
-                logger.info(
-                    "NCR product queued for ESL sync",
-                    product_id=str(saved_product.id),
-                    barcode=normalized_product.barcode,
-                    item_code=normalized_product.source_id,
-                )
+                if queue_item:
+                    logger.info(
+                        "NCR product queued for ESL sync",
+                        product_id=str(saved_product.id),
+                        barcode=normalized_product.barcode,
+                        item_code=normalized_product.source_id,
+                    )
+                else:
+                    logger.debug(
+                        "Skipped duplicate queue item for NCR product",
+                        product_id=str(saved_product.id),
+                        item_code=normalized_product.source_id,
+                    )
 
             return make_json_serializable({
                 "status": "success",
@@ -373,17 +380,24 @@ class NCRIntegrationAdapter(BaseIntegrationAdapter):
                     
                     # Queue for ESL sync
                     if updated_product.id:
-                        self.supabase_service.add_to_sync_queue(
+                        queue_item = self.supabase_service.add_to_sync_queue(
                             product_id=updated_product.id,
                             store_mapping_id=store_mapping_id,
                             operation="update",
                         )
-                        logger.info(
-                            "NCR price update queued for ESL sync",
-                            product_id=str(updated_product.id),
-                            item_code=item_code,
-                            price=price,
-                        )
+                        if queue_item:
+                            logger.info(
+                                "NCR price update queued for ESL sync",
+                                product_id=str(updated_product.id),
+                                item_code=item_code,
+                                price=price,
+                            )
+                        else:
+                            logger.debug(
+                                "Skipped duplicate queue item for NCR product update",
+                                product_id=str(updated_product.id),
+                                item_code=item_code,
+                            )
                         
                         return make_json_serializable({
                             "status": "success",
@@ -474,12 +488,18 @@ class NCRIntegrationAdapter(BaseIntegrationAdapter):
                 queued_count = 0
                 for product in products_to_delete:
                     if product.id:
-                        self.supabase_service.add_to_sync_queue(
+                        queue_item = self.supabase_service.add_to_sync_queue(
                             product_id=product.id,
                             store_mapping_id=store_mapping_id,
                             operation="delete",
                         )
-                        queued_count += 1
+                        if queue_item:
+                            queued_count += 1
+                        else:
+                            logger.debug(
+                                "Skipped duplicate queue item for NCR product delete",
+                                product_id=str(product.id),
+                            )
                         logger.info(
                             "NCR product queued for deletion and ESL sync",
                             product_id=str(product.id),

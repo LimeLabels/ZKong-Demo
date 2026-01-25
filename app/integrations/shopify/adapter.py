@@ -223,16 +223,23 @@ class ShopifyIntegrationAdapter(BaseIntegrationAdapter):
 
             # If valid, add to sync queue
             if is_valid:
-                self.supabase_service.add_to_sync_queue(
+                queue_item = self.supabase_service.add_to_sync_queue(
                     product_id=saved_product.id,  # type: ignore
                     store_mapping_id=store_mapping.id,  # type: ignore
                     operation="create",
                 )
-                logger.info(
-                    "Product queued for sync",
-                    product_id=str(saved_product.id),
-                    barcode=normalized.barcode,
-                )
+                if queue_item:
+                    logger.info(
+                        "Product queued for sync",
+                        product_id=str(saved_product.id),
+                        barcode=normalized.barcode,
+                    )
+                else:
+                    logger.debug(
+                        "Skipped duplicate queue item",
+                        product_id=str(saved_product.id),
+                        barcode=normalized.barcode,
+                    )
 
         return {
             "status": "success",
@@ -291,11 +298,16 @@ class ShopifyIntegrationAdapter(BaseIntegrationAdapter):
             updated_products.append(saved_product)
 
             if is_valid:
-                self.supabase_service.add_to_sync_queue(
+                queue_item = self.supabase_service.add_to_sync_queue(
                     product_id=saved_product.id,  # type: ignore
                     store_mapping_id=store_mapping.id,  # type: ignore
                     operation="update",
                 )
+                if not queue_item:
+                    logger.debug(
+                        "Skipped duplicate queue item for update",
+                        product_id=str(saved_product.id),
+                    )
 
         return {
             "status": "success",
@@ -355,11 +367,16 @@ class ShopifyIntegrationAdapter(BaseIntegrationAdapter):
                 continue
 
             try:
-                self.supabase_service.add_to_sync_queue(
+                queue_item = self.supabase_service.add_to_sync_queue(
                     product_id=product.id,
                     store_mapping_id=store_mapping.id,  # type: ignore
                     operation="delete",
                 )
+                if not queue_item:
+                    logger.debug(
+                        "Skipped duplicate queue item for delete",
+                        product_id=str(product.id),
+                    )
                 queued_count += 1
                 logger.info(
                     "Product queued for deletion",
