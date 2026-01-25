@@ -1309,22 +1309,22 @@ class PriceScheduler:
                         use_original=use_original,
                     )
                     
-                        # Update local product price in database immediately
-                        if existing_product and existing_product.id:
-                            try:
-                                existing_product.price = price
-                                self.supabase_service.create_or_update_product(existing_product)
-                                logger.info(
-                                    "=== LOCAL DB PRICE UPDATED ===",
-                                    product_id=str(existing_product.id),
-                                    barcode=existing_product.barcode,
-                                    new_price=price,
-                                )
-                            except Exception as db_e:
-                                logger.error(
-                                    "Failed to update local DB price after Square update",
-                                    error=str(db_e),
-                                )
+                    # Update local product price in database immediately
+                    if existing_product and existing_product.id:
+                        try:
+                            existing_product.price = price
+                            self.supabase_service.create_or_update_product(existing_product)
+                            logger.info(
+                                "=== LOCAL DB PRICE UPDATED ===",
+                                product_id=str(existing_product.id),
+                                barcode=existing_product.barcode,
+                                new_price=price,
+                            )
+                        except Exception as db_e:
+                            logger.error(
+                                "Failed to update local DB price after Square update",
+                                error=str(db_e),
+                            )
 
                 except Exception as e:
                     logger.error(
