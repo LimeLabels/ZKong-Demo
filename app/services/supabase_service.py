@@ -283,6 +283,9 @@ class SupabaseService:
         """
         Create or update product in database.
         Uses upsert based on source_system, source_id, and source_variant_id.
+        
+        Note: This method will NOT re-activate products that are marked as deleted.
+        If a product is deleted, it will remain deleted and not be updated.
 
         Args:
             product: Product to create or update
@@ -291,12 +294,22 @@ class SupabaseService:
             Created or updated Product
         """
         try:
-            # Check if product exists
+            # Check if product exists (including deleted ones to check status)
             existing = self.get_product_by_source(
-                product.source_system, product.source_id, product.source_variant_id
+                product.source_system, product.source_id, product.source_variant_id, include_deleted=True
             )
 
             if existing:
+                # Don't update products that are already marked as deleted
+                if existing.status == "deleted":
+                    logger.debug(
+                        "Skipping update for deleted product",
+                        product_id=str(existing.id),
+                        source_system=product.source_system,
+                        source_id=product.source_id,
+                    )
+                    return existing
+                
                 # Update existing product
                 # Use model_dump with json mode for Pydantic v2, or dict() with manual serialization
                 try:
@@ -353,8 +366,20 @@ class SupabaseService:
         source_system: str,
         source_id: str,
         source_variant_id: Optional[str] = None,
+        include_deleted: bool = False,
     ) -> Optional[Product]:
-        """Get product by source system and IDs."""
+        """
+        Get product by source system and IDs.
+        
+        Args:
+            source_system: Source system name
+            source_id: Source product ID
+            source_variant_id: Optional variant ID
+            include_deleted: If True, include products with status 'deleted' (default: False)
+        
+        Returns:
+            Product object or None if not found
+        """
         try:
             query = (
                 self.client.table("products")
@@ -367,6 +392,10 @@ class SupabaseService:
                 query = query.eq("source_variant_id", source_variant_id)
             else:
                 query = query.is_("source_variant_id", "null")
+            
+            # Exclude deleted products by default
+            if not include_deleted:
+                query = query.neq("status", "deleted")
 
             result = query.single().execute()
 
@@ -413,7 +442,7 @@ class SupabaseService:
             return None
 
     def get_products_by_source_id(
-        self, source_system: str, source_id: str
+        self, source_system: str, source_id: str, exclude_deleted: bool = True
     ) -> List[Product]:
         """
         Get all products by source system and source ID.
@@ -422,18 +451,24 @@ class SupabaseService:
         Args:
             source_system: Source system name (e.g., 'shopify')
             source_id: Source product ID
+            exclude_deleted: If True, exclude products with status 'deleted' (default: True)
 
         Returns:
             List of Product objects (all variants)
         """
         try:
-            result = (
+            query = (
                 self.client.table("products")
                 .select("*")
                 .eq("source_system", source_system)
                 .eq("source_id", source_id)
-                .execute()
             )
+            
+            # Exclude deleted products by default to prevent re-queuing them for deletion
+            if exclude_deleted:
+                query = query.neq("status", "deleted")
+            
+            result = query.execute()
 
             if result.data:
                 return [Product(**item) for item in result.data]
@@ -447,24 +482,30 @@ class SupabaseService:
             )
             return []
 
-    def get_products_by_system(self, source_system: str) -> List[Product]:
+    def get_products_by_system(self, source_system: str, exclude_deleted: bool = True) -> List[Product]:
         """
         Fetch all products belonging to a specific integration (e.g., 'square').
         Used for deletion detection by comparing DB vs API products.
 
         Args:
             source_system: Source system name (e.g., 'square', 'shopify')
+            exclude_deleted: If True, exclude products with status 'deleted' (default: True)
 
         Returns:
             List of Product objects
         """
         try:
-            result = (
+            query = (
                 self.client.table("products")
                 .select("*")
                 .eq("source_system", source_system)
-                .execute()
             )
+            
+            # Exclude deleted products by default to prevent re-processing them
+            if exclude_deleted:
+                query = query.neq("status", "deleted")
+            
+            result = query.execute()
 
             if result.data:
                 return [Product(**item) for item in result.data]
@@ -480,13 +521,29 @@ class SupabaseService:
     def update_product_status(self, product_id: Any, status: str) -> None:
         """
         Update the status of a product (e.g., marking it as 'deleted').
+        
+        When marking as 'deleted', also clears SKU and barcode to allow reuse.
+        This ensures deleted products don't block SKU/barcode reuse while preserving
+        product history in the database.
 
         Args:
             product_id: Product UUID or string ID
             status: New status (e.g., 'deleted', 'pending', 'validated')
         """
         try:
-            self.client.table("products").update({"status": status}).eq(
+            update_data = {"status": status}
+            
+            # When soft-deleting, clear SKU and barcode so they can be reused
+            # This prevents unique constraint violations when reusing SKUs/barcodes
+            if status == "deleted":
+                update_data["sku"] = None
+                update_data["barcode"] = None
+                logger.debug(
+                    "Clearing SKU and barcode for deleted product",
+                    product_id=str(product_id),
+                )
+            
+            self.client.table("products").update(update_data).eq(
                 "id", str(product_id)
             ).execute()
             logger.debug("Updated product status", product_id=str(product_id), status=status)
