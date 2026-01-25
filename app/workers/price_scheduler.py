@@ -89,7 +89,7 @@ class PriceScheduler:
             # Get schedules due for trigger (stored in UTC)
             current_time_utc = datetime.now(pytz.UTC)
             
-            # logger.info("Scheduler heartbeat", time=current_time_utc.isoformat())
+            logger.info("Scheduler heartbeat", time=current_time_utc.isoformat())
             
             schedules = self.supabase_service.get_schedules_due_for_trigger(
                 current_time_utc
