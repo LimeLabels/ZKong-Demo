@@ -894,15 +894,16 @@ class PriceScheduler:
                     store_code=str(store_code),
                 )
 
-            # Update Shopify prices if credentials are available
-            shopify_credentials = self._get_shopify_credentials(store_mapping)
-            if shopify_credentials:
-                # Use updated_products_data which has the calculated prices (including multiplier)
-                await self._update_shopify_prices(
-                    updated_products_data,
-                    new_price=None,  # Will use 'pp' from updated_products_data (includes calculated price)
-                    shopify_credentials=shopify_credentials,
-                )
+            # Update Shopify prices if credentials are available (and store is Shopify)
+            if store_mapping.source_system == "shopify":
+                shopify_credentials = self._get_shopify_credentials(store_mapping)
+                if shopify_credentials:
+                    # Use updated_products_data which has the calculated prices (including multiplier)
+                    await self._update_shopify_prices(
+                        updated_products_data,
+                        new_price=None,  # Will use 'pp' from updated_products_data (includes calculated price)
+                        shopify_credentials=shopify_credentials,
+                    )
 
             # Update NCR prices if store mapping is for NCR
             if store_mapping.source_system == "ncr":
@@ -1287,45 +1288,66 @@ class PriceScheduler:
                     )
                     continue
 
-                # Update price in Square
-                try:
-                    result = await square_adapter.update_catalog_object_price(
-                        object_id=catalog_object_id,
-                        price=price,
-                        access_token=access_token,
-                    )
-                    updates.append(
-                        {
-                            "object_id": catalog_object_id,
-                            "barcode": object_id,
-                            "price": price,
-                            "result": result,
-                        }
-                    )
-                    logger.info(
-                        "Updated Square price",
-                        object_id=catalog_object_id,
-                        barcode=object_id,
-                        price=price,
-                        use_original=use_original,
-                    )
-                except Exception as e:
-                    logger.error(
-                        "Failed to update Square price",
-                        object_id=catalog_object_id,
-                        barcode=object_id,
-                        price=price,
-                        error=str(e),
-                    )
-                    failed_updates.append(
-                        {
-                            "object_id": catalog_object_id,
-                            "barcode": object_id,
-                            "error": str(e),
-                        }
-                    )
-                    # Continue with other products even if one fails
-                    continue
+                # Update price in Square with retry logic for 401
+                max_retries = 1
+                retry_count = 0
+                
+                while retry_count <= max_retries:
+                    try:
+                        result = await square_adapter.update_catalog_object_price(
+                            object_id=catalog_object_id,
+                            price=price,
+                            access_token=access_token,
+                        )
+                        updates.append(
+                            {
+                                "object_id": catalog_object_id,
+                                "barcode": object_id,
+                                "price": price,
+                                "result": result,
+                            }
+                        )
+                        logger.info(
+                            "Updated Square price",
+                            object_id=catalog_object_id,
+                            barcode=object_id,
+                            price=price,
+                            use_original=use_original,
+                        )
+                        break # Success, exit retry loop
+                    except Exception as e:
+                        error_str = str(e)
+                        # Check for 401/Unauthorized and retry once
+                        if ("401" in error_str or "Unauthorized" in error_str) and retry_count < max_retries:
+                            logger.warning(
+                                "Square 401 Unauthorized, attempting token refresh",
+                                object_id=catalog_object_id,
+                            )
+                            # Force refresh token
+                            new_token = await square_adapter.refresh_access_token(store_mapping)
+                            if new_token:
+                                access_token = new_token
+                                retry_count += 1
+                                continue # Retry with new token
+                            else:
+                                logger.error("Failed to refresh Square token")
+                                # Don't break, let it fall through to logging the error
+                        
+                        logger.error(
+                            "Failed to update Square price",
+                            object_id=catalog_object_id,
+                            barcode=object_id,
+                            price=price,
+                            error=error_str,
+                        )
+                        failed_updates.append(
+                            {
+                                "object_id": catalog_object_id,
+                                "barcode": object_id,
+                                "error": error_str,
+                            }
+                        )
+                        break # Exit retry loop on other errors or if refresh failed
 
             if updates:
                 logger.info(

@@ -243,6 +243,31 @@ class SquareIntegrationAdapter(BaseIntegrationAdapter):
             )
             return {}
 
+    async def refresh_access_token(self, store_mapping: StoreMapping) -> Optional[str]:
+        """
+        Force refresh the Square access token for a store mapping.
+        
+        Args:
+            store_mapping: Store mapping to refresh token for
+            
+        Returns:
+            New access token if successful, None otherwise
+        """
+        from app.integrations.square.token_refresh import SquareTokenRefreshService
+        
+        logger.info(
+            "Forcing Square token refresh due to 401 error",
+            store_mapping_id=str(store_mapping.id),
+        )
+        
+        token_refresh_service = SquareTokenRefreshService()
+        success, updated_mapping = await token_refresh_service.refresh_token_and_update(store_mapping)
+        
+        if success and updated_mapping and updated_mapping.metadata:
+            return updated_mapping.metadata.get("square_access_token")
+        
+        return None
+
     async def _ensure_valid_token(
         self, store_mapping: StoreMapping
     ) -> Optional[str]:
