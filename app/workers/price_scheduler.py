@@ -89,17 +89,13 @@ class PriceScheduler:
             # Get schedules due for trigger (stored in UTC)
             current_time_utc = datetime.now(pytz.UTC)
             
-            logger.debug(
-                "Checking for due schedules",
-                current_time_utc=current_time_utc.isoformat(),
-            )
+            # logger.info("Scheduler heartbeat", time=current_time_utc.isoformat())
             
             schedules = self.supabase_service.get_schedules_due_for_trigger(
                 current_time_utc
             )
 
             if not schedules:
-                logger.debug("No schedules due for trigger")
                 return  # No schedules to process
 
             logger.info(
@@ -1314,6 +1310,24 @@ class PriceScheduler:
                             price=price,
                             use_original=use_original,
                         )
+                        
+                        # Update local product price in database immediately
+                        # This ensures DB is consistent even if webhook fails/delays
+                        if existing_product and existing_product.id:
+                            try:
+                                existing_product.price = price
+                                self.supabase_service.create_or_update_product(existing_product)
+                                logger.debug(
+                                    "Updated local DB price",
+                                    product_id=str(existing_product.id),
+                                    price=price,
+                                )
+                            except Exception as db_e:
+                                logger.error(
+                                    "Failed to update local DB price after Square update",
+                                    error=str(db_e),
+                                )
+                                
                         break # Success, exit retry loop
                     except Exception as e:
                         error_str = str(e)
