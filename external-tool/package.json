@@ -1,0 +1,29 @@
+{
+  "name": "external-time-based-pricing-tool",
+  "version": "1.0.0",
+  "description": "External tool UI for managing time-based pricing schedules and webhooks",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "start": "vite preview --host 0.0.0.0 --port ${PORT:-3000}"
+  },
+  "dependencies": {
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "@shopify/polaris": "^12.0.0",
+    "@shopify/polaris-icons": "^8.0.0",
+    "axios": "^1.6.0",
+    "date-fns": "^2.30.0",
+    "@supabase/supabase-js": "^2.39.0"
+  },
+  "devDependencies": {
+    "@types/react": "^18.2.0",
+    "@types/react-dom": "^18.2.0",
+    "@vitejs/plugin-react": "^4.0.0",
+    "typescript": "^5.0.0",
+    "vite": "^5.0.0"
+  }
+}
+

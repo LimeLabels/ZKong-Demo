@@ -12,6 +12,8 @@ from app.services.hipoink_client import (
     HipoinkProductItem,
 )
 from app.services.shopify_api_client import ShopifyAPIClient
+from app.integrations.ncr.adapter import NCRIntegrationAdapter
+from app.integrations.square.adapter import SquareIntegrationAdapter
 from app.models.database import PriceAdjustmentSchedule, StoreMapping
 
 logger = structlog.get_logger()
@@ -86,16 +88,24 @@ class PriceScheduler:
         try:
             # Get schedules due for trigger (stored in UTC)
             current_time_utc = datetime.now(pytz.UTC)
+            
+            logger.debug(
+                "Checking for due schedules",
+                current_time_utc=current_time_utc.isoformat(),
+            )
+            
             schedules = self.supabase_service.get_schedules_due_for_trigger(
                 current_time_utc
             )
 
             if not schedules:
+                logger.debug("No schedules due for trigger")
                 return  # No schedules to process
 
             logger.info(
                 "Processing price adjustment schedules",
                 schedule_count=len(schedules),
+                schedule_ids=[str(s.id) for s in schedules],
             )
 
             # Process each schedule
@@ -123,6 +133,15 @@ class PriceScheduler:
             current_time_utc: Current datetime in UTC
         """
         try:
+            logger.info(
+                "Processing schedule",
+                schedule_id=str(schedule.id),
+                schedule_name=schedule.name,
+                order_number=schedule.order_number,
+                repeat_type=schedule.repeat_type,
+                time_slots=schedule.time_slots,
+            )
+            
             # Get store mapping
             store_mapping = self.supabase_service.get_store_mapping_by_id(
                 schedule.store_mapping_id  # type: ignore
@@ -137,6 +156,13 @@ class PriceScheduler:
 
             # Get store timezone
             store_timezone = get_store_timezone(store_mapping)
+            
+            logger.info(
+                "Schedule timezone info",
+                schedule_id=str(schedule.id),
+                store_timezone=str(store_timezone),
+                has_timezone_in_metadata=bool(store_mapping.metadata and "timezone" in store_mapping.metadata),
+            )
 
             # Convert current time to store timezone
             current_time = current_time_utc.astimezone(store_timezone)
@@ -145,11 +171,30 @@ class PriceScheduler:
             in_time_slot, is_start = self._check_time_slot(
                 schedule, current_time, store_timezone
             )
+            
+            logger.info(
+                "Time slot check result",
+                schedule_id=str(schedule.id),
+                current_time_utc=current_time_utc.isoformat(),
+                current_time_local=current_time.isoformat(),
+                in_time_slot=in_time_slot,
+                is_start=is_start,
+            )
 
             if not in_time_slot:
                 # Not in a time slot - calculate next trigger and skip
+                logger.info(
+                    "Schedule not in time slot, calculating next trigger",
+                    schedule_id=str(schedule.id),
+                    current_time=current_time.isoformat(),
+                )
                 next_trigger = self._calculate_next_trigger(
                     schedule, current_time, store_timezone
+                )
+                logger.info(
+                    "Next trigger calculated (not in slot)",
+                    schedule_id=str(schedule.id),
+                    next_trigger=next_trigger.isoformat() if next_trigger else "None - schedule will be deactivated",
                 )
                 # Convert to UTC for storage
                 next_trigger_utc = (
@@ -251,30 +296,67 @@ class PriceScheduler:
         """
         current_time_str = current_time.strftime("%H:%M")
         current_time_only = datetime.strptime(current_time_str, "%H:%M").time()
+        
+        # Log for debugging
+        logger.debug(
+            "Checking time slots",
+            current_time=current_time.isoformat(),
+            current_time_str=current_time_str,
+            time_slots=schedule.time_slots,
+        )
 
         for slot in schedule.time_slots:
             start_time = datetime.strptime(slot["start_time"], "%H:%M").time()
             end_time = datetime.strptime(slot["end_time"], "%H:%M").time()
 
-            # Check if we're at the start time (within 1 minute)
+            # Check if we're at the start time (within 2 minutes - increased tolerance for scheduler polling)
             start_datetime = store_timezone.localize(
                 datetime.combine(current_time.date(), start_time)
             )
-            time_diff = abs((current_time - start_datetime).total_seconds())
-            if time_diff <= 60:  # Within 1 minute of start
-                return (True, True)
-
-            # Check if we're at the end time (within 1 minute)
+            time_diff_start = abs((current_time - start_datetime).total_seconds())
+            
+            # Check if we're at the end time (within 2 minutes)
             end_datetime = store_timezone.localize(
                 datetime.combine(current_time.date(), end_time)
             )
-            time_diff = abs((current_time - end_datetime).total_seconds())
-            if time_diff <= 60:  # Within 1 minute of end
+            time_diff_end = abs((current_time - end_datetime).total_seconds())
+            
+            logger.debug(
+                "Time slot comparison",
+                slot_start=slot["start_time"],
+                slot_end=slot["end_time"],
+                time_diff_start_seconds=time_diff_start,
+                time_diff_end_seconds=time_diff_end,
+            )
+            
+            if time_diff_start <= 120:  # Within 2 minutes of start
+                logger.info("At start of time slot", slot=slot, time_diff=time_diff_start)
+                return (True, True)
+
+            if time_diff_end <= 120:  # Within 2 minutes of end
+                logger.info("At end of time slot", slot=slot, time_diff=time_diff_end)
                 return (True, False)
 
-            # Check if we're within the time slot
-            if start_time <= current_time_only <= end_time:
-                return (True, False)
+            # Check if we're within the time slot (between start and end)
+            # For short slots, we should apply promotional prices at the start
+            if start_time <= current_time_only < end_time:
+                # We're in the middle of the slot - this is a start event if we haven't triggered yet
+                # Check if last_triggered_at is before today's start time
+                if schedule.last_triggered_at is None:
+                    # Never triggered - treat as start
+                    logger.info("In time slot, no previous trigger - treating as start", slot=slot)
+                    return (True, True)
+                else:
+                    # Check if last trigger was today
+                    last_trigger_local = schedule.last_triggered_at.astimezone(store_timezone)
+                    if last_trigger_local.date() < current_time.date():
+                        # Last trigger was before today - treat as start
+                        logger.info("In time slot, last trigger was different day - treating as start", slot=slot)
+                        return (True, True)
+                    else:
+                        # Already triggered today - we're in the middle, waiting for end
+                        logger.info("In time slot, already triggered today - waiting for end", slot=slot)
+                        return (True, False)
 
         return (False, False)
 
@@ -288,6 +370,15 @@ class PriceScheduler:
         Calculate the next trigger time for a schedule.
         All datetime operations are performed in the store's timezone.
         """
+        logger.info(
+            "Calculating next trigger",
+            schedule_id=str(schedule.id),
+            repeat_type=schedule.repeat_type,
+            current_time=current_time.isoformat(),
+            start_date=schedule.start_date.isoformat() if schedule.start_date else None,
+            end_date=schedule.end_date.isoformat() if schedule.end_date else None,
+        )
+        
         # Ensure schedule dates are in store timezone
         start_date = schedule.start_date
         if start_date.tzinfo is None:
@@ -303,9 +394,33 @@ class PriceScheduler:
                 end_date = end_date.astimezone(store_timezone)
 
         # Check if schedule has ended
-        if end_date and current_time > end_date:
-            return None
-
+        # IMPORTANT: If end_date has time component (e.g. from frontend creation time), 
+        # we should treat it as inclusive or end-of-day.
+        if end_date:
+            # If end_date is exactly the same as start_date (common UI pattern for single day),
+            # or if we want to be generous, verify if it's strictly past the end date.
+            # But better yet, let's normalize end_date to end-of-day if it seems to be mid-day
+            # and potentially causing issues.
+            
+            # Use a grace period or check date component only if times are close?
+            # Safer: Compare with end of the day of end_date if the time component seems arbitrary
+            # But strictly speaking, if user set specific time, we should respect it.
+            # However, the frontend sends new Date() which captures creation time.
+            
+            # Let's adjust end_date to end of day for comparison if it's the same day as current
+            # This fixes the issue where "today" end date expires "today's" later schedules
+            end_of_end_date = end_date.replace(hour=23, minute=59, second=59, microsecond=999999)
+            
+            if current_time > end_of_end_date:
+                logger.info(
+                    "Schedule has ended (past end of end_date day)",
+                    schedule_id=str(schedule.id),
+                    end_date=end_date.isoformat(),
+                    end_of_end_date=end_of_end_date.isoformat(),
+                    current_time=current_time.isoformat(),
+                )
+                return None
+        
         # Check if schedule hasn't started yet
         if current_time < start_date:
             if schedule.time_slots:
@@ -387,6 +502,12 @@ class PriceScheduler:
 
         # For no repeat, check if there are more time slots today
         if schedule.repeat_type == "none":
+            logger.info(
+                "Processing 'none' repeat type schedule",
+                schedule_id=str(schedule.id),
+                current_time=current_time.isoformat(),
+                time_slots=schedule.time_slots,
+            )
             if schedule.time_slots:
                 for slot in schedule.time_slots:
                     slot_time = current_time.replace(
@@ -396,6 +517,11 @@ class PriceScheduler:
                         microsecond=0,
                     )
                     if slot_time > current_time:
+                        logger.info(
+                            "Found future slot start time",
+                            schedule_id=str(schedule.id),
+                            next_trigger=slot_time.isoformat(),
+                        )
                         return slot_time
 
                 # Check end time of last slot
@@ -407,8 +533,25 @@ class PriceScheduler:
                     microsecond=0,
                 )
                 if current_time < last_end:
+                    logger.info(
+                        "Current time before last slot end, returning end time",
+                        schedule_id=str(schedule.id),
+                        next_trigger=last_end.isoformat(),
+                    )
                     return last_end
+                
+                logger.info(
+                    "No more triggers for 'none' repeat schedule - past all slots",
+                    schedule_id=str(schedule.id),
+                    current_time=current_time.isoformat(),
+                    last_slot_end=last_end.isoformat(),
+                )
 
+        logger.info(
+            "No next trigger found, schedule will be deactivated",
+            schedule_id=str(schedule.id),
+            repeat_type=schedule.repeat_type,
+        )
         return None
 
     def _update_schedule_next_trigger(
@@ -601,6 +744,14 @@ class PriceScheduler:
         products_data: list,
     ):
         """Apply promotional prices to products - preserves all existing product data."""
+        logger.info(
+            "Applying promotional prices",
+            schedule_id=str(schedule.id),
+            store_mapping_id=str(store_mapping.id),
+            source_system=store_mapping.source_system,
+            products_count=len(products_data),
+            hipoink_store_code=store_mapping.hipoink_store_code,
+        )
         try:
             # Validate hipoink_store_code
             if (
@@ -728,6 +879,20 @@ class PriceScheduler:
                     shopify_credentials=shopify_credentials,
                 )
 
+            # Update NCR prices if store mapping is for NCR
+            if store_mapping.source_system == "ncr":
+                await self._update_ncr_prices(
+                    updated_products_data,
+                    store_mapping,
+                )
+
+            # Update Square prices if store mapping is for Square
+            if store_mapping.source_system == "square":
+                await self._update_square_prices(
+                    updated_products_data,
+                    store_mapping,
+                )
+
         except Exception as e:
             logger.error(
                 "Failed to apply promotional prices",
@@ -850,6 +1015,22 @@ class PriceScheduler:
                     shopify_credentials=shopify_credentials,
                 )
 
+            # Update NCR prices if store mapping is for NCR (restore original prices)
+            if store_mapping.source_system == "ncr":
+                await self._update_ncr_prices(
+                    products_data,
+                    store_mapping,
+                    use_original=True,
+                )
+
+            # Update Square prices if store mapping is for Square (restore original prices)
+            if store_mapping.source_system == "square":
+                await self._update_square_prices(
+                    products_data,
+                    store_mapping,
+                    use_original=True,
+                )
+
         except Exception as e:
             logger.error(
                 "Failed to restore original prices",
@@ -857,6 +1038,288 @@ class PriceScheduler:
                 error=str(e),
             )
             raise
+
+    async def _update_ncr_prices(
+        self,
+        products_data: list,
+        store_mapping: StoreMapping,
+        use_original: bool = False,
+    ):
+        """
+        Update prices in NCR for products.
+        
+        This method is called by the price scheduler to update NCR prices when schedules trigger.
+        Since NCR doesn't provide webhooks, the scheduler polls every minute and updates prices directly.
+
+        Args:
+            products_data: List of product data dicts with 'pc' (item_code) and 'pp' (price) or 'original_price'
+            store_mapping: Store mapping with NCR configuration
+            use_original: If True, use original_price from product_data instead of 'pp'
+        """
+        if store_mapping.source_system != "ncr":
+            logger.debug("Store mapping is not for NCR, skipping NCR update")
+            return
+
+        try:
+            # Initialize NCR adapter
+            ncr_adapter = NCRIntegrationAdapter()
+
+            for product_data in products_data:
+                item_code = product_data["pc"]  # Item code (barcode)
+
+                # Determine price to use
+                if use_original:
+                    price = float(product_data.get("original_price", 0))
+                else:
+                    price = float(product_data.get("pp", 0))
+
+                if price <= 0:
+                    logger.warning(
+                        "Invalid price for NCR update",
+                        item_code=item_code,
+                        price=price,
+                    )
+                    continue
+
+                # Update price in NCR using the adapter
+                # The adapter handles NCR API calls and updates the database
+                try:
+                    result = await ncr_adapter.update_price(
+                        item_code=item_code,
+                        price=price,
+                        store_mapping_config={
+                            "id": str(store_mapping.id),
+                            "metadata": store_mapping.metadata or {},
+                        },
+                    )
+
+                    logger.info(
+                        "Updated NCR price",
+                        item_code=item_code,
+                        price=price,
+                        use_original=use_original,
+                    )
+                except Exception as e:
+                    logger.error(
+                        "Failed to update NCR price",
+                        item_code=item_code,
+                        price=price,
+                        error=str(e),
+                    )
+                    # Continue with other products even if one fails
+                    continue
+
+        except Exception as e:
+            # Log error but don't fail the entire operation
+                logger.error(
+                "Failed to update NCR prices (non-critical)",
+                store_mapping_id=str(store_mapping.id),
+                error=str(e),
+            )
+
+    async def _update_square_prices(
+        self,
+        products_data: list,
+        store_mapping: StoreMapping,
+        use_original: bool = False,
+    ):
+        """
+        Update prices in Square for products.
+        
+        This method is called by the price scheduler to update Square prices when schedules trigger.
+        Square supports webhooks, but this provides a fallback polling mechanism.
+
+        Args:
+            products_data: List of product data dicts with 'pc' (object_id) and 'pp' (price) or 'original_price'
+            store_mapping: Store mapping with Square configuration
+            use_original: If True, use original_price from product_data instead of 'pp'
+        """
+        logger.info(
+            "Starting Square price update",
+            store_mapping_id=str(store_mapping.id),
+            products_count=len(products_data),
+            use_original=use_original,
+        )
+        
+        if store_mapping.source_system != "square":
+            logger.debug("Store mapping is not for Square, skipping Square update")
+            return
+
+        try:
+            # Initialize Square adapter
+            square_adapter = SquareIntegrationAdapter()
+
+            # Get Square credentials from store mapping
+            square_credentials = square_adapter._get_square_credentials(store_mapping)
+            if not square_credentials:
+                logger.warning(
+                    "No Square credentials available, skipping Square update",
+                    store_mapping_id=str(store_mapping.id),
+                )
+                return
+
+            merchant_id, access_token = square_credentials
+            logger.info(
+                "Got Square credentials",
+                merchant_id=merchant_id,
+            )
+
+            updates = []
+            failed_updates = []
+
+            for product_data in products_data:
+                object_id = product_data["pc"]  # Object ID (catalog object ID or barcode)
+
+                # Determine price to use
+                if use_original:
+                    price = float(product_data.get("original_price", 0))
+                else:
+                    price = float(product_data.get("pp", 0))
+
+                logger.info(
+                    "Processing Square product price",
+                    object_id=object_id,
+                    price=price,
+                    use_original=use_original,
+                )
+
+                if price <= 0:
+                    logger.warning(
+                        "Invalid price for Square update",
+                        object_id=object_id,
+                        price=price,
+                    )
+                    continue
+
+                # Try to find product by barcode first, then by source_id or source_variant_id
+                # This handles cases where object_id might be the catalog object ID, not barcode
+                existing_product = self.supabase_service.get_product_by_barcode(
+                    object_id
+                )
+                
+                # If not found by barcode, try by source_id (catalog object ID)
+                if not existing_product:
+                    logger.debug(
+                        "Product not found by barcode, trying by source_id",
+                        object_id=object_id,
+                    )
+                    # Try to find by source_variant_id (Square variation ID)
+                    existing_product = self.supabase_service.get_product_by_source_variant_id(
+                        object_id
+                    )
+
+                if not existing_product:
+                    logger.warning(
+                        "Product not found in database for Square update",
+                        barcode=object_id,
+                    )
+                    failed_updates.append(
+                        {
+                            "object_id": object_id,
+                            "error": "Product not found in database",
+                        }
+                    )
+                    continue
+
+                # Check if product is from Square
+                if existing_product.source_system != "square":
+                    logger.debug(
+                        "Product is not from Square, skipping",
+                        barcode=object_id,
+                        source_system=existing_product.source_system,
+                    )
+                    continue
+
+                # Get Square catalog object ID (variation ID)
+                # Use variant_id if available, otherwise use source_id
+                catalog_object_id = existing_product.source_variant_id or existing_product.source_id
+
+                if not catalog_object_id:
+                    logger.warning(
+                        "Product missing Square catalog object ID",
+                        barcode=object_id,
+                        product_id=str(existing_product.id),
+                    )
+                    failed_updates.append(
+                        {
+                            "object_id": object_id,
+                            "error": "Missing catalog object ID",
+                        }
+                    )
+                    continue
+
+                # Update price in Square
+                try:
+                    result = await square_adapter.update_catalog_object_price(
+                        object_id=catalog_object_id,
+                        price=price,
+                        access_token=access_token,
+                    )
+                    updates.append(
+                        {
+                            "object_id": catalog_object_id,
+                            "barcode": object_id,
+                            "price": price,
+                            "result": result,
+                        }
+                    )
+                    logger.info(
+                        "Updated Square price",
+                        object_id=catalog_object_id,
+                        barcode=object_id,
+                        price=price,
+                        use_original=use_original,
+                    )
+                except Exception as e:
+                    logger.error(
+                        "Failed to update Square price",
+                        object_id=catalog_object_id,
+                        barcode=object_id,
+                        price=price,
+                        error=str(e),
+                    )
+                    failed_updates.append(
+                        {
+                            "object_id": catalog_object_id,
+                            "barcode": object_id,
+                            "error": str(e),
+                        }
+                    )
+                    # Continue with other products even if one fails
+                    continue
+
+            if updates:
+                logger.info(
+                    "Updated Square prices",
+                    succeeded=len(updates),
+                    failed=len(failed_updates),
+                    store_mapping_id=str(store_mapping.id),
+                )
+
+            if failed_updates:
+                logger.warning(
+                    "Some Square price updates failed",
+                    failed_updates=failed_updates,
+                    store_mapping_id=str(store_mapping.id),
+                )
+
+        except Exception as e:
+            # Log error but don't fail the entire operation
+            error_str = str(e)
+            # Check if it's an authentication error
+            if "401" in error_str or "Unauthorized" in error_str:
+                logger.error(
+                    "Failed to update Square prices - Authentication error. "
+                    "Please check that square_access_token is correctly set in store mapping metadata",
+                    store_mapping_id=str(store_mapping.id),
+                    error=error_str,
+                )
+            else:
+                logger.error(
+                    "Failed to update Square prices (non-critical)",
+                    store_mapping_id=str(store_mapping.id),
+                    error=error_str,
+                )
 
 
 async def run_price_scheduler():

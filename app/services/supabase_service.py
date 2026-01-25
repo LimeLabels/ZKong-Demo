@@ -8,6 +8,7 @@ from uuid import UUID
 from datetime import datetime
 from supabase import create_client, Client
 import structlog
+import json
 from app.config import settings
 from app.models.database import (
     Product,
@@ -29,6 +30,28 @@ class SupabaseService:
         self.client: Client = create_client(
             settings.supabase_url, settings.supabase_service_key
         )
+    
+    def _serialize_datetimes(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Recursively convert datetime objects to ISO format strings.
+        Also converts UUID objects to strings.
+        
+        Args:
+            data: Dictionary that may contain datetime/UUID objects
+            
+        Returns:
+            Dictionary with datetime/UUID objects converted to strings
+        """
+        if isinstance(data, dict):
+            return {k: self._serialize_datetimes(v) for k, v in data.items()}
+        elif isinstance(data, list):
+            return [self._serialize_datetimes(item) for item in data]
+        elif isinstance(data, datetime):
+            return data.isoformat()
+        elif isinstance(data, UUID):
+            return str(data)
+        else:
+            return data
 
     # Store Mappings
 
@@ -146,6 +169,73 @@ class SupabaseService:
             logger.error("Failed to update store mapping OAuth token", error=str(e))
             return None
 
+    def get_store_mappings_by_source_system(
+        self, source_system: str
+    ) -> List[StoreMapping]:
+        """
+        Get all active store mappings for a source system.
+
+        Args:
+            source_system: Source system name (e.g., 'ncr', 'square', 'shopify')
+
+        Returns:
+            List of StoreMapping objects
+        """
+        try:
+            result = (
+                self.client.table("store_mappings")
+                .select("*")
+                .eq("source_system", source_system)
+                .eq("is_active", True)
+                .execute()
+            )
+
+            return [StoreMapping(**row) for row in result.data] if result.data else []
+        except Exception as e:
+            logger.error(
+                "Failed to get store mappings by source system",
+                source_system=source_system,
+                error=str(e),
+            )
+            return []
+
+    def get_store_mapping_by_hipoink_code(
+        self, source_system: str, hipoink_store_code: str
+    ) -> Optional[StoreMapping]:
+        """
+        Get store mapping by source system and Hipoink store code.
+        Used for onboarding to find existing mappings (1:1 relationship).
+
+        Args:
+            source_system: Source system name (e.g., 'ncr', 'square', 'shopify')
+            hipoink_store_code: Hipoink ESL store code
+
+        Returns:
+            StoreMapping if found, None otherwise
+        """
+        try:
+            result = (
+                self.client.table("store_mappings")
+                .select("*")
+                .eq("source_system", source_system)
+                .eq("hipoink_store_code", hipoink_store_code)
+                .eq("is_active", True)
+                .limit(1)
+                .execute()
+            )
+
+            if result.data and len(result.data) > 0:
+                return StoreMapping(**result.data[0])
+            return None
+        except Exception as e:
+            logger.error(
+                "Failed to get store mapping by Hipoink code",
+                source_system=source_system,
+                hipoink_store_code=hipoink_store_code,
+                error=str(e),
+            )
+            return None
+
     def get_store_mapping_by_shop_domain(
         self, shop_domain: str
     ) -> Optional[StoreMapping]:
@@ -208,9 +298,20 @@ class SupabaseService:
 
             if existing:
                 # Update existing product
-                update_data = product.dict(
-                    exclude_none=True, exclude={"id", "created_at"}
-                )
+                # Use model_dump with json mode for Pydantic v2, or dict() with manual serialization
+                try:
+                    # Try Pydantic v2 style first
+                    update_data = product.model_dump(
+                        mode='json', exclude_none=True, exclude={"id", "created_at"}
+                    )
+                except AttributeError:
+                    # Fallback to Pydantic v1 with manual datetime serialization
+                    update_data = product.dict(
+                        exclude_none=True, exclude={"id", "created_at"}
+                    )
+                    # Convert datetime objects to ISO format strings
+                    update_data = self._serialize_datetimes(update_data)
+                
                 result = (
                     self.client.table("products")
                     .update(update_data)
@@ -222,9 +323,20 @@ class SupabaseService:
                     return Product(**result.data[0])
             else:
                 # Create new product
+                try:
+                    # Try Pydantic v2 style first
+                    insert_data = product.model_dump(
+                        mode='json', exclude_none=True, exclude={"id"}
+                    )
+                except AttributeError:
+                    # Fallback to Pydantic v1 with manual datetime serialization
+                    insert_data = product.dict(exclude_none=True, exclude={"id"})
+                    # Convert datetime objects to ISO format strings
+                    insert_data = self._serialize_datetimes(insert_data)
+                
                 result = (
                     self.client.table("products")
-                    .insert(product.dict(exclude_none=True, exclude={"id"}))
+                    .insert(insert_data)
                     .execute()
                 )
 
@@ -386,6 +498,93 @@ class SupabaseService:
                 error=str(e),
             )
 
+    def delete_product(self, product_id: Any) -> bool:
+        """
+        Delete a product from the database.
+        
+        This method handles cascading deletes by removing related records first:
+        - sync_log entries (via sync_queue_id)
+        - sync_queue items
+        - hipoink_products mappings
+        - Finally, the product itself
+
+        Args:
+            product_id: Product UUID or string ID
+
+        Returns:
+            True if deleted successfully, False otherwise
+        """
+        try:
+            product_id_str = str(product_id)
+            
+            # Step 1: Get all sync_queue items for this product to find sync_log entries
+            try:
+                sync_queue_items = (
+                    self.client.table("sync_queue")
+                    .select("id")
+                    .eq("product_id", product_id_str)
+                    .execute()
+                )
+                
+                sync_queue_ids = [item["id"] for item in sync_queue_items.data] if sync_queue_items.data else []
+                
+                # Step 2: Delete sync_log entries for these sync_queue items
+                if sync_queue_ids:
+                    try:
+                        for queue_id in sync_queue_ids:
+                            self.client.table("sync_log").delete().eq("sync_queue_id", str(queue_id)).execute()
+                        logger.debug("Cleaned up sync_log entries", product_id=product_id_str, count=len(sync_queue_ids))
+                    except Exception as e:
+                        logger.warning("Failed to clean up sync_log entries", product_id=product_id_str, error=str(e))
+                
+                # Step 3: Delete sync_queue items
+                if sync_queue_ids:
+                    self.client.table("sync_queue").delete().eq("product_id", product_id_str).execute()
+                    logger.debug("Cleaned up sync_queue items", product_id=product_id_str, count=len(sync_queue_ids))
+            except Exception as e:
+                logger.warning("Failed to clean up sync_queue/sync_log items", product_id=product_id_str, error=str(e))
+            
+            # Step 4: Delete hipoink_products mappings
+            try:
+                self.client.table("hipoink_products").delete().eq("product_id", product_id_str).execute()
+                logger.debug("Cleaned up hipoink_products mappings", product_id=product_id_str)
+            except Exception as e:
+                logger.warning("Failed to clean up hipoink_products mappings", product_id=product_id_str, error=str(e))
+            
+            # Step 5: Delete the product itself
+            result = (
+                self.client.table("products")
+                .delete()
+                .eq("id", product_id_str)
+                .execute()
+            )
+            
+            # Check if any rows were actually deleted
+            deleted = result.data is not None and len(result.data) > 0 if isinstance(result.data, list) else result.data is not None
+            
+            if deleted:
+                logger.info(
+                    "Deleted product from database",
+                    product_id=product_id_str,
+                    deleted_count=len(result.data) if isinstance(result.data, list) else 1
+                )
+                return True
+            else:
+                # No rows deleted - product might not exist or already deleted
+                logger.warning(
+                    "No product deleted - product may not exist or already deleted",
+                    product_id=product_id_str
+                )
+                return False
+        except Exception as e:
+            logger.error(
+                "Failed to delete product from database",
+                product_id=str(product_id),
+                error=str(e),
+                error_type=type(e).__name__,
+            )
+            return False
+
     def get_product_by_barcode(
         self, barcode: str, store_mapping_id: Optional[UUID] = None
     ) -> Optional[Product]:
@@ -415,6 +614,33 @@ class SupabaseService:
         except Exception as e:
             logger.error(
                 "Failed to get product by barcode", barcode=barcode, error=str(e)
+            )
+            return None
+
+    def get_product_by_source_variant_id(
+        self, source_variant_id: str
+    ) -> Optional[Product]:
+        """
+        Get product by source_variant_id (e.g., Square variation ID).
+        
+        Args:
+            source_variant_id: The source system's variant ID
+            
+        Returns:
+            Product if found, None otherwise
+        """
+        try:
+            query = self.client.table("products").select("*").eq("source_variant_id", source_variant_id)
+            result = query.limit(1).execute()
+            
+            if result.data and len(result.data) > 0:
+                return Product(**result.data[0])
+            return None
+        except Exception as e:
+            logger.error(
+                "Failed to get product by source_variant_id", 
+                source_variant_id=source_variant_id, 
+                error=str(e)
             )
             return None
 
@@ -756,6 +982,12 @@ class SupabaseService:
         Returns schedules where next_trigger_at <= current_time and is_active=True.
         """
         try:
+            # Log the query parameters for debugging
+            logger.debug(
+                "Querying due schedules",
+                current_time_iso=current_time.isoformat(),
+            )
+            
             result = (
                 self.client.table("price_adjustment_schedules")
                 .select("*")
@@ -764,8 +996,18 @@ class SupabaseService:
                 .order("next_trigger_at", desc=False)
                 .execute()
             )
-
-            return [PriceAdjustmentSchedule(**item) for item in result.data]
+            
+            schedules = [PriceAdjustmentSchedule(**item) for item in result.data]
+            
+            if schedules:
+                logger.info(
+                    "Found schedules due for trigger",
+                    count=len(schedules),
+                    schedule_ids=[str(s.id) for s in schedules],
+                    next_trigger_times=[s.next_trigger_at.isoformat() if s.next_trigger_at else None for s in schedules],
+                )
+            
+            return schedules
         except Exception as e:
             logger.error("Failed to get schedules due for trigger", error=str(e))
             return []

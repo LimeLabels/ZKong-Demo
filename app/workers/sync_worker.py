@@ -492,6 +492,21 @@ class SyncWorker:
                     product_id=str(product.id),
                 )
 
+            # Delete product from Supabase database after successful ESL deletion
+            deleted = self.supabase_service.delete_product(product.id)  # type: ignore
+            if deleted:
+                logger.info(
+                    "Deleted product from Supabase database",
+                    product_id=str(product.id),
+                    source_system=product.source_system,
+                    source_id=product.source_id,
+                )
+            else:
+                logger.warning(
+                    "Failed to delete product from Supabase database",
+                    product_id=str(product.id),
+                )
+
         except HipoinkAPIError as e:
             logger.error(
                 "Failed to delete product from Hipoink",

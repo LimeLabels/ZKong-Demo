@@ -9,7 +9,7 @@ import base64
 import httpx
 import os
 import asyncio
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 from fastapi import Request, HTTPException, status
 from uuid import UUID
 import structlog
@@ -882,3 +882,173 @@ class SquareIntegrationAdapter(BaseIntegrationAdapter):
             "status": "success",
             "message": f"Order event {event_type} acknowledged",
         }
+
+    def _get_square_credentials(
+        self, store_mapping: Any
+    ) -> Optional[Tuple[str, str]]:
+        """
+        Get Square credentials from store mapping metadata.
+
+        Args:
+            store_mapping: Store mapping object
+
+        Returns:
+            Tuple of (merchant_id, access_token) if available, None otherwise
+        """
+        if not store_mapping:
+            logger.debug("Store mapping is None, cannot get Square credentials")
+            return None
+
+        merchant_id = store_mapping.source_store_id  # Square merchant/location ID
+        
+        # Try to get access token from metadata first
+        access_token = None
+        if store_mapping.metadata:
+            access_token = store_mapping.metadata.get("square_access_token")
+        
+        # Fallback to env var if DB token is missing
+        if not access_token:
+            access_token = os.getenv("SQUARE_ACCESS_TOKEN")
+
+        if not access_token:
+            logger.warning(
+                "Square access token not found in store mapping metadata or environment",
+                store_mapping_id=str(store_mapping.id) if store_mapping else None,
+                merchant_id=merchant_id,
+            )
+            return None
+
+        return (merchant_id, access_token)
+
+    async def update_catalog_object_price(
+        self,
+        object_id: str,
+        price: float,
+        access_token: str,
+    ) -> Dict[str, Any]:
+        """
+        Update a catalog object's price in Square.
+
+        Args:
+            object_id: Square catalog object ID (variation ID)
+            price: New price as float (e.g., 10.99)
+            access_token: Square access token
+
+        Returns:
+            API response dictionary
+
+        Raises:
+            Exception: If API call fails
+        """
+        try:
+            # Determine base URL based on environment
+            base_url = (
+                "https://connect.squareupsandbox.com"
+                if settings.square_environment == "sandbox"
+                else "https://connect.squareup.com"
+            )
+
+            # Convert price to cents (Square uses smallest currency unit)
+            price_cents = int(round(price * 100))
+
+            # Get current catalog object to preserve all fields
+            async with httpx.AsyncClient() as client:
+                # First, retrieve the current object
+                retrieve_url = f"{base_url}/v2/catalog/object/{object_id}"
+                retrieve_response = await client.get(
+                    retrieve_url,
+                    headers={
+                        "Authorization": f"Bearer {access_token}",
+                        "Content-Type": "application/json",
+                    },
+                    timeout=30.0,
+                )
+                retrieve_response.raise_for_status()
+                retrieve_data = retrieve_response.json()
+
+                catalog_object = retrieve_data.get("object", {})
+                if not catalog_object:
+                    raise Exception(f"Catalog object {object_id} not found")
+
+                # Update the price_money in item_variation_data
+                # Square catalog objects should be ITEM_VARIATION for price updates
+                # Prices are stored on ITEM_VARIATION objects
+                object_type = catalog_object.get("type")
+                
+                if object_type != "ITEM_VARIATION":
+                    logger.warning(
+                        "Catalog object is not a variation, cannot update price directly",
+                        object_id=object_id,
+                        type=object_type,
+                    )
+                    raise Exception(
+                        f"Object {object_id} is type '{object_type}', expected ITEM_VARIATION. Use variation ID instead."
+                    )
+                
+                # Update price_money for the variation
+                item_variation_data = catalog_object.get("item_variation_data", {})
+                if not item_variation_data:
+                    raise Exception(f"Item variation data not found for object {object_id}")
+                
+                item_variation_data["price_money"] = {
+                    "amount": price_cents,
+                    "currency": "USD",
+                }
+                catalog_object["item_variation_data"] = item_variation_data
+
+                # Update the catalog object
+                update_url = f"{base_url}/v2/catalog/object"
+                update_payload = {
+                    "object": catalog_object,
+                }
+
+                update_response = await client.post(
+                    update_url,
+                    json=update_payload,
+                    headers={
+                        "Authorization": f"Bearer {access_token}",
+                        "Content-Type": "application/json",
+                    },
+                    timeout=30.0,
+                )
+                update_response.raise_for_status()
+
+                result = update_response.json()
+                logger.info(
+                    "Updated Square catalog object price",
+                    object_id=object_id,
+                    price=price,
+                    price_cents=price_cents,
+                )
+
+                return result
+
+        except httpx.HTTPStatusError as e:
+            error_msg = f"Square API error: {e.response.status_code}"
+            if e.response.text:
+                try:
+                    error_data = e.response.json()
+                    error_msg += f" - {error_data}"
+                except Exception:
+                    error_msg += f" - {e.response.text}"
+
+            # Provide specific guidance for common errors
+            if e.response.status_code == 401:
+                error_msg += " (Unauthorized - check access token)"
+            elif e.response.status_code == 404:
+                error_msg += " (Not found - check object ID)"
+
+            logger.error(
+                "Failed to update Square catalog object price",
+                object_id=object_id,
+                status_code=e.response.status_code,
+                error=error_msg,
+            )
+            raise Exception(error_msg) from e
+        except Exception as e:
+            logger.error(
+                "Failed to update Square catalog object price",
+                object_id=object_id,
+                error=str(e),
+            )
+            raise
