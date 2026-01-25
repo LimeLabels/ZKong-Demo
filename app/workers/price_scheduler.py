@@ -930,6 +930,13 @@ class PriceScheduler:
         products_data: list,
     ):
         """Restore original prices to products - preserves all existing product data."""
+        logger.info(
+            "Restoring original prices",
+            schedule_id=str(schedule.id),
+            store_mapping_id=str(store_mapping.id),
+            source_system=store_mapping.source_system,
+            products_count=len(products_data),
+        )
         try:
             # Validate hipoink_store_code
             if (
@@ -1161,18 +1168,11 @@ class PriceScheduler:
     ):
         """
         Update prices in Square for products.
-        
-        This method is called by the price scheduler to update Square prices when schedules trigger.
-        Square supports webhooks, but this provides a fallback polling mechanism.
-
-        Args:
-            products_data: List of product data dicts with 'pc' (object_id) and 'pp' (price) or 'original_price'
-            store_mapping: Store mapping with Square configuration
-            use_original: If True, use original_price from product_data instead of 'pp'
         """
         logger.info(
-            "Starting Square price update",
+            "=== SQUARE PRICE UPDATE STARTING ===",
             store_mapping_id=str(store_mapping.id),
+            source_system=store_mapping.source_system,
             products_count=len(products_data),
             use_original=use_original,
         )
@@ -1188,9 +1188,11 @@ class PriceScheduler:
             # Get Square credentials from store mapping
             square_credentials = await square_adapter._get_square_credentials(store_mapping)
             if not square_credentials:
-                logger.warning(
-                    "No Square credentials available, skipping Square update",
+                logger.error(
+                    "=== SQUARE UPDATE ABORTED: NO CREDENTIALS ===",
                     store_mapping_id=str(store_mapping.id),
+                    has_metadata=bool(store_mapping.metadata),
+                    metadata_keys=list(store_mapping.metadata.keys()) if store_mapping.metadata else [],
                 )
                 return
 
@@ -1307,21 +1309,22 @@ class PriceScheduler:
                         use_original=use_original,
                     )
                     
-                    # Update local product price in database immediately
-                    if existing_product and existing_product.id:
-                        try:
-                            existing_product.price = price
-                            self.supabase_service.create_or_update_product(existing_product)
-                            logger.debug(
-                                "Updated local DB price",
-                                product_id=str(existing_product.id),
-                                price=price,
-                            )
-                        except Exception as db_e:
-                            logger.error(
-                                "Failed to update local DB price after Square update",
-                                error=str(db_e),
-                            )
+                        # Update local product price in database immediately
+                        if existing_product and existing_product.id:
+                            try:
+                                existing_product.price = price
+                                self.supabase_service.create_or_update_product(existing_product)
+                                logger.info(
+                                    "=== LOCAL DB PRICE UPDATED ===",
+                                    product_id=str(existing_product.id),
+                                    barcode=existing_product.barcode,
+                                    new_price=price,
+                                )
+                            except Exception as db_e:
+                                logger.error(
+                                    "Failed to update local DB price after Square update",
+                                    error=str(db_e),
+                                )
 
                 except Exception as e:
                     logger.error(
