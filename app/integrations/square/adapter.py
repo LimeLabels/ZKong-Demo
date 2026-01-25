@@ -490,21 +490,42 @@ class SquareIntegrationAdapter(BaseIntegrationAdapter):
                     else:
                         products_created += 1
                     
-                    # Add to sync queue if valid
+                    # Add to sync queue if valid and not already synced to Hipoink
                     if is_valid and store_mapping_id:
-                        try:
-                            self.supabase_service.add_to_sync_queue(
-                                product_id=saved.id,  # type: ignore
-                                store_mapping_id=store_mapping_id,
-                                operation="create",  # Use "create" for initial sync
-                            )
-                            queued_count += 1
-                        except Exception as e:
-                            logger.error(
-                                "Failed to add product to sync queue",
+                        # Check if product already has a Hipoink mapping for this store
+                        existing_hipoink = self.supabase_service.get_hipoink_product_by_product_id(
+                            saved.id,  # type: ignore
+                            store_mapping_id,
+                        )
+                        
+                        if existing_hipoink:
+                            logger.debug(
+                                "Skipping queue - product already synced to Hipoink",
                                 product_id=str(saved.id),
-                                error=str(e),
+                                store_mapping_id=str(store_mapping_id),
+                                hipoink_product_code=existing_hipoink.hipoink_product_code,
                             )
+                        else:
+                            try:
+                                queue_item = self.supabase_service.add_to_sync_queue(
+                                    product_id=saved.id,  # type: ignore
+                                    store_mapping_id=store_mapping_id,
+                                    operation="create",  # Use "create" for initial sync
+                                )
+                                if queue_item:
+                                    queued_count += 1
+                                else:
+                                    logger.debug(
+                                        "Skipped duplicate queue item",
+                                        product_id=str(saved.id),
+                                        store_mapping_id=str(store_mapping_id),
+                                    )
+                            except Exception as e:
+                                logger.error(
+                                    "Failed to add product to sync queue",
+                                    product_id=str(saved.id),
+                                    error=str(e),
+                                )
                 
             except Exception as e:
                 logger.error(
@@ -726,11 +747,16 @@ class SquareIntegrationAdapter(BaseIntegrationAdapter):
 
                     # Add to sync queue for ESL update
                     if is_valid and store_mapping_id:
-                        self.supabase_service.add_to_sync_queue(
+                        queue_item = self.supabase_service.add_to_sync_queue(
                             product_id=saved.id,  # type: ignore
                             store_mapping_id=store_mapping_id,  # type: ignore
                             operation="update"
                         )
+                        if not queue_item:
+                            logger.debug(
+                                "Skipped duplicate queue item for update",
+                                product_id=str(saved.id),
+                            )
             except Exception as e:
                 logger.error("Error processing item", item_id=item_id, error=str(e))
 
@@ -744,11 +770,16 @@ class SquareIntegrationAdapter(BaseIntegrationAdapter):
                 self.supabase_service.update_product_status(p.id, "deleted")  # type: ignore
                 # 2. Tell ESL system to clear this tag
                 if store_mapping_id:
-                    self.supabase_service.add_to_sync_queue(
+                    queue_item = self.supabase_service.add_to_sync_queue(
                         product_id=p.id,  # type: ignore
                         store_mapping_id=store_mapping_id,  # type: ignore
                         operation="delete"
                     )
+                    if not queue_item:
+                        logger.debug(
+                            "Skipped duplicate queue item for delete",
+                            product_id=str(p.id),
+                        )
 
         return {
             "status": "success",
@@ -797,12 +828,18 @@ class SquareIntegrationAdapter(BaseIntegrationAdapter):
                 continue
 
             try:
-                self.supabase_service.add_to_sync_queue(
+                queue_item = self.supabase_service.add_to_sync_queue(
                     product_id=product.id,
                     store_mapping_id=store_mapping.id,
                     operation="delete",
                 )
-                queued_count += 1
+                if queue_item:
+                    queued_count += 1
+                else:
+                    logger.debug(
+                        "Skipped duplicate queue item for delete",
+                        product_id=str(product.id),
+                    )
                 logger.info(
                     "Square product queued for deletion",
                     product_id=str(product.id),

@@ -646,11 +646,11 @@ class SupabaseService:
 
     # Sync Queue
 
-    def add_to_sync_queue(
+    def get_existing_pending_queue_item(
         self, product_id: UUID, store_mapping_id: UUID, operation: str
-    ) -> SyncQueueItem:
+    ) -> Optional[SyncQueueItem]:
         """
-        Add product to sync queue.
+        Check if a pending queue item already exists for the same product, store, and operation.
 
         Args:
             product_id: Product UUID
@@ -658,9 +658,63 @@ class SupabaseService:
             operation: Operation type ('create', 'update', 'delete')
 
         Returns:
-            Created SyncQueueItem
+            Existing SyncQueueItem if found, None otherwise
         """
         try:
+            result = (
+                self.client.table("sync_queue")
+                .select("*")
+                .eq("product_id", str(product_id))
+                .eq("store_mapping_id", str(store_mapping_id))
+                .eq("operation", operation)
+                .eq("status", "pending")
+                .limit(1)
+                .execute()
+            )
+
+            if result.data and len(result.data) > 0:
+                return SyncQueueItem(**result.data[0])
+            return None
+        except Exception as e:
+            logger.warning(
+                "Failed to check for existing pending queue item",
+                error=str(e),
+            )
+            return None
+
+    def add_to_sync_queue(
+        self, product_id: UUID, store_mapping_id: UUID, operation: str
+    ) -> Optional[SyncQueueItem]:
+        """
+        Add product to sync queue with deduplication.
+
+        Checks if a pending queue item already exists for the same product,
+        store mapping, and operation. If found, returns the existing item instead
+        of creating a duplicate.
+
+        Args:
+            product_id: Product UUID
+            store_mapping_id: Store mapping UUID
+            operation: Operation type ('create', 'update', 'delete')
+
+        Returns:
+            Created or existing SyncQueueItem, or None if duplicate found
+        """
+        try:
+            # Check for existing pending queue item
+            existing = self.get_existing_pending_queue_item(
+                product_id, store_mapping_id, operation
+            )
+            if existing:
+                logger.debug(
+                    "Skipping duplicate queue item",
+                    product_id=str(product_id),
+                    store_mapping_id=str(store_mapping_id),
+                    operation=operation,
+                    existing_queue_item_id=str(existing.id),
+                )
+                return existing
+
             queue_item = SyncQueueItem(
                 product_id=product_id,
                 store_mapping_id=store_mapping_id,

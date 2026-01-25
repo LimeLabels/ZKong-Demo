@@ -200,12 +200,19 @@ class NCRSyncWorker:
                         
                         # Queue for ESL sync
                         if saved_product.id and store_mapping.id:
-                            self.supabase_service.add_to_sync_queue(
+                            queue_item = self.supabase_service.add_to_sync_queue(
                                 product_id=saved_product.id,
                                 store_mapping_id=store_mapping.id,
                                 operation="create",
                             )
-                            new_count += 1
+                            if queue_item:
+                                new_count += 1
+                            else:
+                                logger.debug(
+                                    "Skipped duplicate queue item for NCR product",
+                                    item_code=item_code,
+                                    product_id=str(saved_product.id),
+                                )
                             logger.info(
                                 "New NCR product discovered and queued for sync",
                                 item_code=item_code,
@@ -250,12 +257,19 @@ class NCRSyncWorker:
                             
                             # Queue for ESL sync
                             if updated_product.id and store_mapping.id:
-                                self.supabase_service.add_to_sync_queue(
+                                queue_item = self.supabase_service.add_to_sync_queue(
                                     product_id=updated_product.id,
                                     store_mapping_id=store_mapping.id,
                                     operation="update",
                                 )
-                                updated_count += 1
+                                if queue_item:
+                                    updated_count += 1
+                                else:
+                                    logger.debug(
+                                        "Skipped duplicate queue item for NCR product update",
+                                        item_code=item_code,
+                                        product_id=str(updated_product.id),
+                                    )
                                 logger.info(
                                     "NCR product updated and queued for sync",
                                     item_code=item_code,
