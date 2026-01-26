@@ -340,6 +340,7 @@ class SyncWorker:
             f3 = normalized.get("f3")
             f4 = normalized.get("f4")
             # Fallback: older Square products may lack f1-f4 in normalized_data
+            # Try to recalculate using transformer logic if available
             if f1 is None and f2 is None and f3 is None and f4 is None:
                 raw = product.raw_data
                 if isinstance(raw, dict):
@@ -349,15 +350,41 @@ class SyncWorker:
                         if str(var.get("id")) != str(product.source_variant_id):
                             continue
                         vd = var.get("item_variation_data") or {}
+                        if not vd:
+                            break
+                        
+                        # Try to extract unit cost and recalculate using transformer logic
+                        from app.integrations.square.transformer import SquareTransformer
+                        
+                        # Get price for calculation
                         pm = vd.get("price_money") or {}
-                        cents = pm.get("amount", 0) or 0
-                        dollars = (cents / 100) if cents else 0.0
-                        if vd.get("measurement_unit_id"):
-                            f1 = "1"
-                            f2 = f"${dollars:.2f}/unit"
-                        else:
-                            f3 = "1"
-                            f4 = f"${dollars:.2f}/ea"
+                        price_cents = pm.get("amount", 0) or 0
+                        total_price = (price_cents / 100.0) if price_cents else 0.0
+                        
+                        # Try to extract unit cost (for Plus users)
+                        catalog_object_dict = item_data  # Use item_data as catalog_object for custom attributes
+                        unit_cost = SquareTransformer.extract_unit_cost(vd, catalog_object_dict)
+                        
+                        # Determine if weight-based or per-item
+                        has_measurement_unit = bool(vd.get("measurement_unit_id"))
+                        
+                        # Only calculate if we have unit cost (Plus users)
+                        if unit_cost and unit_cost > 0 and total_price > 0:
+                            if has_measurement_unit:
+                                # Weight-based: use f3 (total ounces) and f4 (price per ounce)
+                                # Note: We don't have measurement_units_cache here, so we can't convert pounds
+                                # For fallback, assume unit cost is already per ounce or use as-is
+                                # In practice, new products will have this calculated correctly by transformer
+                                unit_cost_per_ounce = unit_cost  # Assume already in ounces (or will be corrected on next sync)
+                                total_ounces = total_price / unit_cost_per_ounce
+                                f3 = f"{total_ounces:.2f}"  # Total ounces (numeric only)
+                                f4 = f"{unit_cost_per_ounce:.2f}"  # Price per ounce (numeric only)
+                            else:
+                                # Per-item: use f1 (total units) and f2 (price per unit)
+                                total_units = total_price / unit_cost
+                                f1 = f"{total_units:.2f}"  # Total units (numeric only)
+                                f2 = f"{unit_cost:.2f}"  # Price per unit (numeric only)
+                        # If no unit cost (non-Plus user), leave as None - that's correct!
                         break
         else:
             # Shopify (and other sources): existing unit/ounce calculation
