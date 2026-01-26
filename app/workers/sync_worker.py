@@ -410,8 +410,7 @@ class SyncWorker:
             product_price=str(
                 round(final_price, 2)
             ),  # pp - required (as string, with multiplier applied)
-            product_inner_code=normalized.get("sku")
-            or product.sku,  # pi - optional (using SKU)
+            product_inner_code=None,  # pi - intentionally left empty
             product_image_url=normalized.get("image_url")
             or product.image_url,  # pim - optional
             product_qrcode_url=normalized.get("image_url")
