@@ -205,6 +205,7 @@ class ShopifyIntegrationAdapter(BaseIntegrationAdapter):
                 source_system="shopify",
                 source_id=normalized.source_id,
                 source_variant_id=normalized.source_variant_id,
+                source_store_id=store_domain,  # Multi-tenant isolation
                 title=normalized.title,
                 barcode=normalized.barcode,
                 sku=normalized.sku,
@@ -218,16 +219,16 @@ class ShopifyIntegrationAdapter(BaseIntegrationAdapter):
             )
 
             # Save to database
-            saved_product = self.supabase_service.create_or_update_product(product)
+            saved_product, changed = self.supabase_service.create_or_update_product(product)
             created_products.append(saved_product)
 
-            # If valid, add to sync queue
-            if is_valid:
+            # If valid and changed, add to sync queue
+            if is_valid and changed:
                 queue_item = self.supabase_service.add_to_sync_queue(
                     product_id=saved_product.id,  # type: ignore
                     store_mapping_id=store_mapping.id,  # type: ignore
                     operation="create",
-                )
+                ) 
                 if queue_item:
                     logger.info(
                         "Product queued for sync",
@@ -282,6 +283,7 @@ class ShopifyIntegrationAdapter(BaseIntegrationAdapter):
                 source_system="shopify",
                 source_id=normalized.source_id,
                 source_variant_id=normalized.source_variant_id,
+                source_store_id=store_domain,  # Multi-tenant isolation
                 title=normalized.title,
                 barcode=normalized.barcode,
                 sku=normalized.sku,
@@ -294,10 +296,10 @@ class ShopifyIntegrationAdapter(BaseIntegrationAdapter):
                 validation_errors={"errors": errors} if errors else None,
             )
 
-            saved_product = self.supabase_service.create_or_update_product(product)
+            saved_product, changed = self.supabase_service.create_or_update_product(product)
             updated_products.append(saved_product)
 
-            if is_valid:
+            if is_valid and changed:
                 queue_item = self.supabase_service.add_to_sync_queue(
                     product_id=saved_product.id,  # type: ignore
                     store_mapping_id=store_mapping.id,  # type: ignore
@@ -339,8 +341,9 @@ class ShopifyIntegrationAdapter(BaseIntegrationAdapter):
             )
 
         # Find all products with this source_id (all variants)
+        source_id = str(product_data.id)
         products_to_delete = self.supabase_service.get_products_by_source_id(
-            "shopify", str(product_data.id)
+            "shopify", source_id, store_domain  # Multi-tenant isolation
         )
 
         if not products_to_delete:

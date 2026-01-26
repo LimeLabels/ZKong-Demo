@@ -18,7 +18,7 @@ from app.integrations.ncr.transformer import NCRTransformer
 from app.integrations.ncr.api_client import NCRAPIClient
 from app.config import settings
 from app.services.supabase_service import SupabaseService
-from app.models.database import Product
+from app.models.database import Product, PriceAdjustmentSchedule
 
 logger = structlog.get_logger()
 
@@ -257,10 +257,15 @@ class NCRIntegrationAdapter(BaseIntegrationAdapter):
             # IMPORTANT: Use the actual NCR item_code as source_id so delete/update operations can find it
             from app.models.database import Product
             
+            # Extract store identifier for multi-tenant isolation
+            # Use source_store_id from config if available, otherwise extract enterprise_unit from metadata
+            ncr_store_id = store_mapping_config.get("source_store_id") or ncr_config.get("ncr_enterprise_unit") or ncr_config.get("enterprise_unit_id")
+            
             product = Product(
                 source_system="ncr",
                 source_id=actual_item_code,  # Use actual NCR item_code, not the original source_id
                 source_variant_id=normalized_product.source_variant_id,
+                source_store_id=ncr_store_id,  # Multi-tenant isolation
                 title=normalized_product.title,
                 barcode=normalized_product.barcode,
                 sku=normalized_product.sku,
@@ -274,12 +279,12 @@ class NCRIntegrationAdapter(BaseIntegrationAdapter):
             )
 
             # Step 7: Save product to Supabase (upsert operation)
-            saved_product = self.supabase_service.create_or_update_product(product)
+            saved_product, changed = self.supabase_service.create_or_update_product(product)
             
-            # Step 8: If product is valid and store_mapping exists, queue for ESL sync
+            # Step 8: If product is valid, changed, and store_mapping exists, queue for ESL sync
             # This ensures the product will be synced to electronic shelf labels (ESL)
             store_mapping_id = store_mapping_config.get("id")
-            if is_valid and store_mapping_id:
+            if is_valid and changed and store_mapping_id:
                 queue_item = self.supabase_service.add_to_sync_queue(
                     product_id=saved_product.id,  # type: ignore
                     store_mapping_id=store_mapping_id,
@@ -353,9 +358,12 @@ class NCRIntegrationAdapter(BaseIntegrationAdapter):
             # If store_mapping has an ID, update database and queue for ESL sync
             store_mapping_id = store_mapping_config.get("id")
             if store_mapping_id:
-                # Find product in database
+                # Extract store identifier for multi-tenant isolation
+                ncr_store_id = store_mapping_config.get("source_store_id") or ncr_config.get("ncr_enterprise_unit") or ncr_config.get("enterprise_unit_id")
+                
+                # Find product in database (with multi-tenant filtering)
                 existing_product = self.supabase_service.get_product_by_source(
-                    "ncr", item_code
+                    "ncr", item_code, source_store_id=ncr_store_id
                 )
                 
                 if existing_product:
@@ -376,10 +384,10 @@ class NCRIntegrationAdapter(BaseIntegrationAdapter):
                             "currency": existing_product.currency or "USD",
                         }
                     
-                    updated_product = self.supabase_service.create_or_update_product(existing_product)
+                    updated_product, changed = self.supabase_service.create_or_update_product(existing_product)
                     
-                    # Queue for ESL sync
-                    if updated_product.id:
+                    # Queue for ESL sync (only if changed)
+                    if updated_product.id and changed:
                         queue_item = self.supabase_service.add_to_sync_queue(
                             product_id=updated_product.id,
                             store_mapping_id=store_mapping_id,
@@ -466,8 +474,11 @@ class NCRIntegrationAdapter(BaseIntegrationAdapter):
             if store_mapping_id:
                 # Find products with this source_id in the database
                 # Try source_id first (the NCR item_code)
+                # Extract store identifier for multi-tenant isolation
+                ncr_store_id = store_mapping_config.get("source_store_id") or ncr_config.get("ncr_enterprise_unit") or ncr_config.get("enterprise_unit_id")
+                
                 products_to_delete = self.supabase_service.get_products_by_source_id(
-                    "ncr", item_code
+                    "ncr", item_code, ncr_store_id  # Multi-tenant isolation
                 )
                 
                 # If not found by source_id, try searching by barcode as fallback
@@ -479,7 +490,10 @@ class NCRIntegrationAdapter(BaseIntegrationAdapter):
                         source_system="ncr"
                     )
                     # Search by barcode - get all NCR products and filter
-                    all_ncr_products = self.supabase_service.get_products_by_system("ncr")
+                    # Extract store identifier for multi-tenant isolation
+                    ncr_store_id = store_mapping_config.get("source_store_id") or ncr_config.get("ncr_enterprise_unit") or ncr_config.get("enterprise_unit_id")
+                    
+                    all_ncr_products = self.supabase_service.get_products_by_system("ncr", ncr_store_id)  # Multi-tenant isolation
                     products_to_delete = [
                         p for p in all_ncr_products 
                         if p.barcode == item_code or p.sku == item_code
@@ -521,7 +535,7 @@ class NCRIntegrationAdapter(BaseIntegrationAdapter):
 
     async def pre_schedule_prices(
         self,
-        schedule: "PriceAdjustmentSchedule",
+        schedule: PriceAdjustmentSchedule,
         store_mapping_config: Dict[str, Any],
     ) -> Dict[str, Any]:
         """

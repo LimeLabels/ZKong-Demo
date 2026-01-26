@@ -34,6 +34,7 @@ class Product(BaseModel):
     source_system: str
     source_id: str
     source_variant_id: Optional[str] = None
+    source_store_id: Optional[str] = None  # Merchant/store ID for multi-tenant isolation (merchant_id for Square, shop_domain for Shopify)
     title: str
     barcode: Optional[str] = None
     sku: Optional[str] = None

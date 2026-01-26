@@ -196,10 +196,10 @@ class NCRSyncWorker:
                             status="validated",
                         )
                         
-                        saved_product = self.supabase_service.create_or_update_product(product)
+                        saved_product, changed = self.supabase_service.create_or_update_product(product)
                         
-                        # Queue for ESL sync
-                        if saved_product.id and store_mapping.id:
+                        # Queue for ESL sync (only if changed)
+                        if saved_product.id and changed and store_mapping.id:
                             queue_item = self.supabase_service.add_to_sync_queue(
                                 product_id=saved_product.id,
                                 store_mapping_id=store_mapping.id,
@@ -253,10 +253,10 @@ class NCRSyncWorker:
                             existing_product.raw_data = ncr_item
                             existing_product.normalized_data = normalized_product.to_dict()
                             
-                            updated_product = self.supabase_service.create_or_update_product(existing_product)
+                            updated_product, changed = self.supabase_service.create_or_update_product(existing_product)
                             
-                            # Queue for ESL sync
-                            if updated_product.id and store_mapping.id:
+                            # Queue for ESL sync (only if changed)
+                            if updated_product.id and changed and store_mapping.id:
                                 queue_item = self.supabase_service.add_to_sync_queue(
                                     product_id=updated_product.id,
                                     store_mapping_id=store_mapping.id,
