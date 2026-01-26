@@ -793,6 +793,19 @@ class SquareIntegrationAdapter(BaseIntegrationAdapter):
                         try:
                             is_valid, errors = self.validate_normalized_product(normalized)
                             
+                            # Get existing product BEFORE updating (for logging unit cost changes)
+                            existing_product = None
+                            try:
+                                existing_products = self.supabase_service.get_products_by_source_id(
+                                    "square", normalized.source_id, source_store_id=merchant_id
+                                )
+                                for ep in existing_products:
+                                    if str(ep.source_variant_id) == str(normalized.source_variant_id):
+                                        existing_product = ep
+                                        break
+                            except Exception:
+                                pass  # Ignore errors when fetching existing product
+                            
                             product = Product(
                                 source_system="square",
                                 source_id=normalized.source_id,
@@ -809,9 +822,28 @@ class SquareIntegrationAdapter(BaseIntegrationAdapter):
                                 status="validated" if is_valid else "pending",
                                 validation_errors={"errors": errors} if errors else None,
                             )
-
+                            
                             saved, changed = self.supabase_service.create_or_update_product(product)
                             processed_products.append(saved)
+
+                            # Enhanced logging for unit cost changes
+                            if existing_product and existing_product.normalized_data:
+                                old_f2 = existing_product.normalized_data.get("f2")  # Price per unit (per-item)
+                                old_f4 = existing_product.normalized_data.get("f4")  # Price per ounce (weight-based)
+                                new_f2 = normalized.f2
+                                new_f4 = normalized.f4
+                                
+                                if old_f2 != new_f2 or old_f4 != new_f4:
+                                    logger.info(
+                                        "Unit cost change detected in webhook",
+                                        product_id=str(saved.id) if saved.id else None,
+                                        source_id=normalized.source_id,
+                                        old_f2=old_f2,
+                                        new_f2=new_f2,
+                                        old_f4=old_f4,
+                                        new_f4=new_f4,
+                                        price_changed=(existing_product.price != normalized.price),
+                                    )
 
                             if is_valid and changed and store_mapping_id:
                                 queue_item = self.supabase_service.add_to_sync_queue(

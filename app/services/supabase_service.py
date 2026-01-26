@@ -669,6 +669,40 @@ class SupabaseService:
                 )
                 return True
         
+        # CRITICAL: Check normalized_data fields (f1-f4) for unit cost changes
+        # Unit cost changes affect f1-f4 but may not change price
+        existing_normalized = existing.normalized_data or {}
+        new_normalized = new_product.normalized_data or {}
+        
+        # Check f1-f4 fields (unit cost and quantity fields)
+        for field in ['f1', 'f2', 'f3', 'f4']:
+            existing_val = existing_normalized.get(field)
+            new_val = new_normalized.get(field)
+            
+            # Handle None comparisons
+            if existing_val is None and new_val is None:
+                continue
+            if existing_val is None or new_val is None:
+                logger.debug(
+                    "Product normalized_data field changed (None comparison)",
+                    field=field,
+                    old=existing_val,
+                    new=new_val,
+                    product_id=str(existing.id) if existing.id else None,
+                )
+                return True
+            
+            # Compare values (as strings since they're stored as strings)
+            if str(existing_val) != str(new_val):
+                logger.debug(
+                    "Product normalized_data field changed",
+                    field=field,
+                    old=existing_val,
+                    new=new_val,
+                    product_id=str(existing.id) if existing.id else None,
+                )
+                return True
+        
         return False
 
     def delete_product(self, product_id: Any) -> bool:
