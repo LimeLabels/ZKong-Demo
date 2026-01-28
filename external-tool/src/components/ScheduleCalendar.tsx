@@ -70,10 +70,27 @@ export function ScheduleCalendar() {
 
   const [products, setProducts] = useState<Product[]>([])
   const [productsLoading, setProductsLoading] = useState(false)
-  const [selectedProductId, setSelectedProductId] = useState<string>('')
+  const [productSearchQuery, setProductSearchQuery] = useState('')
+  const [debouncedSearchQuery, setDebouncedSearchQuery] = useState('')
+  const [selectedProductIds, setSelectedProductIds] = useState<Set<string>>(new Set())
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [submitError, setSubmitError] = useState<string | null>(null)
   const [submitSuccess, setSubmitSuccess] = useState(false)
+
+  // Debounce search query (300ms) for server-side search
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedSearchQuery(productSearchQuery)
+    }, 300)
+    return () => clearTimeout(timer)
+  }, [productSearchQuery])
+
+  // When Square or NCR search query changes, clear selection so it reflects the new result set
+  useEffect(() => {
+    if (formData.platform === 'square' || formData.platform === 'ncr') {
+      setSelectedProductIds(new Set())
+    }
+  }, [debouncedSearchQuery, formData.platform])
 
   // Auto-populate store mapping ID and platform when store is loaded or switched
   useEffect(() => {
@@ -101,32 +118,35 @@ export function ScheduleCalendar() {
       })
       
       // Reset product selection when store changes
-      setSelectedProductId('')
+      setSelectedProductIds(new Set())
+      setProductSearchQuery('')
     }
   }, [store])
 
   /**
-   * Fetch products for the user's store when store is connected.
+   * Fetch products for the user's store. Square and NCR: server-side search via q + debounce for the multi-select table.
    */
   useEffect(() => {
     const fetchProducts = async () => {
       if (!store || !formData.platform) {
-        setProducts([]) // Clear products if no store/platform
+        setProducts([])
         return
       }
 
       try {
         setProductsLoading(true)
-        const response = await apiClient.get('/api/products/my-products', {
-          params: {
-            limit: 100, // Get up to 100 products
-          },
-        })
+        const params: { limit: number; q?: string } = { limit: 100 }
+        if (
+          (formData.platform === 'square' || formData.platform === 'ncr') &&
+          debouncedSearchQuery.trim()
+        ) {
+          params.q = debouncedSearchQuery.trim()
+        }
+        const response = await apiClient.get('/api/products/my-products', { params })
         setProducts(response.data || [])
-      } catch (error: any) {
+      } catch (error: unknown) {
         console.error('Error fetching products:', error)
-        setProducts([]) // Clear products on error
-        // Don't show error to user - just log it, products are optional
+        setProducts([])
       } finally {
         setProductsLoading(false)
       }
@@ -134,41 +154,39 @@ export function ScheduleCalendar() {
 
     if (store && formData.platform) {
       fetchProducts()
-      // Reset product selection when platform changes
-      setSelectedProductId('')
     }
-  }, [store, formData.platform])
+  }, [store, formData.platform, debouncedSearchQuery])
 
-  /**
-   * Handle product selection - auto-populate itemCode/objectId and price.
-   */
-  const handleProductSelect = (productId: string) => {
-    setSelectedProductId(productId)
-    const product = products.find((p) => p.id === productId)
-    
-    if (product) {
+  // When Square or NCR and user selects 2+ products, default to percentage mode (hide "Set Specific Price")
+  useEffect(() => {
+    const multiSelectPlatform =
+      formData.platform === 'square' || formData.platform === 'ncr'
+    if (
+      multiSelectPlatform &&
+      selectedProductIds.size > 1 &&
+      formData.multiplierPercentage === null
+    ) {
+      setFormData((prev) => ({ ...prev, multiplierPercentage: 0 }))
+    }
+  }, [formData.platform, formData.multiplierPercentage, selectedProductIds.size])
+
+  // When Square or NCR and exactly one product selected, sync originalPrice/price from that product
+  useEffect(() => {
+    const multiSelectPlatform =
+      formData.platform === 'square' || formData.platform === 'ncr'
+    if (!multiSelectPlatform || selectedProductIds.size !== 1) return
+    const id = Array.from(selectedProductIds)[0]
+    const product = products.find((p) => p.id === id)
+    if (product && product.price != null) {
       setFormData((prev) => {
-        const updates: Partial<ScheduleFormData> = {}
-        
-        // Set itemCode/objectId based on platform
-        if (prev.platform === 'ncr') {
-          // For NCR, use barcode or SKU
-          updates.itemCode = product.barcode || product.sku || ''
-        } else if (prev.platform === 'square') {
-          // For Square, use variant_id or product_id
-          updates.objectId = product.variant_id || product.product_id || ''
-        }
-        
-        // Set price if available
-        if (product.price) {
-          updates.originalPrice = product.price
-          updates.price = product.price
-        }
-        
-        return { ...prev, ...updates }
+        if (prev.originalPrice === product.price && prev.price === product.price) return prev
+        return { ...prev, originalPrice: product.price, price: product.price }
       })
     }
-  }
+  }, [formData.platform, products, selectedProductIds])
+
+  const isMultiSelectPlatform =
+    formData.platform === 'square' || formData.platform === 'ncr'
 
   const repeatOptions = [
     { label: 'No Repeat', value: 'none' },
@@ -206,31 +224,32 @@ export function ScheduleCalendar() {
         throw new Error('Store Mapping ID is required')
       }
 
-      if (formData.platform === 'ncr' && !formData.itemCode.trim()) {
-        throw new Error('Item Code is required for NCR')
-      }
-
-      if (formData.platform === 'square' && !formData.objectId.trim()) {
-        throw new Error('Object ID is required for Square')
+      if (
+        (formData.platform === 'square' || formData.platform === 'ncr') &&
+        selectedProductIds.size === 0
+      ) {
+        throw new Error('Select at least one product')
       }
 
       if (formData.timeSlots.length === 0) {
         throw new Error('At least one time slot is required')
       }
 
-      // Prepare products array
-      // Use itemCode for NCR, objectId for Square (but API expects pc/barcode)
-      const productCode = formData.platform === 'ncr' ? formData.itemCode : formData.objectId
-      
-      const products = [
-        {
-          pc: productCode,
-          pp: formData.multiplierPercentage !== null
-            ? (formData.originalPrice * (1 + formData.multiplierPercentage / 100)).toFixed(2)
-            : formData.price.toFixed(2),
-          original_price: formData.originalPrice || formData.price,
-        },
-      ]
+      // Prepare products array: Square and NCR both use multi-select; pc differs by platform
+      const selectedProducts = products.filter((p) => selectedProductIds.has(p.id))
+      const productsPayload: Array<{ pc: string; pp: string; original_price: number }> =
+        selectedProducts.map((p) => {
+          const pc =
+            formData.platform === 'square'
+              ? (p.variant_id || p.product_id || '')
+              : (p.barcode || p.sku || '')
+          const pp =
+            formData.multiplierPercentage !== null
+              ? ((p.price ?? 0) * (1 + formData.multiplierPercentage / 100)).toFixed(2)
+              : formData.price.toFixed(2)
+          const original_price = p.price ?? formData.originalPrice ?? 0
+          return { pc, pp, original_price }
+        })
 
       // Prepare time slots - convert to 24-hour format (matching Shopify pattern)
       const timeSlots = formData.timeSlots.map((slot) => ({
@@ -254,7 +273,7 @@ export function ScheduleCalendar() {
       const payload: any = {
         store_mapping_id: formData.storeMappingId,
         name: formData.name,
-        products: products,
+        products: productsPayload,
         start_date: formData.startDate.toISOString(),
         repeat_type: formData.repeatType,
         time_slots: timeSlots,
@@ -285,6 +304,8 @@ export function ScheduleCalendar() {
       setSubmitError(null)
       
       // Reset form after a short delay to show success message
+      setSelectedProductIds(new Set())
+      setProductSearchQuery('')
       setTimeout(() => {
         setFormData({
           platform: formData.platform, // Keep platform selection
@@ -456,94 +477,171 @@ export function ScheduleCalendar() {
                 disabled={!!store}
               />
 
-              {/* Product Selector */}
-              {formData.platform && products.length > 0 && (
-                <Select
-                  label="Product"
-                  options={[
-                    { label: 'Select a product', value: '' },
-                    ...products.map((product) => ({
-                      label: `${product.title}${product.price ? ` - $${product.price.toFixed(2)}` : ''}`,
-                      value: product.id,
-                    })),
-                  ]}
-                  value={selectedProductId}
-                  onChange={handleProductSelect}
-                  disabled={productsLoading || isSubmitting}
-                  helpText="Select a product to auto-fill the item code and price"
-                />
-              )}
-
-              {/* Show loading state while fetching products */}
-              {formData.platform && productsLoading && (
-                <Banner tone="info">
-                  <Text as="p">Loading products...</Text>
-                </Banner>
-              )}
-
-              {/* Show message if no products found */}
-              {formData.platform && !productsLoading && products.length === 0 && (
-                <Banner tone="info">
-                  <Text as="p">No products found. You can manually enter the item code below.</Text>
-                </Banner>
-              )}
-
-              {formData.platform === 'ncr' && (
-                <TextField
-                  label="Item Code"
-                  value={formData.itemCode}
-                  onChange={(value) => setFormData((prev) => ({ ...prev, itemCode: value }))}
-                  placeholder="ITEM-001"
-                  helpText="The item code (barcode) for the NCR product. Auto-filled when you select a product above."
-                  autoComplete="off"
-                  disabled={isSubmitting}
-                />
-              )}
-
-              {formData.platform === 'square' && (
-                <TextField
-                  label="Object ID"
-                  value={formData.objectId}
-                  onChange={(value) => setFormData((prev) => ({ ...prev, objectId: value }))}
-                  placeholder="catalog-object-id"
-                  helpText="The catalog object ID for the Square product. Auto-filled when you select a product above."
-                  autoComplete="off"
-                  disabled={isSubmitting}
-                />
+              {/* Square and NCR: search + multi-select product table */}
+              {(formData.platform === 'square' || formData.platform === 'ncr') && (
+                <>
+                  <TextField
+                    label="Search products"
+                    value={productSearchQuery}
+                    onChange={setProductSearchQuery}
+                    placeholder="Search by name, barcode, or SKU"
+                    autoComplete="off"
+                    disabled={isSubmitting}
+                  />
+                  {productsLoading && (
+                    <Banner tone="info">
+                      <Text as="p">Loading products...</Text>
+                    </Banner>
+                  )}
+                  {!productsLoading && products.length === 0 && (
+                    <Banner tone="info">
+                      <Text as="p">No products found. Try a different search.</Text>
+                    </Banner>
+                  )}
+                  {!productsLoading && products.length > 0 && (
+                    <div style={{ border: '1px solid #e1e3e5', borderRadius: '8px', overflow: 'hidden' }}>
+                      <div
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          padding: '12px 16px',
+                          borderBottom: '1px solid #e1e3e5',
+                          backgroundColor: 'var(--p-color-bg-surface-secondary)',
+                        }}
+                      >
+                        <div style={{ marginRight: 12 }} onClick={(e) => e.stopPropagation()}>
+                          <Checkbox
+                            label=""
+                            labelHidden
+                            checked={
+                              products.length > 0 &&
+                              products.every((p) => selectedProductIds.has(p.id))
+                            }
+                            onChange={() => {
+                              if (products.every((p) => selectedProductIds.has(p.id))) {
+                                setSelectedProductIds(new Set())
+                              } else {
+                                setSelectedProductIds(new Set(products.map((p) => p.id)))
+                              }
+                            }}
+                          />
+                        </div>
+                        <span style={{ flex: 1 }}>
+                          <Text as="span" variant="bodySm" fontWeight="semibold">
+                            Item
+                          </Text>
+                        </span>
+                        <Text as="span" variant="bodySm" fontWeight="semibold">
+                          Price
+                        </Text>
+                      </div>
+                      <div style={{ maxHeight: '300px', overflowY: 'auto' }}>
+                        {products.map((product) => (
+                          <div
+                            key={product.id}
+                            style={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              padding: '12px 16px',
+                              borderBottom: '1px solid #e1e3e5',
+                            }}
+                          >
+                            <div style={{ marginRight: 12 }} onClick={(e) => e.stopPropagation()}>
+                              <Checkbox
+                                label=""
+                                labelHidden
+                                checked={selectedProductIds.has(product.id)}
+                                onChange={() => {
+                                  setSelectedProductIds((prev) => {
+                                    const next = new Set(prev)
+                                    if (next.has(product.id)) next.delete(product.id)
+                                    else next.add(product.id)
+                                    return next
+                                  })
+                                }}
+                              />
+                            </div>
+                            <span style={{ flex: 1 }}>
+                              <Text as="span" variant="bodyMd">
+                                {product.title || '—'}
+                              </Text>
+                            </span>
+                            <Text as="span" variant="bodyMd">
+                              ${(product.price ?? 0).toFixed(2)}/ea
+                            </Text>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {selectedProductIds.size > 0 && (
+                    <Text as="p" variant="bodySm" tone="subdued">
+                      {selectedProductIds.size} product(s) selected.
+                    </Text>
+                  )}
+                </>
               )}
             </>
           )}
 
           {formData.platform && (
             <FormLayout.Group>
-              <TextField
-                label="Original Price"
-                type="number"
-                value={formData.originalPrice.toString()}
-                onChange={(value) =>
-                  setFormData((prev) => ({ ...prev, originalPrice: parseFloat(value) || 0 }))
-                }
-                prefix="$"
-                helpText="Current price of the product"
-                autoComplete="off"
-              />
+              {/* Original Price: hide when Square/NCR has 2+ products; 0–1 keep it */}
+              {!(isMultiSelectPlatform && selectedProductIds.size > 1) && (
+                <TextField
+                  label="Original Price"
+                  type="number"
+                  value={formData.originalPrice.toString()}
+                  onChange={(value) =>
+                    setFormData((prev) => ({ ...prev, originalPrice: parseFloat(value) || 0 }))
+                  }
+                  prefix="$"
+                  helpText={
+                    isMultiSelectPlatform && selectedProductIds.size === 0
+                      ? 'Select a product to auto-fill'
+                      : 'Current price of the product'
+                  }
+                  autoComplete="off"
+                  disabled={isMultiSelectPlatform && selectedProductIds.size === 0}
+                />
+              )}
 
-            <Select
-              label="Price Adjustment"
-              options={[
-                { label: 'Set Specific Price', value: 'fixed' },
-                { label: 'Percentage Change', value: 'percentage' },
-              ]}
-              value={formData.multiplierPercentage !== null ? 'percentage' : 'fixed'}
-              onChange={(value) => {
-                if (value === 'percentage') {
-                  setFormData((prev) => ({ ...prev, multiplierPercentage: 0, price: 0 }))
-                } else {
-                  setFormData((prev) => ({ ...prev, multiplierPercentage: null, price: prev.originalPrice }))
+              <Select
+                label="Price Adjustment"
+                options={
+                  isMultiSelectPlatform && selectedProductIds.size > 1
+                    ? [{ label: 'Percentage Change', value: 'percentage' }]
+                    : [
+                        { label: 'Set Specific Price', value: 'fixed' },
+                        { label: 'Percentage Change', value: 'percentage' },
+                      ]
                 }
-              }}
-            />
+                value={
+                  isMultiSelectPlatform && selectedProductIds.size > 1
+                    ? 'percentage'
+                    : formData.multiplierPercentage !== null
+                      ? 'percentage'
+                      : 'fixed'
+                }
+                onChange={(value) => {
+                  if (value === 'percentage') {
+                    setFormData((prev) => ({ ...prev, multiplierPercentage: 0, price: 0 }))
+                  } else {
+                    setFormData((prev) => ({
+                      ...prev,
+                      multiplierPercentage: null,
+                      price: prev.originalPrice,
+                    }))
+                  }
+                }}
+              />
             </FormLayout.Group>
+          )}
+
+          {isMultiSelectPlatform && selectedProductIds.size > 1 && (
+            <Text as="p" variant="bodySm" tone="subdued">
+              Applying percentage to {selectedProductIds.size} products.
+            </Text>
           )}
 
           {formData.platform && formData.multiplierPercentage !== null ? (
@@ -561,7 +659,7 @@ export function ScheduleCalendar() {
               helpText="Positive for increase, negative for decrease (e.g., 10 for 10% increase, -5 for 5% decrease)"
               autoComplete="off"
             />
-          ) : formData.platform ? (
+          ) : formData.platform && !(isMultiSelectPlatform && selectedProductIds.size > 1) ? (
             <TextField
               label="Promotional Price"
               type="number"
@@ -574,6 +672,46 @@ export function ScheduleCalendar() {
               autoComplete="off"
             />
           ) : null}
+
+          {/* Square/NCR: preview Original → New when percentage and at least one product selected */}
+          {isMultiSelectPlatform &&
+            selectedProductIds.size > 0 &&
+            formData.multiplierPercentage !== null && (
+              <Card>
+                <BlockStack gap="200">
+                  <Text variant="headingSm" as="h3">
+                    Preview
+                  </Text>
+                  <div style={{ maxHeight: '150px', overflowY: 'auto' }}>
+                    {products
+                      .filter((p) => selectedProductIds.has(p.id))
+                      .map((p) => (
+                        <div
+                          key={p.id}
+                          style={{
+                            display: 'flex',
+                            justifyContent: 'space-between',
+                            alignItems: 'center',
+                            padding: '6px 0',
+                            borderBottom: '1px solid var(--p-color-border-subdued)',
+                          }}
+                        >
+                          <Text as="span" variant="bodyMd">
+                            {p.title || '—'}
+                          </Text>
+                          <Text as="span" variant="bodyMd" tone="subdued">
+                            ${(p.price ?? 0).toFixed(2)} → $
+                            {(
+                              (p.price ?? 0) *
+                              (1 + formData.multiplierPercentage! / 100)
+                            ).toFixed(2)}
+                          </Text>
+                        </div>
+                      ))}
+                  </div>
+                </BlockStack>
+              </Card>
+            )}
 
           {formData.platform && (
             <>
@@ -709,6 +847,9 @@ export function ScheduleCalendar() {
               onClick={handleSubmit}
               loading={isSubmitting}
               icon={CalendarIcon}
+              disabled={
+                isMultiSelectPlatform && selectedProductIds.size === 0
+              }
             >
               Create Schedule
             </Button>
