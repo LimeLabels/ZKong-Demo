@@ -477,9 +477,9 @@ export function ScheduleCalendar() {
                 disabled={!!store}
               />
 
-              {/* Square and NCR: search + multi-select product table */}
+              {/* Square and NCR: search + multi-select product table (data-product-ui="multiselect" = new build) */}
               {(formData.platform === 'square' || formData.platform === 'ncr') && (
-                <>
+                <div data-product-ui="multiselect" style={{ display: 'contents' }}>
                   <TextField
                     label="Search products"
                     value={productSearchQuery}
@@ -579,7 +579,7 @@ export function ScheduleCalendar() {
                       {selectedProductIds.size} product(s) selected.
                     </Text>
                   )}
-                </>
+                </div>
               )}
             </>
           )}
