@@ -238,11 +238,26 @@ export function ScheduleCalendar() {
 
       // Prepare products array: Square and NCR both use multi-select; pc differs by platform
       const selectedProducts = products.filter((p) => selectedProductIds.has(p.id))
+
+      // For Square, validate upfront that every selected product has a variation ID.
+      if (formData.platform === 'square') {
+        const missingVariantIds = selectedProducts.filter((p) => !p.variant_id)
+        if (missingVariantIds.length > 0) {
+          const names = missingVariantIds.map((p) => p.title || p.id).join(', ')
+          throw new Error(
+            `These Square products are missing variation IDs and cannot be scheduled: ${names}. ` +
+              'Please ensure products are fully synced from Square before creating a schedule.'
+          )
+        }
+      }
+
       const productsPayload: Array<{ pc: string; pp: string; original_price: number }> =
         selectedProducts.map((p) => {
+          // For Square, pc must be the Square variation ID (ITEM_VARIATION).
+          // Do not fall back to product_id or barcode – that would break price sync and restores.
           const pc =
             formData.platform === 'square'
-              ? (p.variant_id || p.product_id || '')
+              ? (p.variant_id || '')
               : (p.barcode || p.sku || '')
           const pp =
             formData.multiplierPercentage !== null
