@@ -34,159 +34,135 @@ class ProductSearchResult(BaseModel):
 
 @router.get("/search", response_model=List[ProductSearchResult])
 async def search_products(
-    shop: str = Query(..., description="Shop domain"),
+    shop: str = Query(..., description="Shop domain or merchant ID"),
+    source_system: str = Query("shopify", description="Source system (shopify, square, ncr)"),
     q: Optional[str] = Query(None, description="Search query (barcode, SKU, or title)"),
     limit: int = Query(20, description="Maximum number of results"),
 ):
     """
-    Search products from Shopify or database.
-    Searches by barcode, SKU, or product title.
+    Search products - filtered by merchant for multi-tenant safety.
     """
     try:
-        # Get store mapping to retrieve Shopify credentials
-        store_mapping = supabase_service.get_store_mapping("shopify", shop)
+        # Get store mapping to retrieve credentials and source_store_id
+        store_mapping = supabase_service.get_store_mapping(source_system, shop)
         if not store_mapping:
-            store_mapping = supabase_service.get_store_mapping_by_shop_domain(shop)
-
-        if not store_mapping or not store_mapping.metadata:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Store mapping not found for shop: {shop}",
+                detail=f"Store not found: {shop}",
             )
-
-        access_token = store_mapping.metadata.get("shopify_access_token")
-        if not access_token:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Shopify access token not found. Please complete OAuth flow.",
-            )
-
-        # Search in database first (faster)
-        results = []
-
-        # Get products that belong to this store mapping
-        # Products are linked to store mappings through sync_queue
-        # We'll query products that have sync_queue entries for this store_mapping_id
-        store_mapping_id = store_mapping.id  # type: ignore
         
-        # First, get product IDs that belong to this store mapping from sync_queue
-        sync_queue_result = (
-            supabase_service.client.table("sync_queue")
-            .select("product_id")
-            .eq("store_mapping_id", str(store_mapping_id))
-            .execute()
+        # Get products filtered by source_store_id (CRITICAL for multi-tenant)
+        products = supabase_service.get_products_by_system(
+            source_system=source_system,
+            source_store_id=store_mapping.source_store_id,  # Multi-tenant filter
         )
         
-        product_ids = [item["product_id"] for item in sync_queue_result.data]
+        # Apply search filter if provided
+        if q:
+            q_lower = q.lower()
+            products = [
+                p for p in products 
+                if q_lower in (p.title or "").lower() 
+                or q_lower in (p.barcode or "").lower()
+                or q_lower in (p.sku or "").lower()
+            ]
         
-        if product_ids:
-            # Query database - filter by product IDs that belong to this store
-            db_query = (
-                supabase_service.client.table("products")
-                .select("*")
-                .in_("id", product_ids)
+        # Return results
+        results = [
+            ProductSearchResult(
+                id=str(p.id) if p.id else "",
+                title=p.title,
+                barcode=p.barcode,
+                sku=p.sku,
+                price=p.price,
+                image_url=p.image_url,
+                variant_id=p.source_variant_id,
+                product_id=p.source_id,
             )
-            
-            if q:
-                # Search database by title (case-insensitive)
-                # Supabase Python client uses ilike for case-insensitive search
-                db_query = db_query.ilike("title", f"%{q}%")
-            
-            db_results = db_query.limit(limit).execute()
+            for p in products[:limit]
+        ]
 
-            for item in db_results.data:
-                results.append(
-                    ProductSearchResult(
-                        id=item.get("id", ""),
-                        title=item.get("title", ""),
-                        barcode=item.get("barcode"),
-                        sku=item.get("sku"),
-                        price=item.get("price"),
-                        image_url=item.get("image_url"),
-                        variant_id=item.get("source_variant_id"),
-                        product_id=item.get("source_id"),
-                    )
-                )
+        # Also search Shopify API for live data (only for Shopify stores)
+        if source_system == "shopify" and store_mapping.metadata:
+            access_token = store_mapping.metadata.get("shopify_access_token")
+            if access_token:
+                try:
+                    async with ShopifyAPIClient(shop, access_token) as shopify_client:
+                        # Use Shopify GraphQL or REST API to search products
+                        search_query = q or ""
+                        api_url = f"{shopify_client.base_url}/products.json"
 
-        # Also search Shopify API for live data
-        try:
-            async with ShopifyAPIClient(shop, access_token) as shopify_client:
-                # Use Shopify GraphQL or REST API to search products
-                search_query = q or ""
-                api_url = f"{shopify_client.base_url}/products.json"
+                        params = {"limit": min(limit, 250)}
+                        if search_query:
+                            params["title"] = search_query
 
-                params = {"limit": min(limit, 250)}
-                if search_query:
-                    params["title"] = search_query
-
-                async with httpx.AsyncClient() as http_client:
-                    response = await http_client.get(
-                        api_url,
-                        headers={"X-Shopify-Access-Token": access_token},
-                        params=params,
-                        timeout=30.0,
-                    )
-                    response.raise_for_status()
-                    shopify_data = response.json()
-
-                # Merge Shopify results (avoid duplicates)
-                existing_ids = {r.product_id for r in results if r.product_id}
-
-                for product in shopify_data.get("products", [])[:limit]:
-                    product_id = str(product.get("id", ""))
-
-                    # Process each variant
-                    for variant in product.get("variants", []):
-                        variant_id = str(variant.get("id", ""))
-
-                        # Skip if already in results
-                        if product_id in existing_ids:
-                            continue
-
-                        # Check if matches search query
-                        if q:
-                            title_match = q.lower() in product.get("title", "").lower()
-                            barcode_match = (
-                                q.lower() in (variant.get("barcode") or "").lower()
+                        async with httpx.AsyncClient() as http_client:
+                            response = await http_client.get(
+                                api_url,
+                                headers={"X-Shopify-Access-Token": access_token},
+                                params=params,
+                                timeout=30.0,
                             )
-                            sku_match = q.lower() in (variant.get("sku") or "").lower()
+                            response.raise_for_status()
+                            shopify_data = response.json()
 
-                            if not (title_match or barcode_match or sku_match):
-                                continue
+                        # Merge Shopify results (avoid duplicates)
+                        existing_ids = {r.product_id for r in results if r.product_id}
 
-                        # Add image URL
-                        image_url = None
-                        if product.get("images"):
-                            image_url = product["images"][0].get("src")
+                        for product in shopify_data.get("products", [])[:limit]:
+                            product_id = str(product.get("id", ""))
 
-                        results.append(
-                            ProductSearchResult(
-                                id=f"{product_id}_{variant_id}",
-                                title=f"{product.get('title', '')} - {variant.get('title', '')}",
-                                barcode=variant.get("barcode"),
-                                sku=variant.get("sku"),
-                                price=float(variant.get("price", 0))
-                                if variant.get("price")
-                                else None,
-                                image_url=image_url,
-                                variant_id=variant_id,
-                                product_id=product_id,
-                            )
-                        )
+                            # Process each variant
+                            for variant in product.get("variants", []):
+                                variant_id = str(variant.get("id", ""))
 
-                        existing_ids.add(product_id)
+                                # Skip if already in results
+                                if product_id in existing_ids:
+                                    continue
 
-                        if len(results) >= limit:
-                            break
+                                # Check if matches search query
+                                if q:
+                                    title_match = q.lower() in product.get("title", "").lower()
+                                    barcode_match = (
+                                        q.lower() in (variant.get("barcode") or "").lower()
+                                    )
+                                    sku_match = q.lower() in (variant.get("sku") or "").lower()
 
-                    if len(results) >= limit:
-                        break
+                                    if not (title_match or barcode_match or sku_match):
+                                        continue
 
-        except Exception as e:
-            logger.warning(
-                "Failed to search Shopify API, using database results only",
-                error=str(e),
-            )
+                                # Add image URL
+                                image_url = None
+                                if product.get("images"):
+                                    image_url = product["images"][0].get("src")
+
+                                results.append(
+                                    ProductSearchResult(
+                                        id=f"{product_id}_{variant_id}",
+                                        title=f"{product.get('title', '')} - {variant.get('title', '')}",
+                                        barcode=variant.get("barcode"),
+                                        sku=variant.get("sku"),
+                                        price=float(variant.get("price", 0))
+                                        if variant.get("price")
+                                        else None,
+                                        image_url=image_url,
+                                        variant_id=variant_id,
+                                        product_id=product_id,
+                                    )
+                                )
+
+                                existing_ids.add(product_id)
+
+                                if len(results) >= limit:
+                                    break
+
+                            if len(results) >= limit:
+                                break
+                except Exception as e:
+                    logger.warning(
+                        "Failed to search Shopify API, using database results only",
+                        error=str(e),
+                    )
 
         # Limit results
         return results[:limit]
@@ -240,51 +216,35 @@ async def get_my_products(
                 detail="No store mapping found for this user. Please complete onboarding.",
             )
         
-        # Get products that belong to this store mapping
-        store_mapping_id = user_store_mapping.id  # type: ignore
-        
-        # Get product IDs that belong to this store mapping from sync_queue
-        sync_queue_result = (
-            supabase_service.client.table("sync_queue")
-            .select("product_id")
-            .eq("store_mapping_id", str(store_mapping_id))
-            .execute()
+        # Get products filtered by source_system and source_store_id
+        products = supabase_service.get_products_by_system(
+            source_system=user_store_mapping.source_system,
+            source_store_id=user_store_mapping.source_store_id,  # CRITICAL filter
         )
         
-        product_ids = [item["product_id"] for item in sync_queue_result.data]
-        
-        if not product_ids:
-            return []
-        
-        # Query database - filter by product IDs that belong to this store
-        db_query = (
-            supabase_service.client.table("products")
-            .select("*")
-            .in_("id", product_ids)
-        )
-        
+        # Apply search filter if provided
         if q:
-            # Search database by title (case-insensitive)
-            db_query = db_query.ilike("title", f"%{q}%")
+            q_lower = q.lower()
+            products = [
+                p for p in products 
+                if q_lower in (p.title or "").lower() 
+                or q_lower in (p.barcode or "").lower()
+                or q_lower in (p.sku or "").lower()
+            ]
         
-        db_results = db_query.limit(limit).execute()
-        
-        results = []
-        for item in db_results.data:
-            results.append(
-                ProductSearchResult(
-                    id=item.get("id", ""),
-                    title=item.get("title", ""),
-                    barcode=item.get("barcode"),
-                    sku=item.get("sku"),
-                    price=item.get("price"),
-                    image_url=item.get("image_url"),
-                    variant_id=item.get("source_variant_id"),
-                    product_id=item.get("source_id"),
-                )
+        return [
+            ProductSearchResult(
+                id=str(p.id) if p.id else "",
+                title=p.title,
+                barcode=p.barcode,
+                sku=p.sku,
+                price=p.price,
+                image_url=p.image_url,
+                variant_id=p.source_variant_id,
+                product_id=p.source_id,
             )
-        
-        return results[:limit]
+            for p in products[:limit]
+        ]
         
     except HTTPException:
         raise

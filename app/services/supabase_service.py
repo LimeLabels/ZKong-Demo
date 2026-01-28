@@ -3,7 +3,7 @@ Supabase service layer for database operations.
 Handles CRUD operations for products, sync_queue, sync_log, and store_mappings.
 """
 
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Tuple
 from uuid import UUID
 from datetime import datetime
 from supabase import create_client, Client
@@ -279,7 +279,7 @@ class SupabaseService:
 
     # Products
 
-    def create_or_update_product(self, product: Product) -> Product:
+    def create_or_update_product(self, product: Product) -> Tuple[Product, bool]:
         """
         Create or update product in database.
         Uses upsert based on source_system, source_id, and source_variant_id.
@@ -291,12 +291,19 @@ class SupabaseService:
             product: Product to create or update
 
         Returns:
-            Created or updated Product
+            Tuple of (Product, changed: bool)
+            - changed=True if product is new OR fields actually changed
+            - changed=False if product exists and no fields changed
         """
         try:
             # Check if product exists (including deleted ones to check status)
+            # CRITICAL: Pass source_store_id for multi-tenant isolation
             existing = self.get_product_by_source(
-                product.source_system, product.source_id, product.source_variant_id, include_deleted=True
+                product.source_system, 
+                product.source_id, 
+                product.source_variant_id,
+                source_store_id=product.source_store_id,  # Multi-tenant isolation
+                include_deleted=True
             )
 
             if existing:
@@ -308,10 +315,20 @@ class SupabaseService:
                         source_system=product.source_system,
                         source_id=product.source_id,
                     )
-                    return existing
+                    return existing, False  # Return existing, no change
                 
-                # Update existing product
-                # Use model_dump with json mode for Pydantic v2, or dict() with manual serialization
+                # CHECK IF ACTUALLY CHANGED
+                if not self._product_has_changed(existing, product):
+                    logger.debug(
+                        "Product unchanged, skipping update and queue",
+                        product_id=str(existing.id),
+                        source_system=product.source_system,
+                        source_id=product.source_id,
+                        source_variant_id=product.source_variant_id,
+                    )
+                    return existing, False  # Return existing, no change
+                
+                # Product has changed, update it
                 try:
                     # Try Pydantic v2 style first
                     update_data = product.model_dump(
@@ -333,7 +350,13 @@ class SupabaseService:
                 )
 
                 if result.data:
-                    return Product(**result.data[0])
+                    logger.debug(
+                        "Product updated (changed)",
+                        product_id=str(existing.id),
+                        source_id=product.source_id,
+                    )
+                    return Product(**result.data[0]), True  # Updated = changed
+                raise Exception("No data returned from update")
             else:
                 # Create new product
                 try:
@@ -354,11 +377,14 @@ class SupabaseService:
                 )
 
                 if result.data:
-                    return Product(**result.data[0])
-
-            raise Exception("No data returned from upsert")
+                    logger.debug(
+                        "Product created (new)",
+                        source_id=product.source_id,
+                    )
+                    return Product(**result.data[0]), True  # New = changed
+                raise Exception("No data returned from insert")
         except Exception as e:
-            logger.error("Failed to create/update product", error=str(e))
+            logger.error("Failed to create or update product", error=str(e))
             raise
 
     def get_product_by_source(
@@ -366,15 +392,17 @@ class SupabaseService:
         source_system: str,
         source_id: str,
         source_variant_id: Optional[str] = None,
+        source_store_id: Optional[str] = None,
         include_deleted: bool = False,
     ) -> Optional[Product]:
         """
         Get product by source system and IDs.
         
         Args:
-            source_system: Source system name
+            source_system: Source system name (e.g., 'square')
             source_id: Source product ID
             source_variant_id: Optional variant ID
+            source_store_id: Merchant/store ID to filter by (CRITICAL for multi-tenant safety)
             include_deleted: If True, include products with status 'deleted' (default: False)
         
         Returns:
@@ -393,32 +421,36 @@ class SupabaseService:
             else:
                 query = query.is_("source_variant_id", "null")
             
-            # Exclude deleted products by default
+            # CRITICAL: Filter by store for multi-tenant safety
+            if source_store_id:
+                query = query.eq("source_store_id", source_store_id)
+            else:
+                logger.warning(
+                    "get_product_by_source called without source_store_id - may match products from other merchants!",
+                    source_system=source_system,
+                    source_id=source_id,
+                )
+            
+            # Optionally include deleted products
             if not include_deleted:
                 query = query.neq("status", "deleted")
 
-            result = query.single().execute()
+            result = query.limit(1).execute()  # Use limit(1) instead of single() for safety
 
-            if result.data:
-                return Product(**result.data)
+            if result.data and len(result.data) > 0:
+                return Product(**result.data[0])
             return None
         except Exception as e:
             # Not found is expected for new products - don't log as error
-            error_str = str(e)
-            if any(
-                phrase in error_str
-                for phrase in [
-                    "No rows",
-                    "Could not find",
-                    "PGRST116",
-                    "result contains 0 rows",
-                    "Cannot coerce the result to a single JSON object",
-                ]
-            ):
-                # Product doesn't exist - this is normal for create operations
-                return None
-            # Only log actual errors (network issues, etc.)
-            logger.error("Failed to get product by source", error=str(e))
+            if "PGRST116" not in str(e):  # Suppress "The result contains 0 rows"
+                logger.debug(
+                    "Failed to get product by source (may not exist)",
+                    source_system=source_system,
+                    source_id=source_id,
+                    source_variant_id=source_variant_id,
+                    source_store_id=source_store_id,
+                    error=str(e),
+                )
             return None
 
     def get_product(self, product_id: UUID) -> Optional[Product]:
@@ -442,17 +474,22 @@ class SupabaseService:
             return None
 
     def get_products_by_source_id(
-        self, source_system: str, source_id: str, exclude_deleted: bool = True
+        self, 
+        source_system: str, 
+        source_id: str, 
+        source_store_id: Optional[str] = None,
+        exclude_deleted: bool = True
     ) -> List[Product]:
         """
         Get all products by source system and source ID.
         Used to find all variants of a product when deleting.
-
+        
         Args:
-            source_system: Source system name (e.g., 'shopify')
+            source_system: Source system name (e.g., 'square')
             source_id: Source product ID
+            source_store_id: Merchant/store ID to filter by (RECOMMENDED for multi-tenant safety)
             exclude_deleted: If True, exclude products with status 'deleted' (default: True)
-
+        
         Returns:
             List of Product objects (all variants)
         """
@@ -463,6 +500,16 @@ class SupabaseService:
                 .eq("source_system", source_system)
                 .eq("source_id", source_id)
             )
+            
+            # Filter by store for multi-tenant safety
+            if source_store_id:
+                query = query.eq("source_store_id", source_store_id)
+            else:
+                logger.warning(
+                    "get_products_by_source_id called without source_store_id - may return products from other merchants!",
+                    source_system=source_system,
+                    source_id=source_id,
+                )
             
             # Exclude deleted products by default to prevent re-queuing them for deletion
             if exclude_deleted:
@@ -478,21 +525,27 @@ class SupabaseService:
                 "Failed to get products by source ID",
                 source_system=source_system,
                 source_id=source_id,
+                source_store_id=source_store_id,
                 error=str(e),
             )
             return []
 
-    def get_products_by_system(self, source_system: str, exclude_deleted: bool = True) -> List[Product]:
+    def get_products_by_system(
+        self, 
+        source_system: str, 
+        source_store_id: Optional[str] = None,
+        exclude_deleted: bool = True
+    ) -> List[Product]:
         """
-        Fetch all products belonging to a specific integration (e.g., 'square').
-        Used for deletion detection by comparing DB vs API products.
-
+        Fetch products by source system, optionally filtered by store.
+        
         Args:
             source_system: Source system name (e.g., 'square', 'shopify')
+            source_store_id: Merchant/store ID to filter by (STRONGLY RECOMMENDED for multi-tenant safety)
             exclude_deleted: If True, exclude products with status 'deleted' (default: True)
-
+        
         Returns:
-            List of Product objects
+            List of Product objects for that store
         """
         try:
             query = (
@@ -500,6 +553,16 @@ class SupabaseService:
                 .select("*")
                 .eq("source_system", source_system)
             )
+            
+            # CRITICAL: Filter by store for multi-tenant isolation
+            if source_store_id:
+                query = query.eq("source_store_id", source_store_id)
+            else:
+                logger.warning(
+                    "get_products_by_system called without source_store_id - returning ALL products across all merchants!",
+                    source_system=source_system,
+                    stack_info=True,  # Log stack trace to find caller
+                )
             
             # Exclude deleted products by default to prevent re-processing them
             if exclude_deleted:
@@ -514,6 +577,7 @@ class SupabaseService:
             logger.error(
                 "Failed to get products by system",
                 source_system=source_system,
+                source_store_id=source_store_id,
                 error=str(e),
             )
             return []
@@ -554,6 +618,92 @@ class SupabaseService:
                 status=status,
                 error=str(e),
             )
+
+    def _product_has_changed(self, existing: Product, new_product: Product) -> bool:
+        """
+        Check if product data has actually changed.
+        Only compares fields that matter for Hipoink ESL sync.
+        
+        Args:
+            existing: Existing product from database
+            new_product: New product data from webhook/API
+            
+        Returns:
+            True if product changed, False if identical
+        """
+        # Fields that matter for ESL display and sync
+        sync_relevant_fields = [
+            'title',           # Product name
+            'barcode',         # Barcode for ESL
+            'sku',             # SKU for ESL
+            'price',           # Price (most common change)
+            'currency',        # Currency (if price changes, currency might too)
+            'image_url',       # Product image
+            'status',          # Validation status (pending -> validated)
+            'validation_errors'  # Validation state changes
+        ]
+        
+        for field in sync_relevant_fields:
+            existing_val = getattr(existing, field, None)
+            new_val = getattr(new_product, field, None)
+            
+            # Handle None comparisons
+            if existing_val is None and new_val is None:
+                continue
+            if existing_val is None or new_val is None:
+                logger.debug(
+                    "Product field changed (None comparison)",
+                    field=field,
+                    old=existing_val,
+                    new=new_val,
+                )
+                return True
+            
+            # Compare values
+            if existing_val != new_val:
+                logger.debug(
+                    "Product field changed",
+                    field=field,
+                    old=existing_val,
+                    new=new_val,
+                )
+                return True
+        
+        # CRITICAL: Check normalized_data fields (f1-f4) for unit cost changes
+        # Unit cost changes affect f1-f4 but may not change price
+        existing_normalized = existing.normalized_data or {}
+        new_normalized = new_product.normalized_data or {}
+        
+        # Check f1-f4 fields (unit cost and quantity fields)
+        for field in ['f1', 'f2', 'f3', 'f4']:
+            existing_val = existing_normalized.get(field)
+            new_val = new_normalized.get(field)
+            
+            # Handle None comparisons
+            if existing_val is None and new_val is None:
+                continue
+            if existing_val is None or new_val is None:
+                logger.debug(
+                    "Product normalized_data field changed (None comparison)",
+                    field=field,
+                    old=existing_val,
+                    new=new_val,
+                    product_id=str(existing.id) if existing.id else None,
+                )
+                return True
+            
+            # Compare values (as strings since they're stored as strings)
+            if str(existing_val) != str(new_val):
+                logger.debug(
+                    "Product normalized_data field changed",
+                    field=field,
+                    old=existing_val,
+                    new=new_val,
+                    product_id=str(existing.id) if existing.id else None,
+                )
+                return True
+        
+        return False
 
     def delete_product(self, product_id: Any) -> bool:
         """

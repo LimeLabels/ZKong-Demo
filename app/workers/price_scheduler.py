@@ -776,8 +776,10 @@ class PriceScheduler:
                     # Try to find by source_variant_id first (most common for Square products)
                     existing_product = self.supabase_service.get_product_by_source_variant_id(barcode)
                     if not existing_product:
-                        # Fallback to source_id
-                        products_by_source = self.supabase_service.get_products_by_source_id("square", barcode)
+                        # Fallback to source_id (with multi-tenant filtering)
+                        products_by_source = self.supabase_service.get_products_by_source_id(
+                            "square", barcode, store_mapping.source_store_id  # Multi-tenant isolation
+                        )
                         if products_by_source:
                             existing_product = products_by_source[0]
                     
@@ -962,8 +964,10 @@ class PriceScheduler:
                     # Try to find by source_variant_id first
                     existing_product = self.supabase_service.get_product_by_source_variant_id(barcode)
                     if not existing_product:
-                        # Fallback to source_id
-                        products_by_source = self.supabase_service.get_products_by_source_id("square", barcode)
+                        # Fallback to source_id (with multi-tenant filtering)
+                        products_by_source = self.supabase_service.get_products_by_source_id(
+                            "square", barcode, store_mapping.source_store_id  # Multi-tenant isolation
+                        )
                         if products_by_source:
                             existing_product = products_by_source[0]
                     
@@ -1311,7 +1315,8 @@ class PriceScheduler:
                     if existing_product and existing_product.id:
                         try:
                             existing_product.price = price
-                            self.supabase_service.create_or_update_product(existing_product)
+                            updated_product, changed = self.supabase_service.create_or_update_product(existing_product)
+                            # Note: We don't queue here because price scheduler handles its own sync logic
                             logger.info(
                                 "=== LOCAL DB PRICE UPDATED ===",
                                 product_id=str(existing_product.id),

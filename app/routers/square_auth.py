@@ -3,25 +3,31 @@ Square OAuth authentication endpoints.
 Handles OAuth flow for Square POS integration.
 """
 
-from fastapi import APIRouter, Request, HTTPException, status, Query, BackgroundTasks
+from fastapi import APIRouter, Request, HTTPException, status, Query, BackgroundTasks, Depends
 from fastapi.responses import RedirectResponse, JSONResponse
-from typing import Optional
+from typing import Optional, Dict
 import structlog
 import secrets
 import httpx
 import json
 import base64
-from datetime import datetime
+from datetime import datetime, timedelta
 from urllib.parse import urlencode, quote
 from uuid import UUID
 
 from app.config import settings
 from app.services.supabase_service import SupabaseService
+from app.routers.auth import verify_token
 
 logger = structlog.get_logger()
 
 router = APIRouter(prefix="/auth", tags=["square-auth"])
 api_router = APIRouter(prefix="/api/auth/square", tags=["square-auth"])
+
+# Rate limiting for manual sync (in-memory cache)
+# Key: (merchant_id, user_id), Value: last_sync_timestamp
+_manual_sync_rate_limit: Dict[tuple, datetime] = {}
+_rate_limit_window = timedelta(minutes=1)  # 1 sync per minute per merchant per user
 
 
 @router.get("/square")
@@ -629,3 +635,131 @@ async def get_square_sync_status(
             ),
         },
     }
+
+
+@api_router.post("/manual-sync")
+async def manual_sync_square_products(
+    merchant_id: str = Query(..., description="Square merchant ID"),
+    background_tasks: BackgroundTasks = BackgroundTasks(),
+    user_data: dict = Depends(verify_token),  # Require authentication
+):
+    """
+    Manually trigger a full product sync from Square.
+    
+    This endpoint allows authenticated users to manually sync products when:
+    - Unit cost changes don't trigger webhooks
+    - Products need to be refreshed
+    - Initial sync needs to be re-run
+    
+    **Rate Limited**: 1 sync per minute per merchant per user
+    
+    **Authentication Required**: Bearer token in Authorization header
+    
+    Args:
+        merchant_id: Square merchant ID
+        background_tasks: FastAPI background tasks for async processing
+        user_data: Authenticated user data (from token)
+    
+    Returns:
+        Status response with sync job information
+    
+    Raises:
+        HTTPException: If rate limited, unauthorized, or sync fails
+    """
+    user_id = user_data.get("user_id")
+    
+    # Rate limiting: Check if user has synced this merchant recently
+    rate_limit_key = (merchant_id, user_id)
+    now = datetime.utcnow()
+    
+    if rate_limit_key in _manual_sync_rate_limit:
+        last_sync = _manual_sync_rate_limit[rate_limit_key]
+        time_since_last_sync = now - last_sync
+        
+        if time_since_last_sync < _rate_limit_window:
+            remaining_seconds = int((_rate_limit_window - time_since_last_sync).total_seconds())
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail=f"Rate limit exceeded. Please wait {remaining_seconds} seconds before syncing again.",
+                headers={"Retry-After": str(remaining_seconds)},
+            )
+    
+    # Update rate limit cache
+    _manual_sync_rate_limit[rate_limit_key] = now
+    
+    # Clean up old entries (keep cache size manageable)
+    if len(_manual_sync_rate_limit) > 1000:
+        # Remove entries older than 1 hour
+        cutoff = now - timedelta(hours=1)
+        _manual_sync_rate_limit.clear()  # Simple cleanup - in production, use a proper cache
+    
+    supabase_service = SupabaseService()
+    
+    # Get store mapping
+    store_mapping = supabase_service.get_store_mapping("square", merchant_id)
+    
+    if not store_mapping:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Store mapping not found for merchant_id: {merchant_id}",
+        )
+    
+    # Get access token
+    from app.integrations.square.adapter import SquareIntegrationAdapter
+    from app.integrations.square.token_refresh import ensure_valid_square_token
+    
+    adapter = SquareIntegrationAdapter()
+    
+    try:
+        # Ensure we have a valid access token
+        access_token = await adapter._ensure_valid_token(store_mapping)
+        
+        if not access_token:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="No valid access token found. Please reconnect your Square account.",
+            )
+        
+        # Determine base URL (sandbox or production)
+        base_url = (
+            "https://connect.squareupsandbox.com"
+            if settings.square_environment == "sandbox"
+            else "https://connect.squareup.com"
+        )
+        
+        # Trigger sync in background
+        background_tasks.add_task(
+            trigger_initial_product_sync,
+            merchant_id=merchant_id,
+            access_token=access_token,
+            store_mapping_id=store_mapping.id,
+            base_url=base_url,
+        )
+        
+        logger.info(
+            "Manual product sync triggered",
+            merchant_id=merchant_id,
+            store_mapping_id=str(store_mapping.id),
+            user_id=user_id,
+        )
+        
+        return {
+            "status": "success",
+            "message": "Product sync started in background",
+            "merchant_id": merchant_id,
+            "store_mapping_id": str(store_mapping.id),
+            "note": "Sync is running in the background. Check sync-status endpoint for progress.",
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(
+            "Failed to trigger manual sync",
+            merchant_id=merchant_id,
+            error=str(e),
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to trigger sync: {str(e)}",
+        )

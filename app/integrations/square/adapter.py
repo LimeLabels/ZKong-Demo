@@ -459,11 +459,12 @@ class SquareIntegrationAdapter(BaseIntegrationAdapter):
                     # Validate
                     is_valid, validation_errors = self.validate_normalized_product(normalized)
                     
-                    # Check if product already exists
+                    # Check if product already exists (with multi-tenant filtering)
                     existing = self.supabase_service.get_product_by_source(
                         source_system="square",
                         source_id=normalized.source_id,
                         source_variant_id=normalized.source_variant_id,
+                        source_store_id=merchant_id,  # Multi-tenant isolation
                     )
                     
                     # Create or update product
@@ -471,6 +472,7 @@ class SquareIntegrationAdapter(BaseIntegrationAdapter):
                         source_system="square",
                         source_id=normalized.source_id,
                         source_variant_id=normalized.source_variant_id,
+                        source_store_id=merchant_id,  # Multi-tenant isolation
                         title=normalized.title,
                         barcode=normalized.barcode,
                         sku=normalized.sku,
@@ -483,7 +485,7 @@ class SquareIntegrationAdapter(BaseIntegrationAdapter):
                         validation_errors={"errors": validation_errors} if validation_errors else None,
                     )
                     
-                    saved = self.supabase_service.create_or_update_product(product)
+                    saved, changed = self.supabase_service.create_or_update_product(product)
                     
                     if existing:
                         products_updated += 1
@@ -595,13 +597,15 @@ class SquareIntegrationAdapter(BaseIntegrationAdapter):
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Unsupported event type: {event_type}",
             )
-
     async def _handle_catalog_update(
         self, headers: Dict[str, str], payload: Dict[str, Any]
     ) -> Dict[str, Any]:
         """
-        Handle catalog update with pagination, safe token retrieval, 
-        deletion detection, and automatic token refresh.
+        Handle catalog update with hybrid approach:
+        - If webhook payload contains catalog_object: process only that item (optimized)
+        - If webhook payload doesn't contain catalog_object: fall back to full sync (safe)
+        
+        This method ensures webhooks always work while optimizing performance when possible.
         """
         # Validate payload structure
         CatalogVersionUpdatedWebhook(**payload)
@@ -620,15 +624,12 @@ class SquareIntegrationAdapter(BaseIntegrationAdapter):
 
         if store_mapping:
             store_mapping_id = store_mapping.id
-            # 2. Ensure valid token (auto-refresh if needed)
             access_token = await self._ensure_valid_token(store_mapping)
         
-        # Fallback to env var if DB token is missing (for backward compatibility)
         if not access_token:
             access_token = os.getenv("SQUARE_ACCESS_TOKEN")
 
         if not access_token:
-            # Send Slack alert for missing token
             try:
                 slack_service = get_slack_service()
                 await slack_service.send_api_error_alert(
@@ -645,146 +646,404 @@ class SquareIntegrationAdapter(BaseIntegrationAdapter):
                 detail="No access token found",
             )
 
-        # 2. Get existing products from DB to detect deletions later
-        existing_products = self.supabase_service.get_products_by_system("square")
-        db_source_ids = {p.source_id for p in existing_products if p.source_id}
-
-        # 3. Fetch EVERYTHING from Square (Handling Pagination)
         base_url = "https://connect.squareupsandbox.com" if settings.square_environment == "sandbox" else "https://connect.squareup.com"
-        all_items = []
-        cursor = None
-        
-        async with httpx.AsyncClient() as client:
-            while True:
-                url = f"{base_url}/v2/catalog/list?types=ITEM"
-                if cursor:
-                    url += f"&cursor={cursor}"
-                
-                response = await client.get(
-                    url, 
-                    headers={"Authorization": f"Bearer {access_token}"},
-                    timeout=30.0
+
+        use_fallback = False
+
+        # 2. Try to extract catalog_object from webhook payload (OPTIMIZED PATH)
+        webhook_data = payload.get("data", {})
+        webhook_object = webhook_data.get("object", {})
+        catalog_object_data = webhook_object.get("catalog_object", {})
+
+        if not catalog_object_data:
+            catalog_object_data = webhook_data.get("catalog_object", {})
+
+        # If we have catalog_object in webhook, process only that item (OPTIMIZED)
+        if catalog_object_data and catalog_object_data.get("id"):
+            object_type = catalog_object_data.get("type")
+            object_id = catalog_object_data.get("id")
+            is_deleted = catalog_object_data.get("is_deleted", False)
+
+            # Handle deletion
+            if is_deleted:
+                source_id = object_id
+                products_to_delete = self.supabase_service.get_products_by_source_id(
+                    "square", source_id, source_store_id=merchant_id
                 )
-                
-                if response.status_code != 200:
-                    logger.error("Square API Error", status=response.status_code, body=response.text)
-                    
-                    # Send Slack alert for Square API errors
-                    try:
-                        slack_service = get_slack_service()
-                        await slack_service.send_api_error_alert(
-                            error_message=f"Square API error: {response.status_code} - {response.text[:200]}",
-                            api_name="square",
-                            merchant_id=merchant_id,
-                            status_code=response.status_code,
+                deleted_count = 0
+                for product in products_to_delete:
+                    if not product.id:
+                        continue
+                    if store_mapping_id:
+                        queue_item = self.supabase_service.add_to_sync_queue(
+                            product_id=product.id,
+                            store_mapping_id=store_mapping_id,
+                            operation="delete",
                         )
-                    except Exception as slack_error:
-                        logger.warning("Failed to send Slack alert", error=str(slack_error))
-                    
-                    break
-                    
-                data = response.json()
-                all_items.extend(data.get("objects", []))
-                
-                cursor = data.get("cursor")
-                if not cursor:
-                    break
+                        if queue_item:
+                            deleted_count += 1
+                            logger.info(
+                                "Product queued for deletion (optimized path)",
+                                product_id=str(product.id),
+                                source_id=source_id,
+                            )
+                return {
+                    "status": "success",
+                    "updated": 0,
+                    "deleted": deleted_count,
+                    "optimized": True,
+                }
 
-        # 3b. Extract measurement_unit_ids from all items and fetch CatalogMeasurementUnit objects
-        measurement_unit_ids: set = set()
-        for item in all_items:
-            item_data = item.get("item_data") or {}
-            variations = item_data.get("variations") or []
-            for var in variations:
-                var_data = var.get("item_variation_data") or {}
-                unit_id = var_data.get("measurement_unit_id")
-                if unit_id:
-                    measurement_unit_ids.add(unit_id)
+            # Fetch the specific item from Square API
+            item_to_process = None
+            async with httpx.AsyncClient() as client:
+                if object_type == "ITEM":
+                    retrieve_url = f"{base_url}/v2/catalog/object/{object_id}"
+                    response = await client.get(
+                        retrieve_url,
+                        headers={"Authorization": f"Bearer {access_token}"},
+                        timeout=30.0,
+                    )
+                    if response.status_code != 200:
+                        logger.warning(
+                            "Failed to fetch item from Square API, falling back to full sync",
+                            status=response.status_code,
+                            object_id=object_id,
+                        )
+                        use_fallback = True
+                    else:
+                        data = response.json()
+                        item_to_process = data.get("object", {})
+                        
+                elif object_type == "ITEM_VARIATION":
+                    retrieve_url = f"{base_url}/v2/catalog/object/{object_id}"
+                    response = await client.get(
+                        retrieve_url,
+                        headers={"Authorization": f"Bearer {access_token}"},
+                        timeout=30.0,
+                    )
+                    if response.status_code != 200:
+                        logger.warning(
+                            "Failed to fetch variation, falling back to full sync",
+                            status=response.status_code,
+                            object_id=object_id,
+                        )
+                        use_fallback = True
+                    else:
+                        variation_data = response.json()
+                        variation_object = variation_data.get("object", {})
+                        variation_data_dict = variation_object.get("item_variation_data", {})
+                        parent_item_id = variation_data_dict.get("item_id")
+                        
+                        if not parent_item_id:
+                            logger.warning(
+                                "Variation has no parent item_id, falling back to full sync",
+                                variation_id=object_id,
+                            )
+                            use_fallback = True
+                        else:
+                            retrieve_url = f"{base_url}/v2/catalog/object/{parent_item_id}"
+                            response = await client.get(
+                                retrieve_url,
+                                headers={"Authorization": f"Bearer {access_token}"},
+                                timeout=30.0,
+                            )
+                            if response.status_code != 200:
+                                logger.warning(
+                                    "Failed to fetch parent item, falling back to full sync",
+                                    status=response.status_code,
+                                    parent_item_id=parent_item_id,
+                                )
+                                use_fallback = True
+                            else:
+                                data = response.json()
+                                item_to_process = data.get("object", {})
 
-        measurement_units_cache: Dict[str, dict] = {}
-        if measurement_unit_ids:
-            measurement_units_cache = await self._fetch_measurement_units(
-                access_token=access_token,
-                measurement_unit_ids=list(measurement_unit_ids),
-                base_url=base_url,
-            )
+            # If we successfully got the item, process it (OPTIMIZED PATH)
+            if not use_fallback and item_to_process:
+                measurement_unit_ids: set = set()
+                item_data = item_to_process.get("item_data") or {}
+                variations = item_data.get("variations") or []
+                for var in variations:
+                    var_data = var.get("item_variation_data") or {}
+                    unit_id = var_data.get("measurement_unit_id")
+                    if unit_id:
+                        measurement_unit_ids.add(unit_id)
 
-        # 4. Process Creates and Updates
-        api_source_ids = set()
-        processed_products = []
-
-        for item in all_items:
-            item_id = item.get("id")
-            api_source_ids.add(item_id)
-            
-            try:
-                catalog_object = SquareCatalogObject(**item)
-                normalized_variants = self.transformer.extract_variations_from_catalog_object(
-                    catalog_object, measurement_units_cache=measurement_units_cache
-                )
-
-                for normalized in normalized_variants:
-                    is_valid, errors = self.validate_normalized_product(normalized)
-                    
-                    product = Product(
-                        source_system="square",
-                        source_id=normalized.source_id,
-                        source_variant_id=normalized.source_variant_id,
-                        title=normalized.title,
-                        barcode=normalized.barcode,
-                        sku=normalized.sku,
-                        price=normalized.price,
-                        currency=normalized.currency,
-                        image_url=normalized.image_url,
-                        raw_data={"item_data": item},
-                        normalized_data=normalized.to_dict(),
-                        status="validated" if is_valid else "pending",
-                        validation_errors={"errors": errors} if errors else None,
+                measurement_units_cache: Dict[str, dict] = {}
+                if measurement_unit_ids:
+                    measurement_units_cache = await self._fetch_measurement_units(
+                        access_token=access_token,
+                        measurement_unit_ids=list(measurement_unit_ids),
+                        base_url=base_url,
                     )
 
-                    saved = self.supabase_service.create_or_update_product(product)
-                    processed_products.append(saved)
+                processed_products = []
+                normalized_variants = []
+                
+                try:
+                    catalog_object = SquareCatalogObject(**item_to_process)
+                    normalized_variants = self.transformer.extract_variations_from_catalog_object(
+                        catalog_object, measurement_units_cache=measurement_units_cache
+                    )
 
-                    # Add to sync queue for ESL update
-                    if is_valid and store_mapping_id:
+                    all_variants_processed = True
+                    
+                    for normalized in normalized_variants:
+                        try:
+                            is_valid, errors = self.validate_normalized_product(normalized)
+                            
+                            # Get existing product BEFORE updating (for logging unit cost changes)
+                            existing_product = None
+                            try:
+                                existing_products = self.supabase_service.get_products_by_source_id(
+                                    "square", normalized.source_id, source_store_id=merchant_id
+                                )
+                                for ep in existing_products:
+                                    if str(ep.source_variant_id) == str(normalized.source_variant_id):
+                                        existing_product = ep
+                                        break
+                            except Exception:
+                                pass  # Ignore errors when fetching existing product
+                            
+                            product = Product(
+                                source_system="square",
+                                source_id=normalized.source_id,
+                                source_variant_id=normalized.source_variant_id,
+                                source_store_id=merchant_id,
+                                title=normalized.title,
+                                barcode=normalized.barcode,
+                                sku=normalized.sku,
+                                price=normalized.price,
+                                currency=normalized.currency,
+                                image_url=normalized.image_url,
+                                raw_data={"item_data": item_to_process},
+                                normalized_data=normalized.to_dict(),
+                                status="validated" if is_valid else "pending",
+                                validation_errors={"errors": errors} if errors else None,
+                            )
+                            
+                            saved, changed = self.supabase_service.create_or_update_product(product)
+                            processed_products.append(saved)
+
+                            # Enhanced logging for unit cost changes
+                            if existing_product and existing_product.normalized_data:
+                                old_f2 = existing_product.normalized_data.get("f2")  # Price per unit (per-item)
+                                old_f4 = existing_product.normalized_data.get("f4")  # Price per ounce (weight-based)
+                                new_f2 = normalized.f2
+                                new_f4 = normalized.f4
+                                
+                                if old_f2 != new_f2 or old_f4 != new_f4:
+                                    logger.info(
+                                        "Unit cost change detected in webhook",
+                                        product_id=str(saved.id) if saved.id else None,
+                                        source_id=normalized.source_id,
+                                        old_f2=old_f2,
+                                        new_f2=new_f2,
+                                        old_f4=old_f4,
+                                        new_f4=new_f4,
+                                        price_changed=(existing_product.price != normalized.price),
+                                    )
+
+                            if is_valid and changed and store_mapping_id:
+                                queue_item = self.supabase_service.add_to_sync_queue(
+                                    product_id=saved.id,
+                                    store_mapping_id=store_mapping_id,
+                                    operation="update"
+                                )
+                                if queue_item:
+                                    logger.info(
+                                        "Product queued for update (optimized path)",
+                                        product_id=str(saved.id),
+                                        source_id=normalized.source_id,
+                                    )
+                                else:
+                                    logger.debug(
+                                        "Skipped duplicate queue item (optimized path)",
+                                        product_id=str(saved.id),
+                                    )
+                        except Exception as variant_error:
+                            logger.error(
+                                "Error processing variant, will fallback to full sync",
+                                variant_id=normalized.source_variant_id if 'normalized' in locals() else None,
+                                error=str(variant_error),
+                            )
+                            all_variants_processed = False
+                            use_fallback = True
+                            break
+
+                    if all_variants_processed and normalized_variants and len(processed_products) == len(normalized_variants):
+                        logger.info(
+                            "Successfully processed item via optimized path",
+                            object_id=object_id,
+                            variants_processed=len(processed_products),
+                        )
+                        return {
+                            "status": "success",
+                            "updated": len(processed_products),
+                            "deleted": 0,
+                            "optimized": True,
+                        }
+                    elif processed_products:
+                        logger.warning(
+                            "Partial processing detected, falling back to full sync",
+                            expected_variants=len(normalized_variants),
+                            processed_count=len(processed_products),
+                            object_id=object_id,
+                        )
+                        use_fallback = True
+                        
+                except Exception as e:
+                    logger.error(
+                        "Error processing item from webhook, falling back to full sync",
+                        object_id=object_id,
+                        error=str(e),
+                    )
+                    use_fallback = True
+
+        # 3. FALLBACK: Full sync
+        if use_fallback or not catalog_object_data:
+            logger.info(
+                "Using full sync fallback",
+                reason="webhook_missing_object" if not catalog_object_data else "optimization_failed",
+                has_catalog_object=bool(catalog_object_data),
+            )
+
+            existing_products = self.supabase_service.get_products_by_system("square", merchant_id)
+            db_source_ids = {p.source_id for p in existing_products if p.source_id}
+
+            all_items = []
+            cursor = None
+            
+            async with httpx.AsyncClient() as client:
+                while True:
+                    url = f"{base_url}/v2/catalog/list?types=ITEM"
+                    if cursor:
+                        url += f"&cursor={cursor}"
+                    
+                    response = await client.get(
+                        url, 
+                        headers={"Authorization": f"Bearer {access_token}"},
+                        timeout=30.0
+                    )
+                    
+                    if response.status_code != 200:
+                        logger.error("Square API Error", status=response.status_code, body=response.text)
+                        try:
+                            slack_service = get_slack_service()
+                            await slack_service.send_api_error_alert(
+                                error_message=f"Square API error: {response.status_code} - {response.text[:200]}",
+                                api_name="square",
+                                merchant_id=merchant_id,
+                                status_code=response.status_code,
+                            )
+                        except Exception as slack_error:
+                            logger.warning("Failed to send Slack alert", error=str(slack_error))
+                        break
+                        
+                    data = response.json()
+                    all_items.extend(data.get("objects", []))
+                    
+                    cursor = data.get("cursor")
+                    if not cursor:
+                        break
+
+            measurement_unit_ids: set = set()
+            for item in all_items:
+                item_data = item.get("item_data") or {}
+                variations = item_data.get("variations") or []
+                for var in variations:
+                    var_data = var.get("item_variation_data") or {}
+                    unit_id = var_data.get("measurement_unit_id")
+                    if unit_id:
+                        measurement_unit_ids.add(unit_id)
+
+            measurement_units_cache: Dict[str, dict] = {}
+            if measurement_unit_ids:
+                measurement_units_cache = await self._fetch_measurement_units(
+                    access_token=access_token,
+                    measurement_unit_ids=list(measurement_unit_ids),
+                    base_url=base_url,
+                )
+
+            api_source_ids = set()
+            processed_products = []
+
+            for item in all_items:
+                item_id = item.get("id")
+                api_source_ids.add(item_id)
+                
+                try:
+                    catalog_object = SquareCatalogObject(**item)
+                    normalized_variants = self.transformer.extract_variations_from_catalog_object(
+                        catalog_object, measurement_units_cache=measurement_units_cache
+                    )
+
+                    for normalized in normalized_variants:
+                        is_valid, errors = self.validate_normalized_product(normalized)
+                        
+                        product = Product(
+                            source_system="square",
+                            source_id=normalized.source_id,
+                            source_variant_id=normalized.source_variant_id,
+                            source_store_id=merchant_id,
+                            title=normalized.title,
+                            barcode=normalized.barcode,
+                            sku=normalized.sku,
+                            price=normalized.price,
+                            currency=normalized.currency,
+                            image_url=normalized.image_url,
+                            raw_data={"item_data": item},
+                            normalized_data=normalized.to_dict(),
+                            status="validated" if is_valid else "pending",
+                            validation_errors={"errors": errors} if errors else None,
+                        )
+
+                        saved, changed = self.supabase_service.create_or_update_product(product)
+                        processed_products.append(saved)
+
+                        if is_valid and changed and store_mapping_id:
+                            queue_item = self.supabase_service.add_to_sync_queue(
+                                product_id=saved.id,
+                                store_mapping_id=store_mapping_id,
+                                operation="update"
+                            )
+                            if not queue_item:
+                                logger.debug(
+                                    "Skipped duplicate queue item for update (fallback path)",
+                                    product_id=str(saved.id),
+                                )
+                except Exception as e:
+                    logger.error("Error processing item", item_id=item_id, error=str(e))
+
+            deleted_source_ids = db_source_ids - api_source_ids
+            for source_id in deleted_source_ids:
+                prods_to_mark = [p for p in existing_products if p.source_id == source_id]
+                for p in prods_to_mark:
+                    if store_mapping_id:
                         queue_item = self.supabase_service.add_to_sync_queue(
-                            product_id=saved.id,  # type: ignore
-                            store_mapping_id=store_mapping_id,  # type: ignore
-                            operation="update"
+                            product_id=p.id,
+                            store_mapping_id=store_mapping_id,
+                            operation="delete"
                         )
                         if not queue_item:
                             logger.debug(
-                                "Skipped duplicate queue item for update",
-                                product_id=str(saved.id),
+                                "Skipped duplicate queue item for delete (fallback path)",
+                                product_id=str(p.id),
                             )
-            except Exception as e:
-                logger.error("Error processing item", item_id=item_id, error=str(e))
 
-        # 5. Handle Deletions (Sync & Destroy)
-        # If it's in our DB but NOT in the API response, it was deleted in Square
-        deleted_source_ids = db_source_ids - api_source_ids
-        for source_id in deleted_source_ids:
-            prods_to_mark = [p for p in existing_products if p.source_id == source_id]
-            for p in prods_to_mark:
-                # 1. Update status in DB
-                self.supabase_service.update_product_status(p.id, "deleted")  # type: ignore
-                # 2. Tell ESL system to clear this tag
-                if store_mapping_id:
-                    queue_item = self.supabase_service.add_to_sync_queue(
-                        product_id=p.id,  # type: ignore
-                        store_mapping_id=store_mapping_id,  # type: ignore
-                        operation="delete"
-                    )
-                    if not queue_item:
-                        logger.debug(
-                            "Skipped duplicate queue item for delete",
-                            product_id=str(p.id),
-                        )
-
+            return {
+                "status": "success",
+                "updated": len(processed_products),
+                "deleted": len(deleted_source_ids),
+                "optimized": False,
+            }
+        
         return {
             "status": "success",
-            "updated": len(processed_products),
-            "deleted": len(deleted_source_ids)
+            "updated": 0,
+            "deleted": 0,
+            "optimized": False,
         }
 
     async def _handle_catalog_delete(
@@ -804,9 +1063,14 @@ class SquareIntegrationAdapter(BaseIntegrationAdapter):
                 "deleted_count": 0,
             }
 
-        # Find all products with this source_id
+        # Extract merchant_id for multi-tenant isolation
+        merchant_id = store_mapping.source_store_id if store_mapping else None
+        if not merchant_id:
+            merchant_id = self.extract_store_id(headers, payload)
+
+        # Find all products with this source_id (filtered by merchant for multi-tenant safety)
         products_to_delete = self.supabase_service.get_products_by_source_id(
-            "square", source_id
+            "square", source_id, source_store_id=merchant_id  # Multi-tenant isolation
         )
 
         if not products_to_delete:
