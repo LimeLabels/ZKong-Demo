@@ -7,7 +7,6 @@ import hmac
 import hashlib
 import base64
 import httpx
-import os
 import asyncio
 from typing import List, Dict, Any, Optional, Tuple
 from fastapi import Request, HTTPException, status
@@ -66,8 +65,7 @@ class SquareIntegrationAdapter(BaseIntegrationAdapter):
 
         if not settings.square_webhook_secret:
             logger.warning("SQUARE_WEBHOOK_SECRET not configured")
-            # For basic version, return True if no secret configured
-            return True
+            return False
 
         try:
             # Square uses HMAC SHA256 of (notification_url + payload)
@@ -625,10 +623,9 @@ class SquareIntegrationAdapter(BaseIntegrationAdapter):
         if store_mapping:
             store_mapping_id = store_mapping.id
             access_token = await self._ensure_valid_token(store_mapping)
-        
-        if not access_token:
-            access_token = os.getenv("SQUARE_ACCESS_TOKEN")
 
+        # Do not fall back to global SQUARE_ACCESS_TOKEN: multi-tenant isolation requires
+        # each request to use the token for the merchant from the webhook payload.
         if not access_token:
             try:
                 slack_service = get_slack_service()
@@ -1204,16 +1201,12 @@ class SquareIntegrationAdapter(BaseIntegrationAdapter):
         merchant_id = store_mapping.source_store_id  # Square merchant/location ID
         
         # Ensure valid token (auto-refresh if needed)
-        # This handles checking expiration and refreshing if needed
         access_token = await self._ensure_valid_token(store_mapping)
-        
-        # Fallback to env var if DB token is missing (and couldn't be refreshed)
-        if not access_token:
-            access_token = os.getenv("SQUARE_ACCESS_TOKEN")
+        # No global SQUARE_ACCESS_TOKEN fallback: use only the token for this store (multi-tenant safety)
 
         if not access_token:
             logger.warning(
-                "Square access token not found in store mapping metadata or environment",
+                "Square access token not found in store mapping metadata",
                 store_mapping_id=str(store_mapping.id) if store_mapping else None,
                 merchant_id=merchant_id,
             )

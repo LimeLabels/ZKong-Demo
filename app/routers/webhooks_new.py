@@ -76,16 +76,31 @@ async def handle_webhook(
         # Add other integrations' signature extraction here
 
         # Verify signature
-        # For Square, pass request URL for signature verification (Square doesn't send it in headers)
-        # For other integrations (Shopify, NCR), don't pass request_url
-        if signature:
-            if integration_name == "square":
-                request_url = str(request.url)
-                is_valid = adapter.verify_signature(body_bytes, signature, headers, request_url=request_url)
-            else:
-                # Shopify, NCR, etc. don't accept request_url parameter
-                is_valid = adapter.verify_signature(body_bytes, signature, headers)
-            
+        # Square: always require signature presence and validity (no bypass when header missing)
+        if integration_name == "square":
+            if not (signature and str(signature).strip()):
+                logger.warning(
+                    "Square webhook rejected: missing signature header",
+                    event_type=event_type,
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Missing webhook signature",
+                )
+            request_url = str(request.url)
+            is_valid = adapter.verify_signature(body_bytes, signature, headers, request_url=request_url)
+            if not is_valid:
+                logger.warning(
+                    "Invalid Square webhook signature",
+                    event_type=event_type,
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Invalid webhook signature",
+                )
+        elif signature:
+            # Shopify, NCR, etc. don't accept request_url parameter
+            is_valid = adapter.verify_signature(body_bytes, signature, headers)
             if not is_valid:
                 logger.warning(
                     "Invalid webhook signature",

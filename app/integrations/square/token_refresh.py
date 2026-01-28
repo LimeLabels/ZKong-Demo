@@ -3,16 +3,53 @@ Square OAuth token refresh service.
 Handles automatic refresh of expiring access tokens.
 """
 
+import asyncio
 import httpx
 import structlog
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, Dict, Any, Tuple
+from uuid import UUID
 
 from app.config import settings
 from app.services.supabase_service import SupabaseService
 from app.models.database import StoreMapping
 
 logger = structlog.get_logger()
+
+
+def _update_store_mapping_metadata_sync(
+    store_mapping_id: UUID,
+    token_updates: Dict[str, Any],
+    supabase_service: SupabaseService,
+) -> Optional[StoreMapping]:
+    """
+    Synchronous helper: re-fetch current metadata, merge token fields, write back.
+    Run via asyncio.to_thread to avoid blocking the event loop.
+    Re-fetching before write reduces the race window where we might overwrite
+    concurrent changes to other metadata keys (e.g. store name, timezone).
+    """
+    try:
+        row = (
+            supabase_service.client.table("store_mappings")
+            .select("metadata")
+            .eq("id", str(store_mapping_id))
+            .execute()
+        )
+        if not row.data or len(row.data) == 0:
+            return None
+        current = (row.data[0].get("metadata") or {}).copy()
+        current.update(token_updates)
+        supabase_service.client.table("store_mappings").update(
+            {"metadata": current}
+        ).eq("id", str(store_mapping_id)).execute()
+        return supabase_service.get_store_mapping_by_id(store_mapping_id)
+    except Exception as e:
+        logger.error(
+            "DB update failed in token refresh",
+            store_mapping_id=str(store_mapping_id),
+            error=str(e),
+        )
+        return None
 
 
 class SquareTokenRefreshService:
@@ -44,35 +81,30 @@ class SquareTokenRefreshService:
         threshold = threshold_days or self.refresh_threshold_days
 
         try:
-            # Parse ISO timestamp - Square returns ISO 8601 format strings (e.g., "2024-01-15T12:00:00Z")
-            # Handle "Z" suffix (UTC indicator)
-            expires_str = expires_at.replace("Z", "+00:00")
-            
-            # If no timezone info, assume UTC
-            if "+" not in expires_str and expires_str.count("-") < 3:
-                expires_str = expires_str + "+00:00"
-            
-            expires_datetime = datetime.fromisoformat(expires_str)
-            now = datetime.utcnow()
+            # Robust ISO 8601 parsing. Square uses strings like "2024-01-15T12:00:00Z".
+            # Normalize "Z" to "+00:00" for fromisoformat (Python < 3.11 needs this).
+            expires_str = expires_at.strip()
+            if expires_str.upper().endswith("Z"):
+                expires_str = expires_str[:-1] + "+00:00"
 
-            # Convert timezone-aware datetime to naive UTC for comparison
-            if expires_datetime.tzinfo is not None:
-                # Convert to UTC and remove timezone info
-                from datetime import timezone
-                expires_datetime = expires_datetime.astimezone(timezone.utc).replace(tzinfo=None)
+            expires_dt = datetime.fromisoformat(expires_str)
+            if expires_dt.tzinfo is None:
+                expires_dt = expires_dt.replace(tzinfo=timezone.utc)
+            else:
+                expires_dt = expires_dt.astimezone(timezone.utc)
 
-            # Calculate days until expiration
-            days_until_expiry = (expires_datetime - now).days
-
+            now = datetime.now(timezone.utc)
+            # Use total_seconds() for fractional days instead of .days (which truncates)
+            days_until_expiry = (expires_dt - now).total_seconds() / 86400.0
             is_expiring = days_until_expiry < threshold
+
             logger.debug(
                 "Token expiration check",
                 expires_at=expires_at,
-                days_until_expiry=days_until_expiry,
+                days_until_expiry=round(days_until_expiry, 2),
                 threshold_days=threshold,
                 is_expiring=is_expiring,
             )
-
             return is_expiring
         except Exception as e:
             logger.error(
@@ -199,6 +231,10 @@ class SquareTokenRefreshService:
         """
         Refresh token and update store mapping metadata.
 
+        DB update runs in a thread pool via asyncio.to_thread so the sync Supabase
+        client does not block the event loop. We re-fetch metadata right before
+        writing to reduce overwriting concurrent changes to other metadata keys.
+
         Args:
             store_mapping: Store mapping to refresh token for
 
@@ -206,40 +242,33 @@ class SquareTokenRefreshService:
             Tuple of (success: bool, updated_store_mapping: Optional[StoreMapping])
         """
         success, new_token_data = await self.refresh_token(store_mapping)
-
         if not success or not new_token_data:
             return False, None
 
-        # Update store mapping metadata
+        token_updates = {
+            "square_access_token": new_token_data["access_token"],
+            "square_refresh_token": new_token_data["refresh_token"],
+            "square_expires_at": new_token_data["expires_at"],
+            "square_token_refreshed_at": datetime.now(timezone.utc).isoformat(),
+        }
+
         try:
-            updated_metadata = store_mapping.metadata.copy() if store_mapping.metadata else {}
-            updated_metadata.update(
-                {
-                    "square_access_token": new_token_data["access_token"],
-                    "square_refresh_token": new_token_data["refresh_token"],
-                    "square_expires_at": new_token_data["expires_at"],
-                    "square_token_refreshed_at": datetime.utcnow().isoformat(),
-                }
+            # Run sync Supabase calls in a thread to avoid blocking the event loop.
+            # Helper re-fetches current metadata, merges token_updates, then writes.
+            updated_mapping = await asyncio.to_thread(
+                _update_store_mapping_metadata_sync,
+                store_mapping.id,
+                token_updates,
+                self.supabase_service,
             )
-
-            # Update in database
-            self.supabase_service.client.table("store_mappings").update(
-                {"metadata": updated_metadata}
-            ).eq("id", str(store_mapping.id)).execute()
-
-            # Return updated store mapping
-            updated_mapping = self.supabase_service.get_store_mapping_by_id(
-                store_mapping.id
-            )
-
-            logger.info(
-                "Store mapping updated with new token",
-                store_mapping_id=str(store_mapping.id),
-                merchant_id=store_mapping.source_store_id,
-            )
-
-            return True, updated_mapping
-
+            if updated_mapping:
+                logger.info(
+                    "Store mapping updated with new token",
+                    store_mapping_id=str(store_mapping.id),
+                    merchant_id=store_mapping.source_store_id,
+                )
+                return True, updated_mapping
+            return False, None
         except Exception as e:
             logger.error(
                 "Failed to update store mapping with new token",
