@@ -222,13 +222,13 @@ class ShopifyIntegrationAdapter(BaseIntegrationAdapter):
             saved_product, changed = self.supabase_service.create_or_update_product(product)
             created_products.append(saved_product)
 
-            # If valid and changed, add to sync queue
-            if is_valid and changed:
+            # If valid, add to sync queue
+            if is_valid:
                 queue_item = self.supabase_service.add_to_sync_queue(
                     product_id=saved_product.id,  # type: ignore
                     store_mapping_id=store_mapping.id,  # type: ignore
                     operation="create",
-                ) 
+                )
                 if queue_item:
                     logger.info(
                         "Product queued for sync",
@@ -299,7 +299,7 @@ class ShopifyIntegrationAdapter(BaseIntegrationAdapter):
             saved_product, changed = self.supabase_service.create_or_update_product(product)
             updated_products.append(saved_product)
 
-            if is_valid and changed:
+            if is_valid:
                 queue_item = self.supabase_service.add_to_sync_queue(
                     product_id=saved_product.id,  # type: ignore
                     store_mapping_id=store_mapping.id,  # type: ignore

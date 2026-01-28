@@ -490,8 +490,8 @@ class SquareIntegrationAdapter(BaseIntegrationAdapter):
                     else:
                         products_created += 1
                     
-                    # Add to sync queue if valid, changed, and not already synced to Hipoink
-                    if is_valid and changed and store_mapping_id:
+                    # Add to sync queue if valid and not already synced to Hipoink
+                    if is_valid and store_mapping_id:
                         # Check if product already has a Hipoink mapping for this store
                         existing_hipoink = self.supabase_service.get_hipoink_product_by_product_id(
                             saved.id,  # type: ignore
@@ -508,10 +508,10 @@ class SquareIntegrationAdapter(BaseIntegrationAdapter):
                         else:
                             try:
                                 queue_item = self.supabase_service.add_to_sync_queue(
-                                product_id=saved.id,  # type: ignore
-                                store_mapping_id=store_mapping_id,
-                                operation="create",  # Use "create" for initial sync
-                            )
+                                    product_id=saved.id,  # type: ignore
+                                    store_mapping_id=store_mapping_id,
+                                    operation="create",  # Use "create" for initial sync
+                                )
                                 if queue_item:
                                     queued_count += 1
                                 else:
