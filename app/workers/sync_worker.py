@@ -413,6 +413,8 @@ class SyncWorker:
                                 ounce_amount = weight * 16
                             elif weight_unit == "oz":
                                 ounce_amount = weight
+                            elif weight_unit == "g":
+                                ounce_amount = weight / 28.3495  
                         unit_amount = variant.get("inventory_quantity", 1)
                         break
 
