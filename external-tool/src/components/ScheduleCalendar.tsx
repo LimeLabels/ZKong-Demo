@@ -178,9 +178,10 @@ export function ScheduleCalendar() {
     const id = Array.from(selectedProductIds)[0]
     const product = products.find((p) => p.id === id)
     if (product && product.price != null) {
+      const p = product.price ?? 0
       setFormData((prev) => {
-        if (prev.originalPrice === product.price && prev.price === product.price) return prev
-        return { ...prev, originalPrice: product.price, price: product.price }
+        if (prev.originalPrice === p && prev.price === p) return prev
+        return { ...prev, originalPrice: p, price: p }
       })
     }
   }, [formData.platform, products, selectedProductIds])
