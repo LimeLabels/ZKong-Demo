@@ -118,7 +118,11 @@ class NCRSyncWorker:
             )
 
             # Get existing products from database for this store
-            existing_products = self.supabase_service.get_products_by_system("ncr")
+            # CRITICAL: Filter by source_store_id for multi-tenant isolation
+            existing_products = self.supabase_service.get_products_by_system(
+                "ncr", 
+                source_store_id=store_mapping.source_store_id
+            )
             existing_item_codes = {
                 p.source_id: p for p in existing_products if p.source_id
             }
@@ -185,6 +189,7 @@ class NCRSyncWorker:
                             source_system="ncr",
                             source_id=item_code,
                             source_variant_id=normalized_product.source_variant_id,
+                            source_store_id=store_mapping.source_store_id,  # CRITICAL: Set for multi-tenant isolation
                             title=normalized_product.title,
                             barcode=normalized_product.barcode,
                             sku=normalized_product.sku,
@@ -252,6 +257,9 @@ class NCRSyncWorker:
                             existing_product.image_url = normalized_product.image_url
                             existing_product.raw_data = ncr_item
                             existing_product.normalized_data = normalized_product.to_dict()
+                            # Ensure source_store_id is set (for products created before this fix)
+                            if not existing_product.source_store_id:
+                                existing_product.source_store_id = store_mapping.source_store_id
                             
                             updated_product, changed = self.supabase_service.create_or_update_product(existing_product)
                             
