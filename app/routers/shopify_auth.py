@@ -251,12 +251,12 @@ async def shopify_oauth_callback(
         if shopify_app_url:
             frontend_url = shopify_app_url
         else:
-        frontend_url = getattr(settings, "frontend_url", None) or getattr(
-            settings, "app_base_url", "http://localhost:3000"
-        )
-        # If app_base_url looks like backend (port 8000), use frontend default
-        if frontend_url.startswith("http://localhost:8000") or ":8000" in frontend_url:
-            frontend_url = "http://localhost:3000"
+            frontend_url = getattr(settings, "frontend_url", None) or getattr(
+                settings, "app_base_url", "http://localhost:3000"
+            )
+            # If app_base_url looks like backend (port 8000), use frontend default
+            if frontend_url.startswith("http://localhost:8000") or ":8000" in frontend_url:
+                frontend_url = "http://localhost:3000"
 
         redirect_url = f"{frontend_url}?shop={shop}&installed=true"
         if host:
