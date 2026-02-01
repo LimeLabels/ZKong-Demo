@@ -188,11 +188,11 @@ async def shopify_oauth_callback(
             ).eq("id", str(existing_mapping.id)).execute()
             
             mapping_id = str(existing_mapping.id)
-                logger.info(
+            logger.info(
                 "Updated Shopify store mapping with OAuth token",
-                    shop=shop,
+                shop=shop,
                 mapping_id=mapping_id,
-                )
+            )
         else:
             # Auto-create store mapping with OAuth token
             # Hipoink store code will be set during onboarding
