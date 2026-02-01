@@ -248,8 +248,18 @@ async def update_store_mapping(mapping_id: UUID, request: CreateStoreMappingRequ
                 detail=f"Store mapping not found: {mapping_id}",
             )
 
-        # Update mapping
+        # Update mapping - merge metadata instead of replacing
         update_data = request.dict(exclude_none=True)
+        
+        # Merge metadata if both exist
+        if "metadata" in update_data:
+            import copy
+            if existing.metadata:
+                merged_metadata = copy.deepcopy(existing.metadata)
+                merged_metadata.update(update_data["metadata"])
+                update_data["metadata"] = merged_metadata
+            # If existing has no metadata, use the new one as-is
+        
         result = (
             supabase_service.client.table("store_mappings")
             .update(update_data)

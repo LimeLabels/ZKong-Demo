@@ -79,12 +79,12 @@ async def shopify_oauth_initiate(
     if shopify_app_url:
         frontend_url = shopify_app_url
     else:
-        frontend_url = getattr(settings, "frontend_url", None) or getattr(
-            settings, "app_base_url", "http://localhost:3000"
-        )
-        # If app_base_url looks like backend (port 8000), use frontend default
-        if frontend_url.startswith("http://localhost:8000") or ":8000" in frontend_url:
-            frontend_url = "http://localhost:3000"
+    frontend_url = getattr(settings, "frontend_url", None) or getattr(
+        settings, "app_base_url", "http://localhost:3000"
+    )
+    # If app_base_url looks like backend (port 8000), use frontend default
+    if frontend_url.startswith("http://localhost:8000") or ":8000" in frontend_url:
+        frontend_url = "http://localhost:3000"
     
     redirect_uri = f"{frontend_url}/auth/shopify/callback"
     auth_url = (
@@ -188,11 +188,11 @@ async def shopify_oauth_callback(
             ).eq("id", str(existing_mapping.id)).execute()
             
             mapping_id = str(existing_mapping.id)
-            logger.info(
+                logger.info(
                 "Updated Shopify store mapping with OAuth token",
-                shop=shop,
+                    shop=shop,
                 mapping_id=mapping_id,
-            )
+                )
         else:
             # Auto-create store mapping with OAuth token
             # Hipoink store code will be set during onboarding
@@ -251,12 +251,12 @@ async def shopify_oauth_callback(
         if shopify_app_url:
             frontend_url = shopify_app_url
         else:
-            frontend_url = getattr(settings, "frontend_url", None) or getattr(
-                settings, "app_base_url", "http://localhost:3000"
-            )
-            # If app_base_url looks like backend (port 8000), use frontend default
-            if frontend_url.startswith("http://localhost:8000") or ":8000" in frontend_url:
-                frontend_url = "http://localhost:3000"
+        frontend_url = getattr(settings, "frontend_url", None) or getattr(
+            settings, "app_base_url", "http://localhost:3000"
+        )
+        # If app_base_url looks like backend (port 8000), use frontend default
+        if frontend_url.startswith("http://localhost:8000") or ":8000" in frontend_url:
+            frontend_url = "http://localhost:3000"
 
         redirect_url = f"{frontend_url}?shop={shop}&installed=true"
         if host:

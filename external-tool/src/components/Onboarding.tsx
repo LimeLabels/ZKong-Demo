@@ -19,6 +19,7 @@ import { apiClient } from '../services/api'
 export function Onboarding() {
   const [hipoinkStoreCode, setHipoinkStoreCode] = useState('')
   const [posSystem, setPosSystem] = useState<string>('')
+  const [timezone, setTimezone] = useState<string>('America/Chicago') // Default to Central Time
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [success, setSuccess] = useState(false)
@@ -63,6 +64,30 @@ export function Onboarding() {
       await apiClient.post('/api/auth/connect-store', {
         store_mapping_id: storeMappingId,
       })
+
+      // If NCR, update timezone in store mapping metadata
+      if (posSystem === 'ncr' && timezone) {
+        try {
+          // Get current store mapping to merge metadata
+          const mappingResponse = await apiClient.get(`/api/store-mappings/${storeMappingId}`)
+          const currentMetadata = mappingResponse.data.metadata || {}
+          
+          // Update timezone in metadata
+          await apiClient.put(`/api/store-mappings/${storeMappingId}`, {
+            source_system: posSystem,
+            source_store_id: findResponse.data.source_store_id,
+            hipoink_store_code: hipoinkStoreCode.trim(),
+            is_active: true,
+            metadata: {
+              ...currentMetadata,
+              timezone: timezone,
+            },
+          })
+        } catch (err: any) {
+          console.error('Error updating timezone:', err)
+          // Don't fail the connection if timezone update fails
+        }
+      }
 
       setSuccess(true)
       // Reload page after a short delay to refresh user data
@@ -128,6 +153,25 @@ export function Onboarding() {
             disabled={submitting}
             helpText="Select the point-of-sale system you're using"
           />
+
+          {posSystem === 'ncr' && (
+            <Select
+              label="Timezone"
+              options={[
+                { label: 'Central Time (America/Chicago)', value: 'America/Chicago' },
+                { label: 'Eastern Time (America/New_York)', value: 'America/New_York' },
+                { label: 'Mountain Time (America/Denver)', value: 'America/Denver' },
+                { label: 'Pacific Time (America/Los_Angeles)', value: 'America/Los_Angeles' },
+                { label: 'Alaska Time (America/Anchorage)', value: 'America/Anchorage' },
+                { label: 'Hawaii Time (Pacific/Honolulu)', value: 'Pacific/Honolulu' },
+                { label: 'UTC', value: 'UTC' },
+              ]}
+              value={timezone}
+              onChange={setTimezone}
+              disabled={submitting}
+              helpText="Select your store's timezone for accurate schedule timing"
+            />
+          )}
 
           {error && (
             <Banner tone="critical" title="Error">
