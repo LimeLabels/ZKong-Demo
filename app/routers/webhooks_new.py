@@ -101,25 +101,30 @@ async def handle_webhook(
                     detail="Invalid webhook signature",
                 )
         elif integration_name == "clover":
-            if not (signature and str(signature).strip()):
-                logger.warning(
-                    "Clover webhook rejected: missing X-Clover-Auth header",
-                    event_type=event_type,
-                )
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="Missing X-Clover-Auth header",
-                )
-            is_valid = adapter.verify_signature(body_bytes, signature, headers)
-            if not is_valid:
-                logger.warning(
-                    "Invalid Clover webhook auth",
-                    event_type=event_type,
-                )
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="Invalid webhook signature",
-                )
+            # Clover sends a one-time verification POST with only {"verificationCode": "..."}
+            # BEFORE the auth code exists. Allow that specific request through without X-Clover-Auth.
+            if b"verificationCode" in body_bytes and b"merchants" not in body_bytes:
+                logger.info("Allowing Clover verification POST without auth code")
+            else:
+                if not (signature and str(signature).strip()):
+                    logger.warning(
+                        "Clover webhook rejected: missing X-Clover-Auth header",
+                        event_type=event_type,
+                    )
+                    raise HTTPException(
+                        status_code=status.HTTP_401_UNAUTHORIZED,
+                        detail="Missing X-Clover-Auth header",
+                    )
+                is_valid = adapter.verify_signature(body_bytes, signature, headers)
+                if not is_valid:
+                    logger.warning(
+                        "Invalid Clover webhook auth",
+                        event_type=event_type,
+                    )
+                    raise HTTPException(
+                        status_code=status.HTTP_401_UNAUTHORIZED,
+                        detail="Invalid webhook signature",
+                    )
         elif signature:
             # Shopify, NCR, etc. don't accept request_url parameter
             is_valid = adapter.verify_signature(body_bytes, signature, headers)
