@@ -50,6 +50,12 @@ class Settings(BaseSettings):
     square_application_secret: str = ""  # Square Application Secret
     square_environment: str = "production"  # "sandbox" or "production"
 
+    # Clover Configuration
+    clover_webhook_auth_code: str = ""  # X-Clover-Auth value from Dashboard (static auth code, not HMAC)
+    clover_environment: str = "sandbox"  # "sandbox" | "production"
+    clover_app_id: str = ""  # Phase 2 OAuth
+    clover_app_secret: str = ""  # Phase 2 OAuth
+
     # Application Configuration
     app_environment: str = "development"
     log_level: str = "INFO"

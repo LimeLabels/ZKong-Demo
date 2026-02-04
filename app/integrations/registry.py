@@ -62,6 +62,20 @@ class IntegrationRegistry:
         except Exception as e:
             logger.error("Error loading Square integration", error=str(e))
 
+        # Try to load Clover integration
+        try:
+            from app.integrations.clover.adapter import CloverIntegrationAdapter
+
+            clover_adapter = CloverIntegrationAdapter()
+            self.register(clover_adapter)
+            logger.info(
+                "Loaded Clover integration", adapter_name=clover_adapter.get_name()
+            )
+        except ImportError as e:
+            logger.warning("Could not load Clover integration", error=str(e))
+        except Exception as e:
+            logger.error("Error loading Clover integration", error=str(e))
+
     def register(self, adapter: BaseIntegrationAdapter):
         """
         Register an integration adapter.
