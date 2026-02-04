@@ -81,11 +81,11 @@ async def shutdown_event():
 
 @app.get("/")
 async def root():
-    """Root endpoint."""
+    """Root endpoint - also serves as a simple health check."""
     return {
+        "status": "healthy",
         "service": "Hipoink ESL Integration Middleware",
         "version": "1.1.0",
-        "status": "running",
         "integrations": integration_registry.list_available(),
     }
 
@@ -93,7 +93,16 @@ async def root():
 @app.get("/health")
 async def health():
     """Health check endpoint."""
-    return {"status": "healthy"}
+    return {
+        "status": "healthy",
+        "integrations": integration_registry.list_available(),
+    }
+
+
+@app.get("/healthz")
+async def healthz():
+    """Alternative health check endpoint (Kubernetes-style)."""
+    return {"status": "ok"}
 
 
 if __name__ == "__main__":
