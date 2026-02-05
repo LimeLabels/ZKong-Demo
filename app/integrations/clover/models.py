@@ -43,8 +43,8 @@ class CloverItem(BaseModel):
     code: Optional[str] = None  # Alternate/barcode field in some responses
     alternateName: Optional[str] = None
     priceType: Optional[str] = None
-    defaultTaxRates: Optional[List[Dict[str, Any]]] = None
-    cost: Optional[int] = None
+    defaultTaxRates: Optional[List[Dict[str, Any]]] = None 
+    cost: Optional[int] = None #cost
 
     class Config:
         extra = "allow"
