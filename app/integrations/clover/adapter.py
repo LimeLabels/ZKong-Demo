@@ -149,13 +149,25 @@ class CloverIntegrationAdapter(BaseIntegrationAdapter):
         return access_token
 
     async def sync_products_via_polling(
-        self, store_mapping: StoreMapping
+        self,
+        store_mapping: StoreMapping,
+        *,
+        skip_token_refresh: bool = False,
     ) -> Dict[str, Any]:
         """
         Main polling sync. Called by worker for each active Clover store mapping.
         Incremental updates via modifiedTime filter; periodic ghost-item cleanup.
-        Uses on-demand token refresh so the token is valid before every sync.
-        Returns: {"items_processed": int, "items_deleted": int, "errors": list}
+        Uses on-demand token refresh so the token is valid before every sync,
+        unless skip_token_refresh=True (e.g. initial sync right after OAuth).
+
+        Args:
+            store_mapping: The Clover store mapping to sync.
+            skip_token_refresh: If True, use the token from metadata as-is and do not
+                call the refresh endpoint. Use only when the token was just issued
+                (e.g. initial sync after OAuth callback) to avoid cross-process refresh races.
+
+        Returns:
+            {"items_processed": int, "items_deleted": int, "errors": list}
         """
         metadata = dict(store_mapping.metadata or {})  # copy so we don't mutate the model
         merchant_id = store_mapping.source_store_id
@@ -171,7 +183,13 @@ class CloverIntegrationAdapter(BaseIntegrationAdapter):
             results["errors"].append("Invalid store mapping (no id)")
             return results
 
-        access_token = await self._ensure_valid_token(store_mapping)
+        if skip_token_refresh:
+            # Token was just issued (e.g. OAuth callback); use it as-is to avoid
+            # racing with the worker's refresh in another process.
+            access_token = (store_mapping.metadata or {}).get("clover_access_token")
+        else:
+            access_token = await self._ensure_valid_token(store_mapping)
+
         if not access_token:
             results["errors"].append("No valid access token")
             return results

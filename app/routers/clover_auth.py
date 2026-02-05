@@ -310,7 +310,9 @@ async def _trigger_clover_initial_sync(store_mapping_id: Union[UUID, str]) -> No
         return
     try:
         adapter = CloverIntegrationAdapter()
-        await adapter.sync_products_via_polling(store_mapping)
+        # Skip token refresh: token was just issued by OAuth; only the worker should refresh
+        # to avoid cross-process race with single-use Clover refresh tokens.
+        await adapter.sync_products_via_polling(store_mapping, skip_token_refresh=True)
         logger.info(
             "Clover initial sync completed",
             merchant_id=store_mapping.source_store_id,
