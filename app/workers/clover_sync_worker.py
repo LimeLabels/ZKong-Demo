@@ -27,7 +27,7 @@ class CloverSyncWorker:
 
     async def start(self) -> None:
         self.running = True
-        logger.info("Clover sync worker started")
+        logger.info("Clover sync worker started", poll_interval_seconds=getattr(settings, "clover_sync_interval_seconds", 300))
 
         while self.running:
             try:
