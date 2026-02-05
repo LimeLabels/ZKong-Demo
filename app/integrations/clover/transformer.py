@@ -22,21 +22,32 @@ class CloverTransformer:
         """
         Convert a single Clover item to NormalizedProduct.
 
+        Clover prices and cost are in CENTS; converted to dollars for NormalizedProduct.
+
         Args:
-            raw_item: Raw item dict from Clover API (id, name, price in cents, sku/code).
+            raw_item: Raw item dict from Clover API (id, name, price in cents, sku/code, cost, priceType, modifiedTime).
 
         Returns:
-            Single NormalizedProduct.
+            Single NormalizedProduct. unit_cost, price_type, modified_time in extra_data for gas-station use.
         """
-        item_id = raw_item.get("id") or ""
+        item_id = str(raw_item.get("id") or "")  # ensure string for DB
         name = raw_item.get("name") or "Untitled Product"
-        price_cents = raw_item.get("price")
-        if price_cents is None:
-            price_cents = 0
-        price_dollars = float(price_cents) / 100.0
+        try:
+            price_cents = raw_item.get("price")
+            price_dollars = float(price_cents or 0) / 100.0
+        except (TypeError, ValueError):
+            price_dollars = 0.0
+        try:
+            cost_cents = raw_item.get("cost")
+            if cost_cents is not None and cost_cents != "":
+                unit_cost_dollars = float(cost_cents) / 100.0
+            else:
+                unit_cost_dollars = None
+        except (TypeError, ValueError):
+            unit_cost_dollars = None
         sku = raw_item.get("sku")
         code = raw_item.get("code")  # Clover sometimes uses code for barcode
-        barcode = sku or code
+        barcode = sku or code or raw_item.get("upc")
         if not barcode and raw_item.get("alternateName"):
             barcode = raw_item.get("alternateName")
 
@@ -49,6 +60,9 @@ class CloverTransformer:
             price=price_dollars,
             currency="USD",
             image_url=None,
+            unit_cost=unit_cost_dollars,
+            price_type=raw_item.get("priceType"),
+            modified_time=raw_item.get("modifiedTime"),
         )
 
     @staticmethod

@@ -2,9 +2,11 @@
 Clover integration adapter.
 Implements BaseIntegrationAdapter for Clover webhooks and item sync.
 Webhook auth: X-Clover-Auth static comparison (no body HMAC).
+Polling sync: sync_products_via_polling() for incremental + ghost-item cleanup.
 """
 
 import secrets
+import time
 from typing import List, Dict, Any, Optional, Tuple
 from uuid import UUID
 
@@ -23,7 +25,7 @@ from app.integrations.clover.api_client import CloverAPIClient, CloverAPIError
 from app.config import settings
 from app.services.supabase_service import SupabaseService
 from app.services.slack_service import get_slack_service
-from app.models.database import Product
+from app.models.database import Product, StoreMapping
 
 logger = structlog.get_logger()
 
@@ -91,6 +93,195 @@ class CloverIntegrationAdapter(BaseIntegrationAdapter):
 
     def get_supported_events(self) -> List[str]:
         return ["inventory"]
+
+    def _hours_since_last_cleanup(self, metadata: Dict[str, Any]) -> float:
+        """Hours since clover_last_cleanup_time (ms). Returns 24+ if never run."""
+        last = metadata.get("clover_last_cleanup_time") or 0
+        if last <= 0:
+            return 24.0
+        return (time.time() * 1000 - last) / (1000 * 3600)
+
+    async def sync_products_via_polling(
+        self, store_mapping: StoreMapping
+    ) -> Dict[str, Any]:
+        """
+        Main polling sync. Called by worker for each active Clover store mapping.
+        Incremental updates via modifiedTime filter; periodic ghost-item cleanup.
+        Returns: {"items_processed": int, "items_deleted": int, "errors": list}
+        """
+        metadata = dict(store_mapping.metadata or {})  # copy so we don't mutate the model
+        access_token = metadata.get("clover_access_token")
+        merchant_id = store_mapping.source_store_id
+        last_sync_time = metadata.get("clover_last_sync_time", 0)
+        poll_count = metadata.get("clover_poll_count", 0)
+        results: Dict[str, Any] = {
+            "items_processed": 0,
+            "items_deleted": 0,
+            "errors": [],
+        }
+        store_mapping_id = store_mapping.id
+        if not store_mapping_id:
+            results["errors"].append("Invalid store mapping (no id)")
+            return results
+        if not access_token:
+            results["errors"].append("No access token")
+            return results
+
+        client = CloverAPIClient(access_token=access_token)
+        try:
+            # --- STEP A: Incremental updates (modifiedTime >= last_sync_time) ---
+            items = await client.list_items_modified_since(
+                merchant_id=merchant_id,
+                modified_since=last_sync_time,
+            )
+            for item in items:
+                if item.get("deleted") is True or item.get("hidden") is True:
+                    await self._handle_item_deletion(item, store_mapping)
+                    results["items_deleted"] += 1
+                    continue
+                try:
+                    normalized_list = self.transform_product(item)
+                    if not normalized_list:
+                        continue
+                    normalized = normalized_list[0]
+                    is_valid, validation_errors = self.validate_normalized_product(
+                        normalized
+                    )
+                    product = Product(
+                        source_system="clover",
+                        source_id=normalized.source_id,
+                        source_variant_id=normalized.source_variant_id,
+                        source_store_id=merchant_id,
+                        title=normalized.title,
+                        barcode=normalized.barcode,
+                        sku=normalized.sku,
+                        price=normalized.price,
+                        currency=normalized.currency,
+                        image_url=normalized.image_url,
+                        raw_data=item,
+                        normalized_data=normalized.to_dict(),
+                        status="validated" if is_valid else "pending",
+                        validation_errors=(
+                            {"errors": validation_errors}
+                            if validation_errors
+                            else None
+                        ),
+                    )
+                    saved, changed = self.supabase_service.create_or_update_product(
+                        product
+                    )
+                    results["items_processed"] += 1
+                    if is_valid and saved.id:
+                        existing_hipoink = (
+                            self.supabase_service.get_hipoink_product_by_product_id(
+                                saved.id,
+                                store_mapping_id,
+                            )
+                        )
+                        # Queue if: new product OR product data changed (so price updates sync to ESL)
+                        if changed or not existing_hipoink:
+                            self.supabase_service.add_to_sync_queue(
+                                product_id=saved.id,
+                                store_mapping_id=store_mapping_id,
+                                operation="update" if existing_hipoink else "create",
+                            )
+                except Exception as e:
+                    logger.exception(
+                        "Error processing Clover item in polling",
+                        item_id=item.get("id"),
+                        error=str(e),
+                    )
+                    results["errors"].append(
+                        {"item_id": item.get("id"), "message": str(e)}
+                    )
+
+            # --- STEP B: Ghost item cleanup (every 10th poll OR every 24 hours) ---
+            cleanup_interval_hours = getattr(
+                settings,
+                "clover_cleanup_interval_hours",
+                24,
+            )
+            should_run_cleanup = (poll_count % 10 == 0) or (
+                self._hours_since_last_cleanup(metadata) >= cleanup_interval_hours
+            )
+            if should_run_cleanup:
+                deleted_count = await self._cleanup_ghost_items(
+                    merchant_id, store_mapping, client
+                )
+                results["items_deleted"] += deleted_count
+                metadata["clover_last_cleanup_time"] = int(time.time() * 1000)
+
+            # --- STEP C: Update metadata ---
+            metadata["clover_last_sync_time"] = int(time.time() * 1000)
+            metadata["clover_poll_count"] = poll_count + 1
+            self.supabase_service.update_store_mapping_metadata(
+                store_mapping_id, metadata
+            )
+        finally:
+            await client.close()
+
+        return results
+
+    async def _handle_item_deletion(
+        self, item: Dict[str, Any], store_mapping: StoreMapping
+    ) -> None:
+        """Mark item as deleted in DB and queue for ESL removal (deleted/hidden in Clover)."""
+        item_id = item.get("id")
+        if not item_id:
+            return
+        await self._mark_product_deleted(str(item_id), store_mapping)
+
+    async def _mark_product_deleted(
+        self, source_id: str, store_mapping: StoreMapping
+    ) -> None:
+        """Mark product(s) with this source_id as deleted and queue delete for ESL."""
+        store_mapping_id = store_mapping.id
+        merchant_id = store_mapping.source_store_id
+        if not store_mapping_id:
+            return
+        products_to_delete = self.supabase_service.get_products_by_source_id(
+            "clover",
+            source_id,
+            source_store_id=merchant_id,
+        )
+        for product in products_to_delete:
+            if product.id and product.status != "deleted":
+                self.supabase_service.update_product_status(product.id, "deleted")
+                self.supabase_service.add_to_sync_queue(
+                    product_id=product.id,
+                    store_mapping_id=store_mapping_id,
+                    operation="delete",
+                )
+
+    async def _cleanup_ghost_items(
+        self,
+        merchant_id: str,
+        store_mapping: StoreMapping,
+        api_client: CloverAPIClient,
+    ) -> int:
+        """
+        Items in our DB but not in Clover = deleted in Clover (ghost items).
+        Mark them deleted and queue for ESL removal.
+        """
+        clover_ids = set(
+            await api_client.list_all_item_ids(merchant_id=merchant_id)
+        )
+        our_products = self.supabase_service.get_products_by_system(
+            "clover",
+            source_store_id=merchant_id,
+            exclude_deleted=True,
+        )
+        our_ids = {p.source_id for p in our_products}
+        ghost_ids = our_ids - clover_ids
+        for ghost_id in ghost_ids:
+            await self._mark_product_deleted(ghost_id, store_mapping)
+        if ghost_ids:
+            logger.info(
+                "Clover ghost item cleanup completed",
+                merchant_id=merchant_id,
+                ghost_items_found=len(ghost_ids),
+            )
+        return len(ghost_ids)
 
     async def handle_webhook(
         self,
@@ -231,11 +422,11 @@ class CloverIntegrationAdapter(BaseIntegrationAdapter):
                                     store_mapping_id,
                                 )
                             )
-                            if not existing_hipoink:
+                            if changed or not existing_hipoink:
                                 self.supabase_service.add_to_sync_queue(
                                     product_id=saved.id,
                                     store_mapping_id=store_mapping_id,
-                                    operation="update" if changed else "create",
+                                    operation="update" if existing_hipoink else "create",
                                 )
                 finally:
                     await client.close()
@@ -347,11 +538,11 @@ class CloverIntegrationAdapter(BaseIntegrationAdapter):
                             store_mapping_id,
                         )
                     )
-                    if not existing_hipoink:
+                    if changed or not existing_hipoink:
                         q = self.supabase_service.add_to_sync_queue(
                             product_id=saved.id,
                             store_mapping_id=store_mapping_id,
-                            operation="create",
+                            operation="update" if existing_hipoink else "create",
                         )
                         if q:
                             queued_count += 1

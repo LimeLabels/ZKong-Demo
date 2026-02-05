@@ -1,8 +1,10 @@
 """
 Clover REST API client for inventory items.
 Uses limit/offset pagination. Base URL from clover_environment (sandbox vs production).
+Supports list_items, list_items_modified_since (polling), and list_all_item_ids (ghost cleanup).
 """
 
+import asyncio
 import httpx
 import structlog
 from typing import Dict, Any, Optional, List
@@ -132,7 +134,6 @@ class CloverAPIClient:
 
             # Rate limiting: small delay between pages
             if offset > 0:
-                import asyncio
                 await asyncio.sleep(PAGINATION_DELAY_SECONDS)
 
         logger.info(
@@ -189,3 +190,159 @@ class CloverAPIClient:
             )
 
         return response.json()
+
+    async def list_items_modified_since(
+        self,
+        merchant_id: str,
+        modified_since: int,
+        limit: int = DEFAULT_LIMIT,
+    ) -> List[Dict[str, Any]]:
+        """
+        Fetch items modified since timestamp (incremental sync for polling).
+
+        GET /v3/merchants/{mId}/items?filter=modifiedTime>={timestamp}&limit=100&offset=0
+
+        Args:
+            merchant_id: Clover merchant ID (mId).
+            modified_since: Unix timestamp in MILLISECONDS; items with modifiedTime >= this are returned.
+            limit: Page size (default 100).
+
+        Returns:
+            List of item dicts (raw API shape). First run with modified_since=0 returns all items.
+        """
+        all_items: List[Dict[str, Any]] = []
+        offset = 0
+        client = await self._get_client()
+
+        while True:
+            url = f"{self.base_url}/v3/merchants/{merchant_id}/items"
+            params = {
+                "filter": f"modifiedTime>={modified_since}",
+                "limit": limit,
+                "offset": offset,
+            }
+            try:
+                response = await client.get(
+                    url,
+                    headers=self._headers(),
+                    params=params,
+                )
+            except httpx.RequestError as e:
+                logger.error(
+                    "Clover API list_items_modified_since request failed",
+                    merchant_id=merchant_id,
+                    offset=offset,
+                    error=str(e),
+                )
+                raise CloverAPIError(0, str(e)) from e
+
+            if response.status_code != 200:
+                logger.error(
+                    "Clover API error list_items_modified_since",
+                    status_code=response.status_code,
+                    body=response.text[:500],
+                    merchant_id=merchant_id,
+                )
+                raise CloverAPIError(
+                    response.status_code,
+                    f"GET items (modified since) failed: {response.status_code}",
+                    body=response.text,
+                )
+
+            data = response.json()
+            if isinstance(data, list):
+                items = data
+            elif isinstance(data, dict) and "elements" in data:
+                items = data.get("elements", [])
+            else:
+                items = data if isinstance(data, list) else []
+
+            all_items.extend(items)
+            if len(items) < limit:
+                break
+            offset += limit
+            if offset > 0:
+                await asyncio.sleep(PAGINATION_DELAY_SECONDS)
+
+        logger.debug(
+            "Clover list_items_modified_since completed",
+            merchant_id=merchant_id,
+            modified_since=modified_since,
+            total_items=len(all_items),
+        )
+        return all_items
+
+    async def list_all_item_ids(self, merchant_id: str) -> List[str]:
+        """
+        Fetch only item IDs for ghost-item cleanup (lightweight).
+
+        GET /v3/merchants/{mId}/items with minimal payload.
+        If the API does not support sparse fields, we still paginate and collect ids.
+
+        Args:
+            merchant_id: Clover merchant ID (mId).
+
+        Returns:
+            List of Clover item ID strings.
+        """
+        all_ids: List[str] = []
+        offset = 0
+        client = await self._get_client()
+
+        while True:
+            url = f"{self.base_url}/v3/merchants/{merchant_id}/items"
+            params = {"limit": DEFAULT_LIMIT, "offset": offset}
+            try:
+                response = await client.get(
+                    url,
+                    headers=self._headers(),
+                    params=params,
+                )
+            except httpx.RequestError as e:
+                logger.error(
+                    "Clover API list_all_item_ids request failed",
+                    merchant_id=merchant_id,
+                    offset=offset,
+                    error=str(e),
+                )
+                raise CloverAPIError(0, str(e)) from e
+
+            if response.status_code != 200:
+                logger.error(
+                    "Clover API error list_all_item_ids",
+                    status_code=response.status_code,
+                    body=response.text[:500],
+                    merchant_id=merchant_id,
+                )
+                raise CloverAPIError(
+                    response.status_code,
+                    f"GET items (ids) failed: {response.status_code}",
+                    body=response.text,
+                )
+
+            data = response.json()
+            if isinstance(data, list):
+                items = data
+            elif isinstance(data, dict) and "elements" in data:
+                items = data.get("elements", [])
+            else:
+                items = data if isinstance(data, list) else []
+
+            for item in items:
+                if isinstance(item, dict) and item.get("id"):
+                    all_ids.append(str(item["id"]))
+                elif isinstance(item, str):
+                    all_ids.append(item)
+
+            if len(items) < DEFAULT_LIMIT:
+                break
+            offset += DEFAULT_LIMIT
+            if offset > 0:
+                await asyncio.sleep(PAGINATION_DELAY_SECONDS)
+
+        logger.debug(
+            "Clover list_all_item_ids completed",
+            merchant_id=merchant_id,
+            total_ids=len(all_ids),
+        )
+        return all_ids

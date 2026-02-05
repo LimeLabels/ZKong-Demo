@@ -55,6 +55,10 @@ class Settings(BaseSettings):
     clover_environment: str = "sandbox"  # "sandbox" | "production"
     clover_app_id: str = ""  # Phase 2 OAuth
     clover_app_secret: str = ""  # Phase 2 OAuth
+    # Clover Polling (sync worker)
+    clover_sync_interval_seconds: int = 300  # Poll every 5 minutes
+    clover_sync_enabled: bool = True
+    clover_cleanup_interval_hours: int = 24  # Ghost-item cleanup every 24 hours
 
     # Application Configuration
     app_environment: str = "development"
