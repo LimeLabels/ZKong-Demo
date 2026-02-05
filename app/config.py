@@ -27,7 +27,7 @@ class Settings(BaseSettings):
     shopify_api_key: str = ""  # Shopify app API key (for OAuth)
     shopify_api_secret: str = ""  # Shopify app API secret (for OAuth)
     app_base_url: str = (
-        "http://localhost:8000"  # Base URL for OAuth redirects (backend)
+        "http://localhost:8000"  # Backend base URL; OAuth redirects (Square, Clover) use this
     )
     frontend_url: str = (
         "http://localhost:3000"  # Frontend app URL (must match App URL in Shopify)
@@ -52,9 +52,9 @@ class Settings(BaseSettings):
 
     # Clover Configuration
     clover_webhook_auth_code: str = ""  # X-Clover-Auth value from Dashboard (static auth code, not HMAC)
-    clover_environment: str = "sandbox"  # "sandbox" | "production"
-    clover_app_id: str = ""  # Phase 2 OAuth
-    clover_app_secret: str = ""  # Phase 2 OAuth
+    clover_environment: str = "sandbox"  # "sandbox" | "production" (authorize/token/refresh URLs)
+    clover_app_id: str = ""  # OAuth App ID (Client ID); required for /auth/clover
+    clover_app_secret: str = ""  # OAuth App Secret (Client Secret); used only for token exchange, NOT for refresh
     # Clover Polling (sync worker)
     clover_sync_interval_seconds: int = 300  # Poll every 5 minutes
     clover_sync_enabled: bool = True

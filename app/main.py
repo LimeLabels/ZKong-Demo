@@ -12,6 +12,7 @@ from app.routers import (
     webhooks_new,
     shopify_auth,
     square_auth,
+    clover_auth,
     price_adjustments,
     products,
     ncr_test,
@@ -52,6 +53,7 @@ app.include_router(shopify_auth.router)  # Shopify OAuth endpoints
 app.include_router(shopify_auth.api_router)  # Shopify API auth endpoints
 app.include_router(square_auth.router)  # Square OAuth endpoints
 app.include_router(square_auth.api_router)  # Square API auth endpoints
+app.include_router(clover_auth.router)  # Clover OAuth endpoints
 app.include_router(price_adjustments.router)  # Time-based price adjustment schedules
 app.include_router(products.router)  # Product search endpoints
 app.include_router(ncr_test.router)  # NCR integration test endpoints
