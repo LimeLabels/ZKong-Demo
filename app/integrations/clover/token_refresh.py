@@ -23,7 +23,12 @@ CLOVER_REFRESH_URL_SANDBOX = "https://apisandbox.dev.clover.com/oauth/v2/refresh
 CLOVER_REFRESH_URL_PRODUCTION = "https://api.clover.com/oauth/v2/refresh"
 
 # Refresh if access token expires within this many seconds (24 hours)
+# Used by the token refresh scheduler (runs daily).
 REFRESH_THRESHOLD_SECONDS = 24 * 3600
+
+# Threshold for on-demand refresh in the adapter (before each sync).
+# Refresh when token expires within 15 minutes so sync never uses an expired token.
+ON_DEMAND_REFRESH_THRESHOLD_SECONDS = 15 * 60
 
 # Retry: max attempts and delay between attempts (seconds)
 MAX_REFRESH_ATTEMPTS = 3

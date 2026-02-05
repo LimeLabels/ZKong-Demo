@@ -22,6 +22,10 @@ from app.integrations.base import (
 from app.integrations.clover.models import CloverWebhookPayload
 from app.integrations.clover.transformer import CloverTransformer
 from app.integrations.clover.api_client import CloverAPIClient, CloverAPIError
+from app.integrations.clover.token_refresh import (
+    CloverTokenRefreshService,
+    ON_DEMAND_REFRESH_THRESHOLD_SECONDS,
+)
 from app.config import settings
 from app.services.supabase_service import SupabaseService
 from app.services.slack_service import get_slack_service
@@ -101,16 +105,48 @@ class CloverIntegrationAdapter(BaseIntegrationAdapter):
             return 24.0
         return (time.time() * 1000 - last) / (1000 * 3600)
 
+    async def _ensure_valid_token(self, store_mapping: StoreMapping) -> Optional[str]:
+        """
+        Return a valid access token for API calls, refreshing if expiring within 15 minutes.
+        Used before each sync to avoid using an expired token (on-demand refresh).
+        If refresh fails, returns the existing token so the API call can run and surface a real error.
+        """
+        if not store_mapping.metadata:
+            return None
+        access_token = store_mapping.metadata.get("clover_access_token")
+        expiration = store_mapping.metadata.get("clover_access_token_expiration")
+        if not access_token:
+            return None
+
+        refresh_service = CloverTokenRefreshService()
+        if refresh_service.is_token_expiring_soon(
+            expiration, threshold_seconds=ON_DEMAND_REFRESH_THRESHOLD_SECONDS
+        ):
+            logger.info(
+                "Clover token expiring soon, refreshing before API call",
+                merchant_id=store_mapping.source_store_id,
+            )
+            success, updated_mapping = await refresh_service.refresh_token_and_update(
+                store_mapping
+            )
+            if success and updated_mapping and updated_mapping.metadata:
+                return updated_mapping.metadata.get("clover_access_token")
+            logger.warning(
+                "Clover token refresh failed, using existing token",
+                merchant_id=store_mapping.source_store_id,
+            )
+        return access_token
+
     async def sync_products_via_polling(
         self, store_mapping: StoreMapping
     ) -> Dict[str, Any]:
         """
         Main polling sync. Called by worker for each active Clover store mapping.
         Incremental updates via modifiedTime filter; periodic ghost-item cleanup.
+        Uses on-demand token refresh so the token is valid before every sync.
         Returns: {"items_processed": int, "items_deleted": int, "errors": list}
         """
         metadata = dict(store_mapping.metadata or {})  # copy so we don't mutate the model
-        access_token = metadata.get("clover_access_token")
         merchant_id = store_mapping.source_store_id
         last_sync_time = metadata.get("clover_last_sync_time", 0)
         poll_count = metadata.get("clover_poll_count", 0)
@@ -123,8 +159,10 @@ class CloverIntegrationAdapter(BaseIntegrationAdapter):
         if not store_mapping_id:
             results["errors"].append("Invalid store mapping (no id)")
             return results
+
+        access_token = await self._ensure_valid_token(store_mapping)
         if not access_token:
-            results["errors"].append("No access token")
+            results["errors"].append("No valid access token")
             return results
 
         client = CloverAPIClient(access_token=access_token)
