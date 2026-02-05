@@ -29,14 +29,11 @@ def _run_health_server():
 
     class HealthHandler(BaseHTTPRequestHandler):
         def do_GET(self):
-            if self.path in ("/health", "/", "/health/"):
-                self.send_response(200)
-                self.send_header("Content-Type", "text/plain")
-                self.end_headers()
-                self.wfile.write(b"ok")
-            else:
-                self.send_response(404)
-                self.end_headers()
+            # Accept any path so Railway health check passes no matter what path is configured
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.end_headers()
+            self.wfile.write(b"ok")
 
         def log_message(self, *args):  # noqa: D401 - suppress request logs
             pass
