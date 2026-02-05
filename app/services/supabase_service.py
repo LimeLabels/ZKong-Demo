@@ -1145,9 +1145,16 @@ class SupabaseService:
                 return HipoinkProduct(**result.data)
             return None
         except Exception as e:
-            if "No rows" in str(e) or "Could not find" in str(e):
+            err_str = str(e)
+            # Expected when no Hipoink mapping exists yet (e.g. new product)
+            if (
+                "No rows" in err_str
+                or "Could not find" in err_str
+                or "PGRST116" in err_str
+                or "0 rows" in err_str
+            ):
                 return None
-            logger.error("Failed to get Hipoink product", error=str(e))
+            logger.error("Failed to get Hipoink product", error=err_str)
             return None
 
     def delete_hipoink_product_mapping(
