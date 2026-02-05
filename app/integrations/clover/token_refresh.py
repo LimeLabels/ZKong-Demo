@@ -19,6 +19,22 @@ from app.services.slack_service import get_slack_service
 
 logger = structlog.get_logger()
 
+# Per-merchant refresh locks to prevent concurrent refresh attempts
+# Module-level dictionary ensures all service instances share the same locks
+_refresh_locks: Dict[str, asyncio.Lock] = {}
+_refresh_locks_lock = asyncio.Lock()  # Lock for managing the locks dict
+
+
+async def _get_refresh_lock(merchant_id: str) -> asyncio.Lock:
+    """
+    Get or create a lock for this merchant's refresh operations.
+    Ensures only one refresh happens at a time per merchant, preventing race conditions.
+    """
+    async with _refresh_locks_lock:
+        if merchant_id not in _refresh_locks:
+            _refresh_locks[merchant_id] = asyncio.Lock()
+        return _refresh_locks[merchant_id]
+
 CLOVER_REFRESH_URL_SANDBOX = "https://apisandbox.dev.clover.com/oauth/v2/refresh"
 CLOVER_REFRESH_URL_PRODUCTION = "https://api.clover.com/oauth/v2/refresh"
 
@@ -114,20 +130,42 @@ class CloverTokenRefreshService:
         """
         Refresh Clover OAuth token. Uses ONLY client_id and refresh_token (no client_secret).
 
+        FIX 1: Re-fetches store mapping from DB to ensure we use the latest refresh_token,
+        avoiding stale in-memory data that could cause "Invalid refresh token" errors.
+
         Returns:
             (success, new_token_data or None). new_token_data: access_token, refresh_token, access_token_expiration, refresh_token_expiration
         """
-        if not store_mapping.metadata:
-            logger.warning(
-                "Store mapping has no metadata",
-                store_mapping_id=str(store_mapping.id),
+        if not store_mapping.id:
+            logger.error(
+                "Store mapping has no id, cannot refresh token",
+                merchant_id=store_mapping.source_store_id,
             )
             return False, None
 
-        refresh_token = store_mapping.metadata.get("clover_refresh_token")
+        # FIX 1: Re-fetch store mapping from DB to get latest refresh_token
+        # This ensures we always use the most recent token, even if another process just updated it
+        fresh_mapping = self.supabase_service.get_store_mapping_by_id(store_mapping.id)
+        if not fresh_mapping or not fresh_mapping.metadata:
+            logger.error(
+                "Could not re-fetch store mapping for refresh",
+                store_mapping_id=str(store_mapping.id),
+                merchant_id=store_mapping.source_store_id,
+            )
+            return False, None
+
+        # Logging for debugging (per Claude Code review)
+        logger.debug(
+            "Re-fetched store mapping for refresh",
+            store_mapping_id=str(store_mapping.id),
+            merchant_id=store_mapping.source_store_id,
+            has_refresh_token=bool(fresh_mapping.metadata.get("clover_refresh_token")),
+        )
+
+        refresh_token = fresh_mapping.metadata.get("clover_refresh_token")
         if not refresh_token:
             logger.error(
-                "No Clover refresh token in store mapping",
+                "No Clover refresh token in fresh store mapping",
                 store_mapping_id=str(store_mapping.id),
                 merchant_id=store_mapping.source_store_id,
             )
@@ -168,12 +206,24 @@ class CloverTokenRefreshService:
                     logger.error(
                         "No access_token in Clover refresh response",
                         store_mapping_id=str(store_mapping.id),
+                        merchant_id=store_mapping.source_store_id,
                     )
                     return False, None
 
+                # FIX 2: Clover refresh tokens are single-use. We MUST get a new refresh_token.
+                # If Clover doesn't return one, the old token is invalid and we can't continue.
+                new_refresh_token = data.get("refresh_token")
+                if not new_refresh_token:
+                    logger.error(
+                        "No refresh_token in Clover refresh response - old token is now invalid",
+                        store_mapping_id=str(store_mapping.id),
+                        merchant_id=store_mapping.source_store_id,
+                    )
+                    return False, None  # Don't fall back to old token - it's invalid!
+
                 new_token_data = {
                     "access_token": access_token,
-                    "refresh_token": data.get("refresh_token") or refresh_token,
+                    "refresh_token": new_refresh_token,  # Always use new token from response
                     "access_token_expiration": data.get("access_token_expiration"),
                     "refresh_token_expiration": data.get("refresh_token_expiration"),
                 }
@@ -206,89 +256,132 @@ class CloverTokenRefreshService:
         Refresh token and update store mapping metadata.
         Retries the Clover API call up to MAX_REFRESH_ATTEMPTS with RETRY_DELAY_SECONDS between attempts.
         Sends a Slack alert if all attempts fail.
+
+        FIX 3: Uses per-merchant lock to prevent concurrent refresh attempts that could
+        cause race conditions with single-use refresh tokens.
         """
-        last_error: Optional[str] = None
-        new_token_data: Optional[Dict[str, Any]] = None
+        merchant_id = store_mapping.source_store_id
+        if not merchant_id:
+            logger.error(
+                "Store mapping has no merchant_id, cannot refresh token",
+                store_mapping_id=str(store_mapping.id),
+            )
+            return False, None
 
-        for attempt in range(1, MAX_REFRESH_ATTEMPTS + 1):
-            success, new_token_data = await self.refresh_token(store_mapping)
-            if success and new_token_data:
-                break
-            last_error = "Refresh returned no token data"
-            if attempt < MAX_REFRESH_ATTEMPTS:
-                logger.warning(
-                    "Clover token refresh attempt failed, retrying",
-                    attempt=attempt,
-                    max_attempts=MAX_REFRESH_ATTEMPTS,
-                    merchant_id=store_mapping.source_store_id,
+        # FIX 3: Acquire merchant-specific lock to prevent concurrent refreshes
+        # Only one refresh can happen at a time for this merchant
+        lock = await _get_refresh_lock(merchant_id)
+
+        async with lock:
+            last_error: Optional[str] = None
+            new_token_data: Optional[Dict[str, Any]] = None
+
+            # Re-fetch store mapping inside the lock to get latest refresh_token from DB
+            # This ensures we have the absolute latest token even if another process just updated it
+            fresh_mapping = self.supabase_service.get_store_mapping_by_id(store_mapping.id)
+            if not fresh_mapping:
+                logger.error(
+                    "Could not fetch fresh store mapping for refresh",
                     store_mapping_id=str(store_mapping.id),
+                    merchant_id=merchant_id,
                 )
-                await asyncio.sleep(RETRY_DELAY_SECONDS)
+                return False, None
 
-        if not new_token_data:
-            logger.error(
-                "Clover token refresh failed after all retries",
-                merchant_id=store_mapping.source_store_id,
-                store_mapping_id=str(store_mapping.id),
-                attempts=MAX_REFRESH_ATTEMPTS,
-            )
-            await self._send_refresh_failure_alert(store_mapping, last_error or "All refresh attempts failed")
-            return False, None
+            # Use fresh mapping for refresh attempts
+            for attempt in range(1, MAX_REFRESH_ATTEMPTS + 1):
+                success, new_token_data = await self.refresh_token(fresh_mapping)
+                if success and new_token_data:
+                    break
+                last_error = "Refresh returned no token data"
+                if attempt < MAX_REFRESH_ATTEMPTS:
+                    logger.warning(
+                        "Clover token refresh attempt failed, retrying",
+                        attempt=attempt,
+                        max_attempts=MAX_REFRESH_ATTEMPTS,
+                        merchant_id=merchant_id,
+                        store_mapping_id=str(store_mapping.id),
+                    )
+                    await asyncio.sleep(RETRY_DELAY_SECONDS)
+                    # Re-fetch again before retry to get any updates
+                    retry_mapping = self.supabase_service.get_store_mapping_by_id(store_mapping.id)
+                    if not retry_mapping:
+                        logger.error(
+                            "Could not re-fetch store mapping before retry",
+                            store_mapping_id=str(store_mapping.id),
+                            merchant_id=merchant_id,
+                        )
+                        # Continue with existing fresh_mapping if re-fetch fails
+                        break
+                    fresh_mapping = retry_mapping
 
-        if not store_mapping.id:
-            logger.error(
-                "Clover store mapping has no id, cannot persist tokens",
-                merchant_id=store_mapping.source_store_id,
-            )
-            await self._send_refresh_failure_alert(
-                store_mapping,
-                "Store mapping has no id; cannot update metadata.",
-            )
-            return False, None
-
-        token_updates = {
-            "clover_access_token": new_token_data["access_token"],
-            "clover_refresh_token": new_token_data["refresh_token"],
-            "clover_access_token_expiration": new_token_data.get("access_token_expiration"),
-            "clover_refresh_token_expiration": new_token_data.get("refresh_token_expiration"),
-        }
-
-        try:
-            updated = await asyncio.to_thread(
-                _update_store_mapping_metadata_sync,
-                store_mapping.id,
-                token_updates,
-                self.supabase_service,
-            )
-            if updated:
-                logger.info(
-                    "Clover store mapping updated with new token",
+            if not new_token_data:
+                logger.error(
+                    "Clover token refresh failed after all retries",
+                    merchant_id=merchant_id,
                     store_mapping_id=str(store_mapping.id),
-                    merchant_id=store_mapping.source_store_id,
+                    attempts=MAX_REFRESH_ATTEMPTS,
                 )
-                return True, updated
-            logger.error(
-                "Clover token refresh: DB update returned None",
-                store_mapping_id=str(store_mapping.id),
-                merchant_id=store_mapping.source_store_id,
-            )
-            await self._send_refresh_failure_alert(
-                store_mapping,
-                "Refresh succeeded but DB update failed; merchant may need to re-authorize.",
-            )
-            return False, None
-        except Exception as e:
-            logger.error(
-                "Failed to update store mapping with new Clover token",
-                store_mapping_id=str(store_mapping.id),
-                merchant_id=store_mapping.source_store_id,
-                error=str(e),
-            )
-            await self._send_refresh_failure_alert(
-                store_mapping,
-                f"DB update raised: {e!s}. Merchant may need to re-authorize.",
-            )
-            return False, None
+                # Ensure fresh_mapping is not None before using it
+                alert_mapping = fresh_mapping if fresh_mapping else store_mapping
+                await self._send_refresh_failure_alert(
+                    alert_mapping, last_error or "All refresh attempts failed"
+                )
+                return False, None
+
+            if not fresh_mapping.id:
+                logger.error(
+                    "Clover store mapping has no id, cannot persist tokens",
+                    merchant_id=merchant_id,
+                )
+                await self._send_refresh_failure_alert(
+                    fresh_mapping,
+                    "Store mapping has no id; cannot update metadata.",
+                )
+                return False, None
+
+            token_updates = {
+                "clover_access_token": new_token_data["access_token"],
+                "clover_refresh_token": new_token_data["refresh_token"],
+                "clover_access_token_expiration": new_token_data.get("access_token_expiration"),
+                "clover_refresh_token_expiration": new_token_data.get("refresh_token_expiration"),
+            }
+
+            try:
+                updated = await asyncio.to_thread(
+                    _update_store_mapping_metadata_sync,
+                    fresh_mapping.id,
+                    token_updates,
+                    self.supabase_service,
+                )
+                if updated:
+                    logger.info(
+                        "Clover store mapping updated with new token",
+                        store_mapping_id=str(fresh_mapping.id),
+                        merchant_id=merchant_id,
+                    )
+                    return True, updated
+                logger.error(
+                    "Clover token refresh: DB update returned None",
+                    store_mapping_id=str(fresh_mapping.id),
+                    merchant_id=merchant_id,
+                )
+                await self._send_refresh_failure_alert(
+                    fresh_mapping,
+                    "Refresh succeeded but DB update failed; merchant may need to re-authorize.",
+                )
+                return False, None
+            except Exception as e:
+                logger.error(
+                    "Failed to update store mapping with new Clover token",
+                    store_mapping_id=str(fresh_mapping.id),
+                    merchant_id=merchant_id,
+                    error=str(e),
+                )
+                await self._send_refresh_failure_alert(
+                    fresh_mapping,
+                    f"DB update raised: {e!s}. Merchant may need to re-authorize.",
+                )
+                return False, None
 
     async def _send_refresh_failure_alert(
         self, store_mapping: StoreMapping, error_message: str

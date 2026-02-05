@@ -110,6 +110,9 @@ class CloverIntegrationAdapter(BaseIntegrationAdapter):
         Return a valid access token for API calls, refreshing if expiring within 15 minutes.
         Used before each sync to avoid using an expired token (on-demand refresh).
         If refresh fails, returns the existing token so the API call can run and surface a real error.
+
+        FIX 4: Uses the updated_mapping returned from refresh (which has fresh tokens)
+        instead of falling back to the stale store_mapping object.
         """
         if not store_mapping.metadata:
             return None
@@ -130,7 +133,15 @@ class CloverIntegrationAdapter(BaseIntegrationAdapter):
                 store_mapping
             )
             if success and updated_mapping and updated_mapping.metadata:
-                return updated_mapping.metadata.get("clover_access_token")
+                # FIX 4: Use the updated_mapping returned from refresh (it has fresh tokens)
+                # Don't fall back to old store_mapping object
+                new_access_token = updated_mapping.metadata.get("clover_access_token")
+                if new_access_token:
+                    return new_access_token
+                logger.warning(
+                    "Clover token refresh succeeded but updated mapping has no access_token",
+                    merchant_id=store_mapping.source_store_id,
+                )
             logger.warning(
                 "Clover token refresh failed, using existing token",
                 merchant_id=store_mapping.source_store_id,
