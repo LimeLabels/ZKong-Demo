@@ -10,6 +10,7 @@ can health-check the worker and not remove the deployment.
 import asyncio
 import os
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from app.utils.logger import configure_logging
@@ -23,10 +24,11 @@ from app.workers.clover_sync_worker import run_clover_sync_worker
 def _run_health_server():
     """Run a minimal HTTP server for GET /health so Railway health checks pass."""
     port = int(os.environ.get("PORT", 8080))
+    host = "0.0.0.0"
 
     class HealthHandler(BaseHTTPRequestHandler):
         def do_GET(self):
-            if self.path == "/health" or self.path == "/":
+            if self.path in ("/health", "/", "/health/"):
                 self.send_response(200)
                 self.send_header("Content-Type", "text/plain")
                 self.end_headers()
@@ -38,7 +40,7 @@ def _run_health_server():
         def log_message(self, *args):  # noqa: D401 - suppress request logs
             pass
 
-    server = HTTPServer(("0.0.0.0", port), HealthHandler)
+    server = HTTPServer((host, port), HealthHandler)
     server.serve_forever()
 
 
@@ -55,8 +57,10 @@ async def run_all_workers():
 
 if __name__ == "__main__":
     configure_logging()
-    # Start health server so Railway (and similar) health checks pass; worker has no HTTP otherwise
-    if os.environ.get("PORT"):
-        daemon = threading.Thread(target=_run_health_server, daemon=True)
-        daemon.start()
+    # Always start health server so Railway health checks pass (worker is unexposed but may still get PORT)
+    port = int(os.environ.get("PORT", 8080))
+    daemon = threading.Thread(target=_run_health_server, daemon=True)
+    daemon.start()
+    # Give the server a moment to bind before Railway's first health check
+    time.sleep(1.5)
     asyncio.run(run_all_workers())
