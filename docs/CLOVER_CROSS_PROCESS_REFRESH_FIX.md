@@ -118,3 +118,33 @@ If values are in ms (e.g. 13 digits), ensure `is_token_expiring_soon()` normaliz
 - **Immediate fix:** Option A — skip refresh on initial sync so only the worker refreshes.  
 - **Later:** Option B (initial sync in worker) and/or Option C (distributed lock) if needed.  
 - **Doc:** This file is the implementation plan for review; implement Option A first, then re-verify in production.
+
+---
+
+## 9. Post–Option A: Token Overwrite Bug (Refresh Succeeds, Next Poll Fails)
+
+**Observed:** After Option A, logs show: refresh succeeds → "Clover store mapping updated with new token" → sync completed → next poll (or later): "Clover token expiring soon" → refresh **fails** 401 Invalid refresh token.
+
+**Root cause:** In `sync_products_via_polling()` we keep a **local** `metadata = dict(store_mapping.metadata or {})` from the **start** of the call. If we refresh during the sync, the **DB** is updated with new tokens by `refresh_token_and_update()`, but the local `metadata` variable is never updated and still holds the **old** token fields. At **STEP C** we do:
+
+```python
+metadata["clover_last_sync_time"] = ...
+metadata["clover_poll_count"] = ...
+self.supabase_service.update_store_mapping_metadata(store_mapping_id, metadata)
+```
+
+`update_store_mapping_metadata()` does a **merge**: it reads current DB metadata (which has the **new** tokens), then `merged.update(metadata)`. Our `metadata` contains the **old** `clover_access_token`, `clover_refresh_token`, etc. So we **overwrite** the new tokens with the old ones. The next poll then reads the old (already single-use burned) refresh token and gets 401.
+
+**Fix:** When updating metadata at the end of sync, **only** pass the keys that are sync state, not the full metadata (which contains stale token fields). For example, only pass:
+
+- `clover_last_sync_time`
+- `clover_poll_count`
+- `clover_last_cleanup_time` (if set in this run)
+
+Do **not** pass the full `metadata` dict that still has `clover_access_token`, `clover_refresh_token`, and expiration fields from the start of the call.
+
+**Files to touch:**
+- `app/integrations/clover/adapter.py`: In STEP C, build a small dict with only sync-related keys and call `update_store_mapping_metadata(store_mapping_id, that_dict)` instead of passing the full `metadata`.
+
+**Checklist:**
+- [ ] In `sync_products_via_polling()`, STEP C: replace `update_store_mapping_metadata(store_mapping_id, metadata)` with an update that only sends `clover_last_sync_time`, `clover_poll_count`, and optionally `clover_last_cleanup_time` (if present in metadata for this run).

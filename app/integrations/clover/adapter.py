@@ -278,11 +278,18 @@ class CloverIntegrationAdapter(BaseIntegrationAdapter):
                 results["items_deleted"] += deleted_count
                 metadata["clover_last_cleanup_time"] = int(time.time() * 1000)
 
-            # --- STEP C: Update metadata ---
-            metadata["clover_last_sync_time"] = int(time.time() * 1000)
-            metadata["clover_poll_count"] = poll_count + 1
+            # --- STEP C: Update metadata (sync state only; do not overwrite tokens) ---
+            # Only pass sync-related keys. The local `metadata` still has stale token
+            # fields from the start of the call; if we refreshed during sync, the DB
+            # has new tokens and we must not overwrite them with this stale dict.
+            sync_updates: Dict[str, Any] = {
+                "clover_last_sync_time": int(time.time() * 1000),
+                "clover_poll_count": poll_count + 1,
+            }
+            if "clover_last_cleanup_time" in metadata:
+                sync_updates["clover_last_cleanup_time"] = metadata["clover_last_cleanup_time"]
             self.supabase_service.update_store_mapping_metadata(
-                store_mapping_id, metadata
+                store_mapping_id, sync_updates
             )
         finally:
             await client.close()
