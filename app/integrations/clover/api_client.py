@@ -191,6 +191,71 @@ class CloverAPIClient:
 
         return response.json()
 
+    async def update_item(
+        self,
+        merchant_id: str,
+        item_id: str,
+        price_cents: int,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        """
+        Update an item's price (and optionally other fields).
+
+        PATCH /v3/merchants/{mId}/items/{itemId}
+        Price must be in cents. Clover API expects integer cents (e.g., $20.99 = 2099).
+
+        Args:
+            merchant_id: Clover merchant ID (mId).
+            item_id: Clover item ID (with or without "I:" prefix; prefix is stripped).
+            price_cents: Price in cents (e.g., 2099 for $20.99).
+            **kwargs: Optional extra fields to send (e.g., name, cost, priceWithoutVat).
+
+        Returns:
+            Updated item dict from API response.
+
+        Raises:
+            CloverAPIError: On non-2xx response.
+        """
+        raw_id = str(item_id).strip()
+        if raw_id.upper().startswith("I:"):
+            raw_id = raw_id[2:].strip()
+        if not raw_id:
+            raise CloverAPIError(0, "item_id is required and cannot be empty after stripping I: prefix")
+
+        client = await self._get_client()
+        url = f"{self.base_url}/v3/merchants/{merchant_id}/items/{raw_id}"
+        body: Dict[str, Any] = {"price": price_cents, **kwargs}
+        try:
+            response = await client.patch(
+                url,
+                headers=self._headers(),
+                json=body,
+            )
+        except httpx.RequestError as e:
+            logger.error(
+                "Clover API update_item request failed",
+                merchant_id=merchant_id,
+                item_id=raw_id,
+                error=str(e),
+            )
+            raise CloverAPIError(0, str(e)) from e
+
+        if response.status_code != 200:
+            logger.error(
+                "Clover API error update_item",
+                status_code=response.status_code,
+                body=response.text[:500],
+                merchant_id=merchant_id,
+                item_id=raw_id,
+            )
+            raise CloverAPIError(
+                response.status_code,
+                f"PATCH item failed: {response.status_code}",
+                body=response.text,
+            )
+
+        return response.json()
+
     async def list_items_modified_since(
         self,
         merchant_id: str,

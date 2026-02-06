@@ -34,7 +34,7 @@ interface ScheduleTimeSlot {
 }
 
 interface ScheduleFormData {
-  platform: 'ncr' | 'square' | ''
+  platform: 'ncr' | 'square' | 'clover' | ''
   name: string
   startDate: Date
   endDate: Date
@@ -85,9 +85,9 @@ export function ScheduleCalendar() {
     return () => clearTimeout(timer)
   }, [productSearchQuery])
 
-  // When Square or NCR search query changes, clear selection so it reflects the new result set
+  // When Square, NCR, or Clover search query changes, clear selection so it reflects the new result set
   useEffect(() => {
-    if (formData.platform === 'square' || formData.platform === 'ncr') {
+    if (formData.platform === 'square' || formData.platform === 'ncr' || formData.platform === 'clover') {
       setSelectedProductIds(new Set())
     }
   }, [debouncedSearchQuery, formData.platform])
@@ -101,11 +101,12 @@ export function ScheduleCalendar() {
         }
         
         // Auto-set platform based on store's source system
-        // Map source_system to platform value (ncr, square, shopify)
+        // Map source_system to platform value (ncr, square, clover, shopify)
         if (store.source_system) {
-          const systemMap: Record<string, 'ncr' | 'square' | ''> = {
+          const systemMap: Record<string, 'ncr' | 'square' | 'clover' | ''> = {
             'ncr': 'ncr',
             'square': 'square',
+            'clover': 'clover',
             'shopify': 'square', // Shopify uses similar structure to Square
           }
           const platform = systemMap[store.source_system.toLowerCase()] || ''
@@ -124,7 +125,7 @@ export function ScheduleCalendar() {
   }, [store])
 
   /**
-   * Fetch products for the user's store. Square and NCR: server-side search via q + debounce for the multi-select table.
+   * Fetch products for the user's store. Square, NCR, and Clover: server-side search via q + debounce for the multi-select table.
    */
   useEffect(() => {
     const fetchProducts = async () => {
@@ -137,7 +138,7 @@ export function ScheduleCalendar() {
         setProductsLoading(true)
         const params: { limit: number; q?: string } = { limit: 100 }
         if (
-          (formData.platform === 'square' || formData.platform === 'ncr') &&
+          (formData.platform === 'square' || formData.platform === 'ncr' || formData.platform === 'clover') &&
           debouncedSearchQuery.trim()
         ) {
           params.q = debouncedSearchQuery.trim()
@@ -157,10 +158,10 @@ export function ScheduleCalendar() {
     }
   }, [store, formData.platform, debouncedSearchQuery])
 
-  // When Square or NCR and user selects 2+ products, default to percentage mode (hide "Set Specific Price")
+  // When Square, NCR, or Clover and user selects 2+ products, default to percentage mode (hide "Set Specific Price")
   useEffect(() => {
     const multiSelectPlatform =
-      formData.platform === 'square' || formData.platform === 'ncr'
+      formData.platform === 'square' || formData.platform === 'ncr' || formData.platform === 'clover'
     if (
       multiSelectPlatform &&
       selectedProductIds.size > 1 &&
@@ -170,10 +171,10 @@ export function ScheduleCalendar() {
     }
   }, [formData.platform, formData.multiplierPercentage, selectedProductIds.size])
 
-  // When Square or NCR and exactly one product selected, sync originalPrice/price from that product
+  // When Square, NCR, or Clover and exactly one product selected, sync originalPrice/price from that product
   useEffect(() => {
     const multiSelectPlatform =
-      formData.platform === 'square' || formData.platform === 'ncr'
+      formData.platform === 'square' || formData.platform === 'ncr' || formData.platform === 'clover'
     if (!multiSelectPlatform || selectedProductIds.size !== 1) return
     const id = Array.from(selectedProductIds)[0]
     const product = products.find((p) => p.id === id)
@@ -187,7 +188,7 @@ export function ScheduleCalendar() {
   }, [formData.platform, products, selectedProductIds])
 
   const isMultiSelectPlatform =
-    formData.platform === 'square' || formData.platform === 'ncr'
+    formData.platform === 'square' || formData.platform === 'ncr' || formData.platform === 'clover'
 
   const repeatOptions = [
     { label: 'No Repeat', value: 'none' },
@@ -226,7 +227,7 @@ export function ScheduleCalendar() {
       }
 
       if (
-        (formData.platform === 'square' || formData.platform === 'ncr') &&
+        (formData.platform === 'square' || formData.platform === 'ncr' || formData.platform === 'clover') &&
         selectedProductIds.size === 0
       ) {
         throw new Error('Select at least one product')
@@ -236,7 +237,7 @@ export function ScheduleCalendar() {
         throw new Error('At least one time slot is required')
       }
 
-      // Prepare products array: Square and NCR both use multi-select; pc differs by platform
+      // Prepare products array: Square, NCR, and Clover use multi-select; pc differs by platform
       const selectedProducts = products.filter((p) => selectedProductIds.has(p.id))
 
       // For Square, validate upfront that every selected product has a variation ID.
@@ -251,14 +252,29 @@ export function ScheduleCalendar() {
         }
       }
 
+      // For Clover, validate that every selected product has product_id (source_id).
+      if (formData.platform === 'clover') {
+        const missingProductIds = selectedProducts.filter((p) => !p.product_id)
+        if (missingProductIds.length > 0) {
+          const names = missingProductIds.map((p) => p.title || p.id).join(', ')
+          throw new Error(
+            `These Clover products are missing product IDs and cannot be scheduled: ${names}. ` +
+              'Please ensure products are fully synced from Clover before creating a schedule.'
+          )
+        }
+      }
+
       const productsPayload: Array<{ pc: string; pp: string; original_price: number }> =
         selectedProducts.map((p) => {
           // For Square, pc must be the Square variation ID (ITEM_VARIATION).
-          // Do not fall back to product_id or barcode – that would break price sync and restores.
+          // For Clover, pc must be the Clover item ID (source_id / product_id).
+          // For NCR, pc is barcode or SKU.
           const pc =
             formData.platform === 'square'
               ? (p.variant_id || '')
-              : (p.barcode || p.sku || '')
+              : formData.platform === 'clover'
+                ? (p.product_id || '')
+                : (p.barcode || p.sku || '')
           const pp =
             formData.multiplierPercentage !== null
               ? ((p.price ?? 0) * (1 + formData.multiplierPercentage / 100)).toFixed(2)
@@ -493,8 +509,8 @@ export function ScheduleCalendar() {
                 disabled={!!store}
               />
 
-              {/* Square and NCR: search + multi-select product table (data-product-ui="multiselect" = new build) */}
-              {(formData.platform === 'square' || formData.platform === 'ncr') && (
+              {/* Square, NCR, and Clover: search + multi-select product table (data-product-ui="multiselect" = new build) */}
+              {(formData.platform === 'square' || formData.platform === 'ncr' || formData.platform === 'clover') && (
                 <div data-product-ui="multiselect" style={{ display: 'contents' }}>
                   <TextField
                     label="Search products"
@@ -602,7 +618,7 @@ export function ScheduleCalendar() {
 
           {formData.platform && (
             <FormLayout.Group>
-              {/* Original Price: hide when Square/NCR has 2+ products; 0–1 keep it */}
+              {/* Original Price: hide when Square/NCR/Clover has 2+ products; 0–1 keep it */}
               {!(isMultiSelectPlatform && selectedProductIds.size > 1) && (
                 <TextField
                   label="Original Price"
@@ -689,7 +705,7 @@ export function ScheduleCalendar() {
             />
           ) : null}
 
-          {/* Square/NCR: preview Original → New when percentage and at least one product selected */}
+          {/* Square/NCR/Clover: preview Original → New when percentage and at least one product selected */}
           {isMultiSelectPlatform &&
             selectedProductIds.size > 0 &&
             formData.multiplierPercentage !== null && (

@@ -148,6 +148,74 @@ class CloverIntegrationAdapter(BaseIntegrationAdapter):
             )
         return access_token
 
+    async def update_item_price(
+        self,
+        store_mapping: StoreMapping,
+        item_id: str,
+        price_dollars: float,
+        existing_product: Optional[Product] = None,
+    ) -> None:
+        """
+        Update a single item's price in Clover and optionally in the local DB.
+
+        Uses on-demand token refresh. Converts dollars to cents with round() to avoid
+        floating-point truncation. After a successful PATCH, updates the product's
+        price in the database when existing_product is provided (mirrors Square behavior).
+
+        Args:
+            store_mapping: Clover store mapping (source_store_id = merchant_id).
+            item_id: Clover item ID (source_id; "I:" prefix is stripped in API client).
+            price_dollars: New price in dollars (e.g., 20.99).
+            existing_product: If provided and update succeeds, update this product's
+                price in the DB via create_or_update_product.
+        """
+        access_token = await self._ensure_valid_token(store_mapping)
+        if not access_token:
+            raise ValueError(
+                "No valid Clover access token; cannot update item price"
+            )
+        merchant_id = store_mapping.source_store_id
+        price_cents = round(price_dollars * 100)
+        if price_cents < 0:
+            raise ValueError(
+                f"Invalid price_dollars={price_dollars} (cents={price_cents})"
+            )
+
+        client = CloverAPIClient(access_token=access_token)
+        try:
+            await client.update_item(
+                merchant_id=merchant_id,
+                item_id=item_id,
+                price_cents=price_cents,
+            )
+            logger.info(
+                "Updated Clover item price",
+                merchant_id=merchant_id,
+                item_id=item_id,
+                price_dollars=price_dollars,
+                store_mapping_id=str(store_mapping.id),
+            )
+            if existing_product and existing_product.id:
+                try:
+                    existing_product.price = price_dollars
+                    self.supabase_service.create_or_update_product(
+                        existing_product
+                    )
+                    logger.debug(
+                        "Updated local DB price after Clover PATCH",
+                        product_id=str(existing_product.id),
+                        store_mapping_id=str(store_mapping.id),
+                    )
+                except Exception as db_e:
+                    logger.error(
+                        "Failed to update local DB price after Clover update",
+                        product_id=str(existing_product.id),
+                        store_mapping_id=str(store_mapping.id),
+                        error=str(db_e),
+                    )
+        finally:
+            await client.close()
+
     async def sync_products_via_polling(
         self,
         store_mapping: StoreMapping,
@@ -277,7 +345,6 @@ class CloverIntegrationAdapter(BaseIntegrationAdapter):
                 )
                 results["items_deleted"] += deleted_count
                 metadata["clover_last_cleanup_time"] = int(time.time() * 1000)
-
             # --- STEP C: Update metadata (sync state only; do not overwrite tokens) ---
             # Only pass sync-related keys. The local `metadata` still has stale token
             # fields from the start of the call; if we refreshed during sync, the DB
