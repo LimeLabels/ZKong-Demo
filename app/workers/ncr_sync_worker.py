@@ -118,7 +118,11 @@ class NCRSyncWorker:
             )
 
             # Get existing products from database for this store
-            existing_products = self.supabase_service.get_products_by_system("ncr")
+            # CRITICAL: Filter by source_store_id for multi-tenant isolation
+            existing_products = self.supabase_service.get_products_by_system(
+                "ncr", 
+                source_store_id=store_mapping.source_store_id
+            )
             existing_item_codes = {
                 p.source_id: p for p in existing_products if p.source_id
             }
@@ -141,6 +145,27 @@ class NCRSyncWorker:
 
                     # Check if product exists in database
                     existing_product = existing_item_codes.get(item_code)
+                    
+                    # Also check for products without source_store_id (created before this fix)
+                    # This ensures we can update them with the correct source_store_id
+                    if not existing_product:
+                        products_by_source = self.supabase_service.get_products_by_source_id(
+                            source_system="ncr",
+                            source_id=item_code,
+                            source_store_id=None,  # Don't filter by store to find orphaned products
+                        )
+                        # Filter to find products without source_store_id or with wrong one
+                        for p in products_by_source:
+                            if not p.source_store_id or p.source_store_id != store_mapping.source_store_id:
+                                existing_product = p
+                                logger.info(
+                                    "Found NCR product without source_store_id, will update",
+                                    item_code=item_code,
+                                    product_id=str(p.id),
+                                    current_source_store_id=p.source_store_id,
+                                    correct_source_store_id=store_mapping.source_store_id,
+                                )
+                                break
                     
                     # Transform NCR item to normalized product
                     ncr_adapter = NCRIntegrationAdapter()
@@ -185,6 +210,7 @@ class NCRSyncWorker:
                             source_system="ncr",
                             source_id=item_code,
                             source_variant_id=normalized_product.source_variant_id,
+                            source_store_id=store_mapping.source_store_id,  # CRITICAL: Set for multi-tenant isolation
                             title=normalized_product.title,
                             barcode=normalized_product.barcode,
                             sku=normalized_product.sku,
@@ -223,6 +249,16 @@ class NCRSyncWorker:
                         # Compare key fields to see if product changed
                         needs_update = False
                         
+                        # CRITICAL: Always ensure source_store_id is set correctly
+                        if not existing_product.source_store_id or existing_product.source_store_id != store_mapping.source_store_id:
+                            needs_update = True
+                            logger.info(
+                                "source_store_id missing or incorrect, will update",
+                                item_code=item_code,
+                                current_source_store_id=existing_product.source_store_id,
+                                correct_source_store_id=store_mapping.source_store_id,
+                            )
+                        
                         if normalized_product.title != existing_product.title:
                             needs_update = True
                         if normalized_product.barcode != existing_product.barcode:
@@ -252,6 +288,8 @@ class NCRSyncWorker:
                             existing_product.image_url = normalized_product.image_url
                             existing_product.raw_data = ncr_item
                             existing_product.normalized_data = normalized_product.to_dict()
+                            # Always ensure source_store_id is set correctly
+                            existing_product.source_store_id = store_mapping.source_store_id
                             
                             updated_product, changed = self.supabase_service.create_or_update_product(existing_product)
                             

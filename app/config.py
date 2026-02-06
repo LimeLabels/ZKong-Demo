@@ -32,6 +32,9 @@ class Settings(BaseSettings):
     frontend_url: str = (
         "http://localhost:3000"  # Frontend app URL (must match App URL in Shopify)
     )
+    shopify_app_url: str = (
+        ""  # Shopify app frontend URL (for embedded apps, must match App URL in Partner Dashboard)
+    )
 
     # NCR POS Configuration
     ncr_pos_base_url: str = (

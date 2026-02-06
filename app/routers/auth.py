@@ -64,7 +64,7 @@ async def verify_token(authorization: Optional[str] = Header(None)) -> dict:
         
         # Verify token with Supabase
         # Use Supabase REST API to verify the JWT token
-        supabase_auth = get_supabase_auth_client()
+        get_supabase_auth_client()  # Initialize auth client if needed
         
         try:
             # Use the Supabase client's auth API to get user from token
@@ -194,6 +194,81 @@ async def connect_store(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to connect store: {str(e)}",
+        )
+
+
+@router.post("/disconnect-store")
+async def disconnect_store(
+    user_data: dict = Depends(verify_token),
+):
+    """
+    Disconnect authenticated user from their current store mapping.
+    Removes user_id from the store mapping metadata.
+    """
+    user_id = user_data["user_id"]
+    
+    try:
+        # Find store mapping for this user
+        result = (
+            supabase_service.client.table("store_mappings")
+            .select("*")
+            .eq("is_active", True)
+            .execute()
+        )
+        
+        # Find store mapping where metadata contains user_id
+        user_store_mapping = None
+        for item in result.data:
+            mapping = supabase_service.get_store_mapping_by_id(item["id"])
+            if (
+                mapping
+                and mapping.metadata
+                and mapping.metadata.get("user_id") == user_id
+            ):
+                user_store_mapping = mapping
+                break
+        
+        if not user_store_mapping:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="No store mapping found for this user.",
+            )
+        
+        # Remove user_id from metadata
+        metadata = user_store_mapping.metadata or {}
+        metadata.pop("user_id", None)
+        metadata.pop("connected_at", None)
+        
+        result = (
+            supabase_service.client.table("store_mappings")
+            .update({"metadata": metadata})
+            .eq("id", str(user_store_mapping.id))
+            .execute()
+        )
+        
+        if not result.data:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to disconnect store",
+            )
+        
+        logger.info(
+            "User disconnected from store",
+            user_id=user_id,
+            store_mapping_id=str(user_store_mapping.id),
+        )
+        
+        return {
+            "success": True,
+            "message": "Store disconnected successfully",
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Failed to disconnect store", error=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to disconnect store: {str(e)}",
         )
 
 
@@ -342,7 +417,7 @@ async def find_store_mapping(
             if existing_user_id != user_data["user_id"]:
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT,
-                    detail=f"This store mapping is already connected to another user.",
+                    detail="This store mapping is already connected to another user.",
                 )
         
         return {

@@ -3,8 +3,8 @@ Square OAuth authentication endpoints.
 Handles OAuth flow for Square POS integration.
 """
 
-from fastapi import APIRouter, Request, HTTPException, status, Query, BackgroundTasks, Depends
-from fastapi.responses import RedirectResponse, JSONResponse
+from fastapi import APIRouter, HTTPException, status, Query, BackgroundTasks, Depends
+from fastapi.responses import RedirectResponse
 from typing import Optional, Dict
 import structlog
 import secrets
@@ -690,7 +690,6 @@ async def manual_sync_square_products(
     # Clean up old entries (keep cache size manageable)
     if len(_manual_sync_rate_limit) > 1000:
         # Remove entries older than 1 hour
-        cutoff = now - timedelta(hours=1)
         _manual_sync_rate_limit.clear()  # Simple cleanup - in production, use a proper cache
     
     supabase_service = SupabaseService()
@@ -706,7 +705,6 @@ async def manual_sync_square_products(
     
     # Get access token
     from app.integrations.square.adapter import SquareIntegrationAdapter
-    from app.integrations.square.token_refresh import ensure_valid_square_token
     
     adapter = SquareIntegrationAdapter()
     

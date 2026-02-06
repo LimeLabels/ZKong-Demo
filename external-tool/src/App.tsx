@@ -130,11 +130,33 @@ function App() {
     },
   ]
 
+  /**
+   * Handle disconnect store (change store).
+   */
+  const handleDisconnectStore = async () => {
+    try {
+      await apiClient.post('/api/auth/disconnect-store')
+      setHasStore(false)
+      setStoreChecked(false) // Reset so we check again
+      // This will trigger the onboarding screen
+    } catch (error: any) {
+      console.error('Error disconnecting store:', error)
+      alert(error.response?.data?.detail || 'Failed to disconnect store. Please try again.')
+    }
+  }
+
   const topBarMarkup = (
     <TopBar
       showNavigationToggle={false}
       userMenu={
         <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+          <Button
+            onClick={handleDisconnectStore}
+            variant="plain"
+            size="slim"
+          >
+            Change Store
+          </Button>
           <Text variant="bodyMd" tone="subdued" as="p">
             {user?.email}
           </Text>

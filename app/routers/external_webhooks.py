@@ -7,13 +7,11 @@ to trigger price updates based on schedules.
 from fastapi import APIRouter, Request, HTTPException, Header, status, Body
 from typing import Optional, Dict, Any
 import structlog
-import json
 from datetime import datetime
 
 from app.config import settings
 from app.services.supabase_service import SupabaseService
 from app.workers.price_scheduler import PriceScheduler
-from app.models.database import PriceAdjustmentSchedule
 
 logger = structlog.get_logger()
 
