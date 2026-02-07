@@ -169,6 +169,43 @@ class SupabaseService:
             logger.error("Failed to update store mapping OAuth token", error=str(e))
             return None
 
+    def update_store_mapping_metadata(
+        self, mapping_id: UUID, metadata: Dict[str, Any]
+    ) -> Optional[StoreMapping]:
+        """
+        Merge and persist store mapping metadata (e.g. clover_last_sync_time, clover_poll_count).
+        Existing metadata is preserved; provided keys are merged/overwritten.
+
+        Args:
+            mapping_id: Store mapping UUID
+            metadata: Dict of keys to merge into existing metadata
+
+        Returns:
+            Updated StoreMapping or None if not found
+        """
+        try:
+            existing = self.get_store_mapping_by_id(mapping_id)
+            if not existing:
+                return None
+            merged = dict(existing.metadata or {})
+            merged.update(metadata)
+            result = (
+                self.client.table("store_mappings")
+                .update({"metadata": merged})
+                .eq("id", str(mapping_id))
+                .execute()
+            )
+            if result.data:
+                return StoreMapping(**result.data[0])
+            return None
+        except Exception as e:
+            logger.error(
+                "Failed to update store mapping metadata",
+                mapping_id=str(mapping_id),
+                error=str(e),
+            )
+            return None
+
     def get_store_mappings_by_source_system(
         self, source_system: str
     ) -> List[StoreMapping]:
@@ -1108,9 +1145,16 @@ class SupabaseService:
                 return HipoinkProduct(**result.data)
             return None
         except Exception as e:
-            if "No rows" in str(e) or "Could not find" in str(e):
+            err_str = str(e)
+            # Expected when no Hipoink mapping exists yet (e.g. new product)
+            if (
+                "No rows" in err_str
+                or "Could not find" in err_str
+                or "PGRST116" in err_str
+                or "0 rows" in err_str
+            ):
                 return None
-            logger.error("Failed to get Hipoink product", error=str(e))
+            logger.error("Failed to get Hipoink product", error=err_str)
             return None
 
     def delete_hipoink_product_mapping(

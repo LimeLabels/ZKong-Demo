@@ -73,19 +73,61 @@ async def handle_webhook(
                 or headers.get("X-Square-HmacSha256-Signature")
                 or headers.get("x-square-hmacsha256-signature")
             )
-        # Add other integrations' signature extraction here
+        elif integration_name == "clover":
+            # X-Clover-Auth is a static auth code (not HMAC of body)
+            signature = headers.get("X-Clover-Auth") or headers.get("x-clover-auth")
 
         # Verify signature
-        # For Square, pass request URL for signature verification (Square doesn't send it in headers)
-        # For other integrations (Shopify, NCR), don't pass request_url
-        if signature:
-            if integration_name == "square":
-                request_url = str(request.url)
-                is_valid = adapter.verify_signature(body_bytes, signature, headers, request_url=request_url)
+        # Square: always require signature presence and validity (no bypass when header missing)
+        if integration_name == "square":
+            if not (signature and str(signature).strip()):
+                logger.warning(
+                    "Square webhook rejected: missing signature header",
+                    event_type=event_type,
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Missing webhook signature",
+                )
+            request_url = str(request.url)
+            is_valid = adapter.verify_signature(body_bytes, signature, headers, request_url=request_url)
+            if not is_valid:
+                logger.warning(
+                    "Invalid Square webhook signature",
+                    event_type=event_type,
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Invalid webhook signature",
+                )
+        elif integration_name == "clover":
+            # Clover sends a one-time verification POST with only {"verificationCode": "..."}
+            # BEFORE the auth code exists. Allow that specific request through without X-Clover-Auth.
+            if b"verificationCode" in body_bytes and b"merchants" not in body_bytes:
+                logger.info(f"🟢 CLOVER CODE: {body_bytes.decode('utf-8')}")
             else:
-                # Shopify, NCR, etc. don't accept request_url parameter
+                if not (signature and str(signature).strip()):
+                    logger.warning(
+                        "Clover webhook rejected: missing X-Clover-Auth header",
+                        event_type=event_type,
+                    )
+                    raise HTTPException(
+                        status_code=status.HTTP_401_UNAUTHORIZED,
+                        detail="Missing X-Clover-Auth header",
+                    )
                 is_valid = adapter.verify_signature(body_bytes, signature, headers)
-            
+                if not is_valid:
+                    logger.warning(
+                        "Invalid Clover webhook auth",
+                        event_type=event_type,
+                    )
+                    raise HTTPException(
+                        status_code=status.HTTP_401_UNAUTHORIZED,
+                        detail="Invalid webhook signature",
+                    )
+        elif signature:
+            # Shopify, NCR, etc. don't accept request_url parameter
+            is_valid = adapter.verify_signature(body_bytes, signature, headers)
             if not is_valid:
                 logger.warning(
                     "Invalid webhook signature",
@@ -100,8 +142,12 @@ async def handle_webhook(
         # Parse payload
         try:
             payload = json.loads(body_bytes.decode("utf-8"))
-            # Try to extract merchant_id from payload
+            # Try to extract merchant_id from payload (for error reporting)
             merchant_id = payload.get("merchant_id") or payload.get("shop")
+            if merchant_id is None and integration_name == "clover":
+                merchants = payload.get("merchants") or {}
+                if merchants:
+                    merchant_id = next(iter(merchants), None)
         except json.JSONDecodeError as e:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,

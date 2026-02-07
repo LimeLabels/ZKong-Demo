@@ -12,6 +12,7 @@ from app.services.hipoink_client import (
     HipoinkProductItem,
 )
 from app.services.shopify_api_client import ShopifyAPIClient
+from app.integrations.clover.adapter import CloverIntegrationAdapter
 from app.integrations.ncr.adapter import NCRIntegrationAdapter
 from app.integrations.square.adapter import SquareIntegrationAdapter
 from app.models.database import PriceAdjustmentSchedule, StoreMapping
@@ -797,6 +798,23 @@ class PriceScheduler:
                         # We'll continue with the Square ID as barcode, which will create an orphan product.
                         # This is what was happening before.
 
+                # For Clover, product_data["pc"] is the Clover item ID (source_id)
+                if store_mapping.source_system == "clover":
+                    products_by_source = self.supabase_service.get_products_by_source_id(
+                        "clover",
+                        product_data["pc"],
+                        source_store_id=store_mapping.source_store_id,
+                    )
+                    existing_product = products_by_source[0] if products_by_source else None
+                    if existing_product and existing_product.barcode:
+                        barcode = existing_product.barcode
+                    else:
+                        logger.warning(
+                            "Could not find barcode for Clover product",
+                            clover_item_id=product_data["pc"],
+                            schedule_id=str(schedule.id),
+                        )
+
                 # Calculate price: if multiplier_percentage is provided, use it; otherwise use provided price
                 if schedule.multiplier_percentage is not None:
                     original_price = product_data.get("original_price")
@@ -915,6 +933,13 @@ class PriceScheduler:
                     store_mapping,
                 )
 
+            # Update Clover prices if store mapping is for Clover
+            if store_mapping.source_system == "clover":
+                await self._update_clover_prices(
+                    updated_products_data,
+                    store_mapping,
+                )
+
         except Exception as e:
             logger.error(
                 "Failed to apply promotional prices",
@@ -973,6 +998,23 @@ class PriceScheduler:
                     
                     if existing_product and existing_product.barcode:
                         barcode = existing_product.barcode
+
+                # For Clover, product_data["pc"] is the Clover item ID (source_id)
+                if store_mapping.source_system == "clover":
+                    products_by_source = self.supabase_service.get_products_by_source_id(
+                        "clover",
+                        product_data["pc"],
+                        source_store_id=store_mapping.source_store_id,
+                    )
+                    existing_product = products_by_source[0] if products_by_source else None
+                    if existing_product and existing_product.barcode:
+                        barcode = existing_product.barcode
+                    else:
+                        logger.warning(
+                            "Could not find barcode for Clover product",
+                            clover_item_id=product_data["pc"],
+                            schedule_id=str(schedule.id),
+                        )
 
                 original_price = product_data.get("original_price")
 
@@ -1071,6 +1113,14 @@ class PriceScheduler:
             # Update Square prices if store mapping is for Square (restore original prices)
             if store_mapping.source_system == "square":
                 await self._update_square_prices(
+                    products_data,
+                    store_mapping,
+                    use_original=True,
+                )
+
+            # Update Clover prices if store mapping is for Clover (restore original prices)
+            if store_mapping.source_system == "clover":
+                await self._update_clover_prices(
                     products_data,
                     store_mapping,
                     use_original=True,
@@ -1379,6 +1429,103 @@ class PriceScheduler:
                     store_mapping_id=str(store_mapping.id),
                     error=error_str,
                 )
+
+    async def _update_clover_prices(
+        self,
+        products_data: list,
+        store_mapping: StoreMapping,
+        use_original: bool = False,
+    ):
+        """
+        Update prices in Clover for products.
+
+        Called by the price scheduler when schedules trigger (apply or restore).
+        Uses on-demand token refresh inside the adapter. Rate-limits PATCH calls
+        with a short delay between items.
+
+        Args:
+            products_data: List of product data dicts with 'pc' (Clover item ID),
+                'pp' (price), and optionally 'original_price'.
+            store_mapping: Store mapping with Clover configuration.
+            use_original: If True, use original_price from product_data instead of 'pp'.
+        """
+        if store_mapping.source_system != "clover":
+            logger.debug(
+                "Store mapping is not for Clover, skipping Clover update",
+                store_mapping_id=str(store_mapping.id),
+            )
+            return
+
+        try:
+            clover_adapter = CloverIntegrationAdapter()
+            updates = 0
+            failed = 0
+
+            for product_data in products_data:
+                item_id = product_data["pc"]
+                if use_original:
+                    price_dollars = float(product_data.get("original_price", 0))
+                else:
+                    price_dollars = float(product_data.get("pp", 0))
+
+                if price_dollars <= 0:
+                    logger.warning(
+                        "Invalid price for Clover update",
+                        item_id=item_id,
+                        price=price_dollars,
+                        store_mapping_id=str(store_mapping.id),
+                    )
+                    failed += 1
+                    continue
+
+                products_by_source = self.supabase_service.get_products_by_source_id(
+                    "clover",
+                    item_id,
+                    source_store_id=store_mapping.source_store_id,
+                )
+                existing_product = products_by_source[0] if products_by_source else None
+
+                try:
+                    await clover_adapter.update_item_price(
+                        store_mapping=store_mapping,
+                        item_id=item_id,
+                        price_dollars=price_dollars,
+                        existing_product=existing_product,
+                    )
+                    updates += 1
+                except Exception as e:
+                    logger.error(
+                        "Failed to update Clover price",
+                        item_id=item_id,
+                        price=price_dollars,
+                        store_mapping_id=str(store_mapping.id),
+                        error=str(e),
+                    )
+                    failed += 1
+                    continue
+
+                await asyncio.sleep(0.1)
+
+            if updates:
+                logger.info(
+                    "Updated Clover prices",
+                    succeeded=updates,
+                    failed=failed,
+                    store_mapping_id=str(store_mapping.id),
+                )
+            if failed:
+                logger.warning(
+                    "Some Clover price updates failed",
+                    failed=failed,
+                    store_mapping_id=str(store_mapping.id),
+                )
+
+        except Exception as e:
+            logger.error(
+                "Failed to update Clover prices (non-critical)",
+                store_mapping_id=str(store_mapping.id),
+                error=str(e),
+            )
 
 
 async def run_price_scheduler():

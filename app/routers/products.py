@@ -35,7 +35,7 @@ class ProductSearchResult(BaseModel):
 @router.get("/search", response_model=List[ProductSearchResult])
 async def search_products(
     shop: str = Query(..., description="Shop domain or merchant ID"),
-    source_system: str = Query("shopify", description="Source system (shopify, square, ncr)"),
+    source_system: str = Query("shopify", description="Source system (shopify, square, ncr, clover)"),
     q: Optional[str] = Query(None, description="Search query (barcode, SKU, or title)"),
     limit: int = Query(20, description="Maximum number of results"),
 ):
