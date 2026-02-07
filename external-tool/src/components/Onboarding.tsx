@@ -28,6 +28,7 @@ export function Onboarding() {
     { label: 'Select POS System', value: '' },
     { label: 'NCR POS', value: 'ncr' },
     { label: 'Square', value: 'square' },
+    { label: 'Clover', value: 'clover' },
     { label: 'Shopify', value: 'shopify' },
   ]
 
