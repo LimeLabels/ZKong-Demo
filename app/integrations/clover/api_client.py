@@ -201,7 +201,8 @@ class CloverAPIClient:
         """
         Update an item's price (and optionally other fields).
 
-        PATCH /v3/merchants/{mId}/items/{itemId}
+        POST /v3/merchants/{mId}/items/{itemId}
+        Clover v3 Inventory API requires POST (not PATCH) to update an existing item.
         Price must be in cents. Clover API expects integer cents (e.g., $20.99 = 2099).
 
         Args:
@@ -226,7 +227,7 @@ class CloverAPIClient:
         url = f"{self.base_url}/v3/merchants/{merchant_id}/items/{raw_id}"
         body: Dict[str, Any] = {"price": price_cents, **kwargs}
         try:
-            response = await client.patch(
+            response = await client.post(
                 url,
                 headers=self._headers(),
                 json=body,
@@ -250,7 +251,7 @@ class CloverAPIClient:
             )
             raise CloverAPIError(
                 response.status_code,
-                f"PATCH item failed: {response.status_code}",
+                f"POST item failed: {response.status_code}",
                 body=response.text,
             )
 

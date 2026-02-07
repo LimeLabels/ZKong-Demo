@@ -1440,7 +1440,7 @@ class PriceScheduler:
         Update prices in Clover for products.
 
         Called by the price scheduler when schedules trigger (apply or restore).
-        Uses on-demand token refresh inside the adapter. Rate-limits PATCH calls
+        Uses on-demand token refresh inside the adapter. Rate-limits POST calls
         with a short delay between items.
 
         Args:
