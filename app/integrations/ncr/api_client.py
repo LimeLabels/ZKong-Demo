@@ -272,7 +272,11 @@ class NCRAPIClient:
         # Step 7: Handle errors
         if response.status_code >= 400:
             error_body = response.text
-            logger.error("NCR API error", status=response.status_code, body=error_body)
+            logger.error(
+                "NCR API error",
+                status=response.status_code,
+                body=error_body[:100] if error_body else "",
+            )
             raise Exception(f"NCR API error {response.status_code}: {error_body}")
         
         response.raise_for_status()
@@ -491,7 +495,7 @@ class NCRAPIClient:
             logger.error(
                 "NCR API error listing items",
                 status=response.status_code,
-                body=error_body,
+                body=error_body[:100] if error_body else "",
                 params=query_params,
             )
             raise Exception(f"NCR API error {response.status_code}: {error_body}")
@@ -583,7 +587,11 @@ class NCRAPIClient:
         # Step 5: Handle errors
         if response.status_code >= 400:
             error_body = response.text
-            logger.error("NCR API error", status=response.status_code, body=error_body)
+            logger.error(
+                "NCR API error",
+                status=response.status_code,
+                body=error_body[:100] if error_body else "",
+            )
             raise Exception(f"NCR API error {response.status_code}: {error_body}")
         
         response.raise_for_status()
@@ -663,7 +671,7 @@ class NCRAPIClient:
                 logger.error(
                     "NCR API error getting item price",
                     status=response.status_code,
-                    body=error_body,
+                    body=error_body[:100] if error_body else "",
                     item_code=item_code,
                 )
                 raise Exception(f"NCR API error {response.status_code}: {error_body}")

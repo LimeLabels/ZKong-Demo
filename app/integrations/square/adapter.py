@@ -360,7 +360,7 @@ class SquareIntegrationAdapter(BaseIntegrationAdapter):
                         logger.error(
                             "Square API error during pagination",
                             status=response.status_code,
-                            body=response.text,
+                            body=response.text[:100] if response.text else "",
                             page=page_count,
                         )
                         break
@@ -925,7 +925,11 @@ class SquareIntegrationAdapter(BaseIntegrationAdapter):
                     )
                     
                     if response.status_code != 200:
-                        logger.error("Square API Error", status=response.status_code, body=response.text)
+                        logger.error(
+                            "Square API Error",
+                            status=response.status_code,
+                            body=response.text[:100] if response.text else "",
+                        )
                         try:
                             slack_service = get_slack_service()
                             await slack_service.send_api_error_alert(

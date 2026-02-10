@@ -19,6 +19,7 @@ from fastapi.responses import RedirectResponse
 from app.config import settings
 from app.models.database import StoreMapping
 from app.services.supabase_service import SupabaseService
+from app.integrations.clover.token_encryption import encrypt_tokens_for_storage
 
 logger = structlog.get_logger()
 
@@ -231,6 +232,7 @@ async def clover_oauth_callback(
     }
     if store_name:
         metadata["store_name"] = store_name
+    metadata = encrypt_tokens_for_storage(metadata)
 
     supabase_service = SupabaseService()
     existing = supabase_service.get_store_mapping("clover", merchant_id)

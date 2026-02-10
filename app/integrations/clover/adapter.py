@@ -26,6 +26,7 @@ from app.integrations.clover.token_refresh import (
     CloverTokenRefreshService,
     ON_DEMAND_REFRESH_THRESHOLD_SECONDS,
 )
+from app.integrations.clover.token_encryption import decrypt_tokens_from_storage
 from app.config import settings
 from app.services.supabase_service import SupabaseService
 from app.services.slack_service import get_slack_service
@@ -116,8 +117,9 @@ class CloverIntegrationAdapter(BaseIntegrationAdapter):
         """
         if not store_mapping.metadata:
             return None
-        access_token = store_mapping.metadata.get("clover_access_token")
-        expiration = store_mapping.metadata.get("clover_access_token_expiration")
+        meta = decrypt_tokens_from_storage(store_mapping.metadata)
+        access_token = meta.get("clover_access_token")
+        expiration = meta.get("clover_access_token_expiration")
         if not access_token:
             return None
 
@@ -135,7 +137,8 @@ class CloverIntegrationAdapter(BaseIntegrationAdapter):
             if success and updated_mapping and updated_mapping.metadata:
                 # FIX 4: Use the updated_mapping returned from refresh (it has fresh tokens)
                 # Don't fall back to old store_mapping object
-                new_access_token = updated_mapping.metadata.get("clover_access_token")
+                new_meta = decrypt_tokens_from_storage(updated_mapping.metadata)
+                new_access_token = new_meta.get("clover_access_token")
                 if new_access_token:
                     return new_access_token
                 logger.warning(
@@ -254,7 +257,7 @@ class CloverIntegrationAdapter(BaseIntegrationAdapter):
         if skip_token_refresh:
             # Token was just issued (e.g. OAuth callback); use it as-is to avoid
             # racing with the worker's refresh in another process.
-            access_token = (store_mapping.metadata or {}).get("clover_access_token")
+            access_token = decrypt_tokens_from_storage(store_mapping.metadata or {}).get("clover_access_token")
         else:
             access_token = await self._ensure_valid_token(store_mapping)
 
@@ -465,7 +468,8 @@ class CloverIntegrationAdapter(BaseIntegrationAdapter):
                     )
                     continue
                 metadata = store_mapping.metadata or {}
-                access_token = metadata.get("clover_access_token")
+                decrypted = decrypt_tokens_from_storage(metadata)
+                access_token = decrypted.get("clover_access_token")
                 if not access_token:
                     errors.append(
                         {"merchant_id": merchant_id, "message": "No access token"}
