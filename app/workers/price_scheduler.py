@@ -1458,6 +1458,13 @@ class PriceScheduler:
             )
             return
 
+        # Adapter uses decrypt_tokens_from_storage when reading tokens; ensure worker is deployed with Pass 2.
+        logger.info(
+            "Updating Clover prices for schedule",
+            store_mapping_id=str(store_mapping.id),
+            product_count=len(products_data),
+            use_original=use_original,
+        )
         try:
             clover_adapter = CloverIntegrationAdapter()
             updates = 0

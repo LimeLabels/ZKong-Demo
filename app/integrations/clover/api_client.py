@@ -55,6 +55,7 @@ class CloverAPIClient:
         self._client: Optional[httpx.AsyncClient] = None
 
     def _headers(self) -> Dict[str, str]:
+        # access_token must be the plaintext Clover OAuth access token (adapter passes decrypted token from decrypt_tokens_from_storage).
         return {
             "Authorization": f"Bearer {self.access_token}",
             "Content-Type": "application/json",

@@ -174,6 +174,11 @@ class CloverIntegrationAdapter(BaseIntegrationAdapter):
         """
         access_token = await self._ensure_valid_token(store_mapping)
         if not access_token:
+            logger.warning(
+                "No valid Clover access token; cannot update item price (check encryption key / token in store mapping)",
+                store_mapping_id=str(store_mapping.id),
+                merchant_id=store_mapping.source_store_id,
+            )
             raise ValueError(
                 "No valid Clover access token; cannot update item price"
             )
@@ -184,6 +189,13 @@ class CloverIntegrationAdapter(BaseIntegrationAdapter):
                 f"Invalid price_dollars={price_dollars} (cents={price_cents})"
             )
 
+        # Token comes from _ensure_valid_token -> decrypt_tokens_from_storage(metadata)["clover_access_token"].
+        # It must be plaintext OAuth access token for Clover BOS POST; if worker runs old code without decrypt, ciphertext would be sent and Clover would reject.
+        logger.debug(
+            "Clover BOS price update: using OAuth access token from store mapping (decrypted if encryption enabled)",
+            store_mapping_id=str(store_mapping.id),
+            merchant_id=merchant_id,
+        )
         client = CloverAPIClient(access_token=access_token)
         try:
             await client.update_item(
