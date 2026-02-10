@@ -218,12 +218,31 @@ class CloverAPIClient:
         client = await self._get_client()
         url = f"{self.base_url}/v3/merchants/{merchant_id}/items/{raw_id}"
         body: Dict[str, Any] = {"price": price_cents, **kwargs}
+        
+        logger.info(
+            "Sending Clover API request",
+            method="POST",
+            url=url,
+            body=body,
+            merchant_id=merchant_id,
+            item_id=raw_id,
+        )
+        
         try:
             response = await client.post(
                 url,
                 headers=self._headers(),
                 json=body,
             )
+            
+            logger.info(
+                "Received Clover API response",
+                status_code=response.status_code,
+                merchant_id=merchant_id,
+                item_id=raw_id,
+                response_text=response.text[:500] if response.text else "",
+            )
+            
         except httpx.RequestError as e:
             logger.error(
                 "Clover API update_item request failed",

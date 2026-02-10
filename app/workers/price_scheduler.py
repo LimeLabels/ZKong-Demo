@@ -1517,6 +1517,7 @@ class PriceScheduler:
                         failed += 1
                         continue
 
+                    # Try to find product by source ID (assuming pc is item ID)
                     products_by_source = self.supabase_service.get_products_by_source_id(
                         "clover",
                         item_id,
@@ -1525,6 +1526,25 @@ class PriceScheduler:
                     existing_product = (
                         products_by_source[0] if products_by_source else None
                     )
+
+                    # If not found by ID, try to find by barcode (assuming pc is barcode)
+                    if not existing_product:
+                        possible_product = self.supabase_service.get_product_by_barcode(item_id)
+                        if (
+                            possible_product 
+                            and possible_product.source_system == "clover" 
+                            and possible_product.source_store_id == store_mapping.source_store_id
+                        ):
+                            existing_product = possible_product
+                            if existing_product.source_id:
+                                logger.info(
+                                    "Resolved Clover item ID from barcode", 
+                                    barcode=item_id, 
+                                    resolved_item_id=existing_product.source_id,
+                                    store_mapping_id=str(store_mapping.id)
+                                )
+                                # Update item_id to the actual Clover source_id
+                                item_id = existing_product.source_id
 
                     await clover_adapter.update_item_price(
                         store_mapping=store_mapping,

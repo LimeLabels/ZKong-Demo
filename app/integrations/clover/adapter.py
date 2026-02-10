@@ -195,9 +195,17 @@ class CloverIntegrationAdapter(BaseIntegrationAdapter):
             "Clover BOS price update: using OAuth access token from store mapping (decrypted if encryption enabled)",
             store_mapping_id=str(store_mapping.id),
             merchant_id=merchant_id,
+            token_prefix=access_token[:4] if access_token else "None",
         )
         client = CloverAPIClient(access_token=access_token)
         try:
+            logger.info(
+                "Attempting Clover API update_item",
+                merchant_id=merchant_id,
+                item_id=item_id,
+                price_cents=price_cents,
+                price_dollars=price_dollars,
+            )
             await client.update_item(
                 merchant_id=merchant_id,
                 item_id=item_id,
