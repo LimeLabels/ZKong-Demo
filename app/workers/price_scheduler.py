@@ -933,11 +933,23 @@ class PriceScheduler:
                     store_mapping,
                 )
 
-            # Update Clover prices if store mapping is for Clover
+            # Update Clover (BOS) prices if store mapping is for Clover
             if store_mapping.source_system == "clover":
+                logger.info(
+                    "Updating Clover BOS prices for schedule (time-based pricing)",
+                    schedule_id=str(schedule.id),
+                    store_mapping_id=str(store_mapping.id),
+                    product_count=len(updated_products_data),
+                )
                 await self._update_clover_prices(
                     updated_products_data,
                     store_mapping,
+                )
+            else:
+                logger.debug(
+                    "Skipping Clover BOS update (store is not Clover)",
+                    source_system=store_mapping.source_system,
+                    schedule_id=str(schedule.id),
                 )
 
         except Exception as e:
@@ -1118,8 +1130,14 @@ class PriceScheduler:
                     use_original=True,
                 )
 
-            # Update Clover prices if store mapping is for Clover (restore original prices)
+            # Update Clover (BOS) prices if store mapping is for Clover (restore original prices)
             if store_mapping.source_system == "clover":
+                logger.info(
+                    "Restoring Clover BOS prices for schedule",
+                    schedule_id=str(schedule.id),
+                    store_mapping_id=str(store_mapping.id),
+                    product_count=len(products_data),
+                )
                 await self._update_clover_prices(
                     products_data,
                     store_mapping,
@@ -1206,7 +1224,7 @@ class PriceScheduler:
 
         except Exception as e:
             # Log error but don't fail the entire operation
-                logger.error(
+            logger.error(
                 "Failed to update NCR prices (non-critical)",
                 store_mapping_id=str(store_mapping.id),
                 error=str(e),
@@ -1469,6 +1487,7 @@ class PriceScheduler:
             clover_adapter = CloverIntegrationAdapter()
             updates = 0
             failed = 0
+            ran_diagnostic = False
 
             for product_data in products_data:
                 item_id = product_data.get("pc")
@@ -1522,6 +1541,30 @@ class PriceScheduler:
                         error=str(e),
                     )
                     failed += 1
+                    # Run diagnostic on FIRST real failure only (avoid spamming)
+                    if not ran_diagnostic:
+                        ran_diagnostic = True
+                        try:
+                            from app.utils.clover_bos_diagnostic import diagnose_clover_bos
+
+                            diag = await diagnose_clover_bos(
+                                store_mapping=store_mapping,
+                                test_item_id=item_id,
+                            )
+                            logger.error(
+                                "=== CLOVER BOS DIAGNOSTIC (triggered by price update failure) ===",
+                                diagnosis=diag.get("diagnosis"),
+                                token_status=diag.get("token_status"),
+                                http_status=diag.get("http_status"),
+                                api_reachable=diag.get("api_reachable"),
+                                auth_valid=diag.get("auth_valid"),
+                                full_diagnostic=diag,
+                            )
+                        except Exception as diag_err:
+                            logger.warning(
+                                "Clover BOS diagnostic itself failed",
+                                error=str(diag_err),
+                            )
                     continue
 
                 await asyncio.sleep(0.1)

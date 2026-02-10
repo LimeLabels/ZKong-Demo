@@ -12,6 +12,7 @@ from datetime import datetime
 from app.config import settings
 from app.services.supabase_service import SupabaseService
 from app.workers.price_scheduler import PriceScheduler
+from app.utils.clover_bos_diagnostic import diagnose_clover_bos
 
 logger = structlog.get_logger()
 
@@ -338,4 +339,46 @@ async def trigger_schedule_manually(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error triggering schedule: {str(e)}",
         )
+
+
+@router.get("/clover/diagnose/{store_mapping_id}")
+async def clover_bos_diagnose(
+    store_mapping_id: str,
+    authorization: Optional[str] = Header(None),
+):
+    """
+    Manual diagnostic endpoint — hit this to check why Clover BOS
+    isn't updating prices for a given store mapping.
+
+    GET /external/clover/diagnose/{store_mapping_id}
+    """
+    # Reuse the same basic auth pattern as trigger_schedule_manually
+    if not authorization:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authorization header required",
+        )
+
+    valid_auth = (
+        f"Bearer {settings.ncr_shared_key}" if settings.ncr_shared_key else None
+    ) or (
+        f"Bearer {settings.square_webhook_secret}" if settings.square_webhook_secret else None
+    )
+
+    if authorization != valid_auth:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid authorization token",
+        )
+
+    mapping = supabase_service.get_store_mapping_by_id(store_mapping_id)
+    if not mapping:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Store mapping not found")
+
+    result = await diagnose_clover_bos(store_mapping=mapping)
+    return {
+        "store_mapping_id": store_mapping_id,
+        "diagnostic": result,
+    }
+
 
