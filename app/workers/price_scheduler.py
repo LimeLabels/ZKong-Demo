@@ -59,7 +59,7 @@ class PriceScheduler:
             client_id=getattr(settings, "hipoink_client_id", "default")
         )
         self.running = False
-        self.check_interval_seconds = 60  # Check every minute
+        self.check_interval_seconds = 15  # Check every 15 seconds for faster trigger response
 
     async def start(self):
         """Start the price scheduler loop."""
@@ -177,6 +177,59 @@ class PriceScheduler:
             )
 
             if not in_time_slot:
+                # SAFETY NET: Check if we missed a restore.
+                # If the schedule was triggered today (promo applied) and we're now past
+                # the slot end time, we need to restore original prices.
+                if schedule.last_triggered_at and schedule.time_slots:
+                    # Work entirely in store timezone to avoid UTC/store offset bugs
+                    last_trigger_local = schedule.last_triggered_at.astimezone(store_timezone)
+                    current_time_local = current_time  # already in store_timezone
+
+                    if last_trigger_local.date() == current_time_local.date():
+                        last_slot = schedule.time_slots[-1]
+                        last_end_time = datetime.strptime(last_slot["end_time"], "%H:%M").time()
+                        current_time_only = current_time_local.time()
+
+                        if current_time_only > last_end_time:
+                            # We're past the slot end — prices should have been restored.
+                            # Check if last trigger was near a start time (i.e. promo was applied).
+                            for slot in schedule.time_slots:
+                                start_time = datetime.strptime(
+                                    slot["start_time"], "%H:%M"
+                                ).time()
+                                last_trigger_time = last_trigger_local.time()
+                                start_diff = abs(
+                                    (
+                                        datetime.combine(
+                                            current_time_local.date(), last_trigger_time
+                                        )
+                                        - datetime.combine(
+                                            current_time_local.date(), start_time
+                                        )
+                                    ).total_seconds()
+                                )
+                                # Within 5 minutes of start → treat as promo-applied state
+                                if start_diff <= 300:
+                                    logger.warning(
+                                        "=== MISSED RESTORE DETECTED — Restoring now ===",
+                                        schedule_id=str(schedule.id),
+                                        last_triggered_at=schedule.last_triggered_at.isoformat(),
+                                        current_time=current_time_local.isoformat(),
+                                    )
+                                    products_data = schedule.products.get("products", [])
+                                    if products_data:
+                                        await self._restore_original_prices(
+                                            schedule, store_mapping, products_data
+                                        )
+                                        # Prevent repeated failsafe triggers on daily schedules:
+                                        # mark last_triggered_at as handled at current_time_utc.
+                                        self._update_schedule_next_trigger(
+                                            schedule,
+                                            schedule.next_trigger_at,
+                                            last_triggered_at=current_time_utc,
+                                        )
+                                    break
+
                 # Not in a time slot - calculate next trigger and skip
                 logger.info(
                     "Schedule not in time slot, calculating next trigger",
@@ -242,6 +295,12 @@ class PriceScheduler:
                     )
             else:
                 # Restore original prices (end of time slot)
+                logger.info(
+                    "=== END OF TIME SLOT — RESTORING PRICES ===",
+                    schedule_id=str(schedule.id),
+                    is_start=is_start,
+                    source_system=store_mapping.source_system,
+                )
                 await self._restore_original_prices(
                     schedule, store_mapping, products_data
                 )
@@ -310,7 +369,7 @@ class PriceScheduler:
             )
             time_diff_start = abs((current_time - start_datetime).total_seconds())
             
-            # Check if we're at the end time (within 2 minutes)
+            # Check if we're at the end time (within tolerance window)
             end_datetime = store_timezone.localize(
                 datetime.combine(current_time.date(), end_time)
             )
@@ -328,7 +387,7 @@ class PriceScheduler:
                 logger.info("At start of time slot", slot=slot, time_diff=time_diff_start)
                 return (True, True)
 
-            if time_diff_end <= 120:  # Within 2 minutes of end
+            if time_diff_end <= 300:  # Within 5 minutes of end (more tolerant so we don't miss restore)
                 logger.info("At end of time slot", slot=slot, time_diff=time_diff_end)
                 return (True, False)
 
@@ -962,6 +1021,12 @@ class PriceScheduler:
     ):
         """Restore original prices to products - preserves all existing product data."""
         logger.info(
+            "=== RESTORE ORIGINAL PRICES CALLED ===",
+            schedule_id=str(schedule.id),
+            source_system=store_mapping.source_system,
+            products_count=len(products_data),
+        )
+        logger.info(
             "Restoring original prices",
             schedule_id=str(schedule.id),
             store_mapping_id=str(store_mapping.id),
@@ -1127,7 +1192,7 @@ class PriceScheduler:
             # Update Clover (BOS) prices if store mapping is for Clover (restore original prices)
             if store_mapping.source_system == "clover":
                 logger.info(
-                    "Restoring Clover BOS prices for schedule",
+                    "=== CLOVER BOS RESTORE STARTING ===",
                     schedule_id=str(schedule.id),
                     store_mapping_id=str(store_mapping.id),
                     product_count=len(products_data),
@@ -1136,6 +1201,11 @@ class PriceScheduler:
                     products_data,
                     store_mapping,
                     use_original=True,
+                )
+                logger.info(
+                    "=== CLOVER BOS RESTORE FINISHED ===",
+                    schedule_id=str(schedule.id),
+                    store_mapping_id=str(store_mapping.id),
                 )
 
         except Exception as e:
