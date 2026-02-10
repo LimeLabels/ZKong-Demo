@@ -62,30 +62,35 @@ def decrypt_tokens_from_storage(metadata: Optional[Dict[str, Any]]) -> Dict[str,
     """
     if not metadata:
         return {}
+
     out = dict(metadata)
     fernet = _get_fernet()
+
+    # If no encryption key is configured, return values as-is (plaintext tokens work).
+    # If tokens are stored encrypted but key is missing, callers will see ciphertext
+    # and should surface a clear error rather than silently using it.
     if not fernet:
-        # No encryption key configured. Check if tokens look encrypted
-        # (starts with gAAAAA) — if so, we can't decrypt them and must
-        # not return ciphertext as a usable token.
-        for key in CLOVER_TOKEN_KEYS:
-            val = out.get(key)
-            if val and isinstance(val, str) and val.startswith("gAAAAA"):
-                logger.warning(
-                    "Clover token appears encrypted but no encryption key configured; clearing token",
-                    key=key,
-                    value_prefix=val[:15],
-                )
-                out[key] = None
         return out
+
     for key in CLOVER_TOKEN_KEYS:
         val = out.get(key)
-        if val and isinstance(val, str):
-            try:
-                out[key] = fernet.decrypt(val.encode("ascii")).decode("utf-8")
-            except InvalidToken:
-                # Plaintext (e.g. before migration or key not set when written)
-                pass
-            except Exception as e:
-                logger.warning("Clover token decryption failed", key=key, error=str(e))
+        if not val or not isinstance(val, str):
+            continue
+
+        # Only attempt decryption when the value looks like a Fernet token.
+        # Plaintext tokens (not starting with "gAAAAA") are left unchanged.
+        if not val.startswith("gAAAAA"):
+            continue
+
+        try:
+            out[key] = fernet.decrypt(val.encode("ascii")).decode("utf-8")
+        except InvalidToken:
+            # Value was plaintext or used a different key when written – leave as-is.
+            logger.warning(
+                "Clover token decryption failed with InvalidToken; leaving value unchanged",
+                key=key,
+            )
+        except Exception as e:
+            logger.warning("Clover token decryption failed", key=key, error=str(e))
+
     return out

@@ -1470,22 +1470,17 @@ class PriceScheduler:
             )
             return
 
-        # Validate token BEFORE entering the product loop to fail fast and loud
-        from app.integrations.clover.token_encryption import decrypt_tokens_from_storage
+        # Validate that we at least have some token configured in metadata.
+        # Actual decryption/plaintext handling is done inside the adapter via
+        # decrypt_tokens_from_storage / _ensure_valid_token.
+        access_token_raw = (store_mapping.metadata or {}).get("clover_access_token")
 
-        meta = decrypt_tokens_from_storage(store_mapping.metadata or {})
-        access_token_check = meta.get("clover_access_token")
-
-        if not access_token_check:
+        if not access_token_raw:
             logger.error(
-                "=== CLOVER BOS UPDATE ABORTED: No access token after decryption ===\n"
-                "Likely cause: CLOVER_TOKEN_ENCRYPTION_KEY env var is missing or wrong "
-                "in the worker environment, but tokens are stored encrypted in DB.\n"
-                "Fix: Set CLOVER_TOKEN_ENCRYPTION_KEY on the worker Railway service.",
+                "=== CLOVER BOS UPDATE ABORTED: No clover_access_token in store mapping metadata ===",
                 store_mapping_id=str(store_mapping.id),
                 merchant_id=store_mapping.source_store_id,
                 has_metadata=bool(store_mapping.metadata),
-                raw_token_prefix=(store_mapping.metadata or {}).get("clover_access_token", "")[:20],
             )
             return
 
@@ -1495,8 +1490,7 @@ class PriceScheduler:
             merchant_id=store_mapping.source_store_id,
             product_count=len(products_data),
             use_original=use_original,
-            token_prefix=access_token_check[:8] if access_token_check else "NONE",
-            token_looks_encrypted=access_token_check.startswith("gAAAAA") if access_token_check else False,
+            token_prefix=str(access_token_raw)[:8],
         )
         try:
             clover_adapter = CloverIntegrationAdapter()
