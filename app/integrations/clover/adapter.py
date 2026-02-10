@@ -189,6 +189,19 @@ class CloverIntegrationAdapter(BaseIntegrationAdapter):
                 f"Invalid price_dollars={price_dollars} (cents={price_cents})"
             )
 
+        # Safety check: Ensure token is not encrypted ciphertext
+        if access_token and access_token.startswith("gAAAAA"):
+            logger.error(
+                "Clover access token appears to be encrypted ciphertext! "
+                "Missing CLOVER_TOKEN_ENCRYPTION_KEY in environment? "
+                "Cannot use this token for API calls.",
+                merchant_id=merchant_id,
+                store_mapping_id=str(store_mapping.id),
+            )
+            raise ValueError(
+                "Clover access token is encrypted ciphertext (missing decryption key?)"
+            )
+
         # Token comes from _ensure_valid_token -> decrypt_tokens_from_storage(metadata)["clover_access_token"].
         # It must be plaintext OAuth access token for Clover BOS POST; if worker runs old code without decrypt, ciphertext would be sent and Clover would reject.
         logger.debug(

@@ -65,6 +65,18 @@ def decrypt_tokens_from_storage(metadata: Optional[Dict[str, Any]]) -> Dict[str,
     out = dict(metadata)
     fernet = _get_fernet()
     if not fernet:
+        # No encryption key configured. Check if tokens look encrypted
+        # (starts with gAAAAA) — if so, we can't decrypt them and must
+        # not return ciphertext as a usable token.
+        for key in CLOVER_TOKEN_KEYS:
+            val = out.get(key)
+            if val and isinstance(val, str) and val.startswith("gAAAAA"):
+                logger.warning(
+                    "Clover token appears encrypted but no encryption key configured; clearing token",
+                    key=key,
+                    value_prefix=val[:15],
+                )
+                out[key] = None
         return out
     for key in CLOVER_TOKEN_KEYS:
         val = out.get(key)

@@ -945,12 +945,6 @@ class PriceScheduler:
                     updated_products_data,
                     store_mapping,
                 )
-            else:
-                logger.debug(
-                    "Skipping Clover BOS update (store is not Clover)",
-                    source_system=store_mapping.source_system,
-                    schedule_id=str(schedule.id),
-                )
 
         except Exception as e:
             logger.error(
@@ -1476,18 +1470,38 @@ class PriceScheduler:
             )
             return
 
-        # Adapter uses decrypt_tokens_from_storage when reading tokens; ensure worker is deployed with Pass 2.
+        # Validate token BEFORE entering the product loop to fail fast and loud
+        from app.integrations.clover.token_encryption import decrypt_tokens_from_storage
+
+        meta = decrypt_tokens_from_storage(store_mapping.metadata or {})
+        access_token_check = meta.get("clover_access_token")
+
+        if not access_token_check:
+            logger.error(
+                "=== CLOVER BOS UPDATE ABORTED: No access token after decryption ===\n"
+                "Likely cause: CLOVER_TOKEN_ENCRYPTION_KEY env var is missing or wrong "
+                "in the worker environment, but tokens are stored encrypted in DB.\n"
+                "Fix: Set CLOVER_TOKEN_ENCRYPTION_KEY on the worker Railway service.",
+                store_mapping_id=str(store_mapping.id),
+                merchant_id=store_mapping.source_store_id,
+                has_metadata=bool(store_mapping.metadata),
+                raw_token_prefix=(store_mapping.metadata or {}).get("clover_access_token", "")[:20],
+            )
+            return
+
         logger.info(
-            "Updating Clover prices for schedule",
+            "=== CLOVER BOS UPDATE STARTING ===",
             store_mapping_id=str(store_mapping.id),
+            merchant_id=store_mapping.source_store_id,
             product_count=len(products_data),
             use_original=use_original,
+            token_prefix=access_token_check[:8] if access_token_check else "NONE",
+            token_looks_encrypted=access_token_check.startswith("gAAAAA") if access_token_check else False,
         )
         try:
             clover_adapter = CloverIntegrationAdapter()
             updates = 0
             failed = 0
-            ran_diagnostic = False
 
             for product_data in products_data:
                 item_id = product_data.get("pc")
@@ -1546,6 +1560,12 @@ class PriceScheduler:
                                 # Update item_id to the actual Clover source_id
                                 item_id = existing_product.source_id
 
+                    logger.info(
+                        "Calling Clover adapter.update_item_price",
+                        item_id=item_id,
+                        price_dollars=price_dollars,
+                        merchant_id=store_mapping.source_store_id,
+                    )
                     await clover_adapter.update_item_price(
                         store_mapping=store_mapping,
                         item_id=item_id,
@@ -1553,61 +1573,38 @@ class PriceScheduler:
                         existing_product=existing_product,
                     )
                     updates += 1
+                    logger.info(
+                        "=== CLOVER BOS ITEM PRICE UPDATED SUCCESSFULLY ===",
+                        item_id=item_id,
+                        price_dollars=price_dollars,
+                    )
                 except Exception as e:
                     logger.error(
-                        "Failed to update Clover price",
+                        "=== CLOVER BOS ITEM PRICE UPDATE FAILED ===",
                         item_id=item_id,
                         store_mapping_id=str(store_mapping.id),
                         error=str(e),
+                        error_type=type(e).__name__,
                     )
                     failed += 1
-                    # Run diagnostic on FIRST real failure only (avoid spamming)
-                    if not ran_diagnostic:
-                        ran_diagnostic = True
-                        try:
-                            from app.utils.clover_bos_diagnostic import diagnose_clover_bos
-
-                            diag = await diagnose_clover_bos(
-                                store_mapping=store_mapping,
-                                test_item_id=item_id,
-                            )
-                            logger.error(
-                                "=== CLOVER BOS DIAGNOSTIC (triggered by price update failure) ===",
-                                diagnosis=diag.get("diagnosis"),
-                                token_status=diag.get("token_status"),
-                                http_status=diag.get("http_status"),
-                                api_reachable=diag.get("api_reachable"),
-                                auth_valid=diag.get("auth_valid"),
-                                full_diagnostic=diag,
-                            )
-                        except Exception as diag_err:
-                            logger.warning(
-                                "Clover BOS diagnostic itself failed",
-                                error=str(diag_err),
-                            )
                     continue
 
                 await asyncio.sleep(0.1)
 
-            if updates:
-                logger.info(
-                    "Updated Clover prices",
-                    succeeded=updates,
-                    failed=failed,
-                    store_mapping_id=str(store_mapping.id),
-                )
-            if failed:
-                logger.warning(
-                    "Some Clover price updates failed",
-                    failed=failed,
-                    store_mapping_id=str(store_mapping.id),
-                )
+            logger.info(
+                "=== CLOVER BOS UPDATE FINISHED ===",
+                succeeded=updates,
+                failed=failed,
+                total=len(products_data),
+                store_mapping_id=str(store_mapping.id),
+            )
 
         except Exception as e:
             logger.error(
-                "Failed to update Clover prices (non-critical)",
+                "=== CLOVER BOS UPDATE CRASHED ===",
                 store_mapping_id=str(store_mapping.id),
                 error=str(e),
+                error_type=type(e).__name__,
             )
 
 
