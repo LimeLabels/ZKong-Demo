@@ -20,7 +20,7 @@ router = APIRouter(prefix="/external", tags=["external-webhooks"])
 
 # Initialize services
 supabase_service = SupabaseService()
-# PriceScheduler initializes its own SupabaseService internally
+# PriceScheduler initializes its own SupabaseService internally 
 price_scheduler = PriceScheduler()
 
 
