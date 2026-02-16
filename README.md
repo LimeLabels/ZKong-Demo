@@ -106,8 +106,7 @@ ZKong-Demo/
 │       └── components/              # Dashboard components
 ├── docs/                            # Additional documentation
 │   ├── USER_FLOW.md                 # Complete user flow guide
-│   ├── TIME_BASED_PRICING.md        # Time-based pricing docs
-│   └── README_CALENDAR_UI.md        # Calendar UI reference
+│   └── TIME_BASED_PRICING.md        # Time-based pricing docs
 ├── .env.example
 ├── requirements.txt
 └── README.md
@@ -336,7 +335,7 @@ Product fields mapped:
 The system is designed to support multiple integrations:
 
 1. Add new integration type in `store_mappings.source_system`
-2. Create transformer service (similar to `shopify_service.py`)
+2. Create integration adapter (see `app/integrations/shopify/adapter.py` as reference)
 3. Add webhook router for new integration
 4. Configure store mappings via API
 

@@ -66,54 +66,6 @@ class ShopifyProduct(BaseModel):
     options: List[dict] = Field(default_factory=list)
 
 
-class ShopifyWebhookBase(BaseModel):
-    """Base model for Shopify webhooks."""
-
-    id: int
-    email: Optional[str] = None
-    created_at: Optional[datetime] = None
-    updated_at: Optional[datetime] = None
-    number: Optional[int] = None
-    note: Optional[str] = None
-    token: Optional[str] = None
-    gateway: Optional[str] = None
-    test: Optional[bool] = None
-    total_price: Optional[str] = None
-    subtotal_price: Optional[str] = None
-    total_weight: Optional[int] = None
-    total_tax: Optional[str] = None
-    taxes_included: Optional[bool] = None
-    currency: Optional[str] = None
-    financial_status: Optional[str] = None
-    confirmed: Optional[bool] = None
-    total_discounts: Optional[str] = None
-    buyer_accepts_marketing: Optional[bool] = None
-    name: Optional[str] = None
-    referring_site: Optional[str] = None
-    landing_site: Optional[str] = None
-    cancelled_at: Optional[datetime] = None
-    cancel_reason: Optional[str] = None
-    total_line_items_price: Optional[str] = None
-    total_duties: Optional[str] = None
-    billing_address: Optional[dict] = None
-    shipping_address: Optional[dict] = None
-    customer: Optional[dict] = None
-    discount_codes: Optional[List[dict]] = None
-    note_attributes: Optional[List[dict]] = None
-    payment_gateway_names: Optional[List[str]] = None
-    processing_method: Optional[str] = None
-    checkout_id: Optional[int] = None
-    source_name: Optional[str] = None
-    fulfillment_status: Optional[str] = None
-    order_adjustments: Optional[List[dict]] = None
-    line_items: Optional[List[dict]] = None
-    shipping_lines: Optional[List[dict]] = None
-    tax_lines: Optional[List[dict]] = None
-    discount_applications: Optional[List[dict]] = None
-    fulfillment: Optional[List[dict]] = None
-    refunds: Optional[List[dict]] = None
-
-
 class ProductCreateWebhook(BaseModel):
     """Webhook payload for products/create event."""
 

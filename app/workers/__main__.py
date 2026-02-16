@@ -20,7 +20,6 @@ from app.workers.token_refresh_scheduler import run_token_refresh_scheduler
 from app.workers.clover_sync_worker import run_clover_sync_worker
 # from app.workers.ncr_sync_worker import run_ncr_sync_worker  # Temporarily disabled
 
-#testing
 
 def _run_health_server():
     """Run a minimal HTTP server for GET /health so Railway health checks pass."""
