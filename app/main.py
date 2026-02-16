@@ -9,20 +9,15 @@ from app.utils.logger import configure_logging
 from app.routers import (
     webhooks,
     store_mappings,
-    webhooks_new,
     shopify_auth,
     square_auth,
     clover_auth,
     price_adjustments,
     products,
-    ncr_test,
     external_webhooks,
     auth,
 )
 from app.integrations.registry import integration_registry
-# Explicitly import adapters to ensure they're loaded and registered
-import app.integrations.square.adapter  # noqa: F401
-import app.integrations.shopify.adapter  # noqa: F401
 import structlog
 
 # Configure logging first
@@ -46,8 +41,7 @@ app.add_middleware(
 )
 
 # Include routers
-app.include_router(webhooks.router)  # Legacy routes for backward compatibility
-app.include_router(webhooks_new.router)  # New generic integration router
+app.include_router(webhooks.router)  # Consolidated webhook router (legacy + generic)
 app.include_router(store_mappings.router)
 app.include_router(shopify_auth.router)  # Shopify OAuth endpoints
 app.include_router(shopify_auth.api_router)  # Shopify API auth endpoints
@@ -56,7 +50,6 @@ app.include_router(square_auth.api_router)  # Square API auth endpoints
 app.include_router(clover_auth.router)  # Clover OAuth endpoints
 app.include_router(price_adjustments.router)  # Time-based price adjustment schedules
 app.include_router(products.router)  # Product search endpoints
-app.include_router(ncr_test.router)  # NCR integration test endpoints
 app.include_router(external_webhooks.router)  # External webhooks for NCR and Square
 app.include_router(auth.router)  # Authentication endpoints
 
