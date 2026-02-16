@@ -471,9 +471,14 @@ class CloverIntegrationAdapter(BaseIntegrationAdapter):
         Handle Clover webhook: verification POST first, then validate payload,
         then process all merchants (collect errors, always return 200).
         """
-        # a) Verification POST: dashboard sends only verificationCode
+        # a) Verification POST: dashboard sends only verificationCode (webhook URL setup)
         if "verificationCode" in payload and "merchants" not in payload:
-            return {"verificationCode": payload["verificationCode"]}
+            verification_code = payload.get("verificationCode", "")
+            logger.info(
+                "Clover webhook URL verification (setup): returning verificationCode for dashboard",
+                verification_code=verification_code,
+            )
+            return {"verificationCode": verification_code}
 
         # b) Payload validation
         try:

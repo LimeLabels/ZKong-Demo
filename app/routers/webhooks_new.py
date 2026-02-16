@@ -104,7 +104,8 @@ async def handle_webhook(
             # Clover sends a one-time verification POST with only {"verificationCode": "..."}
             # BEFORE the auth code exists. Allow that specific request through without X-Clover-Auth.
             if b"verificationCode" in body_bytes and b"merchants" not in body_bytes:
-                logger.info("Clover webhook verification request received")
+                # Verification code is logged in adapter when we return the response
+                pass
             else:
                 if not (signature and str(signature).strip()):
                     logger.warning(
