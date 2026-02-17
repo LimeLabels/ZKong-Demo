@@ -66,6 +66,10 @@ class Settings(BaseSettings):
     clover_sync_interval_seconds: int = 300  # Poll every 5 minutes
     clover_sync_enabled: bool = True
     clover_cleanup_interval_hours: int = 24  # Ghost-item cleanup every 24 hours
+    # Clover token refresh: min seconds between refresh attempts per merchant (avoids hammering Clover)
+    clover_refresh_min_interval_seconds: int = 30
+    # Clover tokens at rest: if set, encrypt clover_access_token and clover_refresh_token in store_mappings.metadata (Fernet)
+    clover_token_encryption_key: str = ""
 
     # Application Configuration
     app_environment: str = "development"

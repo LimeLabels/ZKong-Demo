@@ -3,7 +3,7 @@ Supabase service layer for database operations.
 Handles CRUD operations for products, sync_queue, sync_log, and store_mappings.
 """
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
@@ -202,6 +202,67 @@ class SupabaseService:
                 error=str(e),
             )
             return None
+
+    def merge_store_mapping_metadata(self, mapping_id: UUID, metadata: dict[str, Any]) -> None:
+        """
+        Atomically merge metadata into store_mappings (single DB update).
+        Use this for token updates to avoid read-modify-write races across workers.
+        Requires DB function merge_store_mapping_metadata(p_id uuid, p_metadata jsonb).
+        """
+        self.client.rpc(
+            "merge_store_mapping_metadata",
+            {"p_id": str(mapping_id), "p_metadata": metadata},
+        ).execute()
+
+    def try_mark_webhook_processed(
+        self,
+        integration: str,
+        entity_type: str,
+        entity_id: str,
+        status_or_type: str,
+    ) -> bool:
+        """
+        Record webhook as processed for deduplication. Returns True if this is the first
+        time (should process), False if already seen (skip). Uses webhook_dedup table.
+        """
+        try:
+            result = (
+                self.client.table("webhook_dedup")
+                .insert(
+                    {
+                        "integration": integration,
+                        "entity_type": entity_type,
+                        "entity_id": entity_id,
+                        "status_or_type": status_or_type,
+                    }
+                )
+                .execute()
+            )
+            return result.data is not None and len(result.data) > 0
+        except Exception as e:
+            err_msg = str(e).lower()
+            if "unique" in err_msg or "23505" in err_msg or "duplicate" in err_msg:
+                return False
+            raise
+
+    def cleanup_webhook_dedup(self, older_than_seconds: int) -> int:
+        """
+        Delete webhook_dedup rows older than the given seconds (e.g. 10 * 60 for 10-min TTL).
+        Returns number of rows deleted (best-effort; Supabase may not return count).
+        """
+        try:
+            from datetime import datetime, timedelta
+
+            cutoff = (datetime.now(UTC) - timedelta(seconds=older_than_seconds)).isoformat()
+            result = self.client.table("webhook_dedup").delete().lt("created_at", cutoff).execute()
+            return len(result.data) if result.data else 0
+        except Exception as e:
+            logger.warning(
+                "webhook_dedup cleanup failed",
+                older_than_seconds=older_than_seconds,
+                error=str(e),
+            )
+            return 0
 
     def get_store_mappings_by_source_system(self, source_system: str) -> list[StoreMapping]:
         """
