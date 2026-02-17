@@ -49,7 +49,7 @@ class CloverAPIClient:
             self.base_url = base_url.rstrip("/")
         else:
             if settings.clover_environment == "sandbox":
-                self.base_url = "https://sandbox.dev.clover.com"
+                self.base_url = "https://apisandbox.dev.clover.com"
             else:
                 self.base_url = "https://api.clover.com"
         self._client: Optional[httpx.AsyncClient] = None
@@ -119,34 +119,19 @@ class CloverAPIClient:
                 )
 
             data = response.json()
-            # Clover may return {"elements": [...]} or a list; normalize to list
-            if isinstance(data, list):
-                items = data
-            elif isinstance(data, dict) and "elements" in data:
-                items = data.get("elements", [])
-            else:
-                items = data if isinstance(data, list) else []
-
-            all_items.extend(items)
-            if len(items) < DEFAULT_LIMIT:
+            elements = data.get("elements") if isinstance(data, dict) else []
+            if not elements:
+                break
+            all_items.extend(elements)
+            if len(elements) < DEFAULT_LIMIT:
                 break
             offset += DEFAULT_LIMIT
+            await asyncio.sleep(PAGINATION_DELAY_SECONDS)
 
-            # Rate limiting: small delay between pages
-            if offset > 0:
-                await asyncio.sleep(PAGINATION_DELAY_SECONDS)
-
-        logger.info(
-            "Clover list_items completed",
-            merchant_id=merchant_id,
-            total_items=len(all_items),
-        )
         return all_items
 
     async def get_item(
-        self,
-        merchant_id: str,
-        item_id: str,
+        self, merchant_id: str, item_id: str
     ) -> Optional[Dict[str, Any]]:
         """
         Fetch a single item by ID.
@@ -154,21 +139,27 @@ class CloverAPIClient:
         GET /v3/merchants/{mId}/items/{itemId}
 
         Args:
-            merchant_id: Clover merchant ID.
-            item_id: Clover item ID (without the "I:" prefix).
+            merchant_id: Clover merchant ID (mId).
+            item_id: Clover item ID (with or without "I:" prefix; prefix is stripped).
 
         Returns:
-            Item dict or None if 404.
+            Item dict or None if not found.
         """
+        raw_id = str(item_id).strip()
+        if raw_id.upper().startswith("I:"):
+            raw_id = raw_id[2:].strip()
+        if not raw_id:
+            return None
+
         client = await self._get_client()
-        url = f"{self.base_url}/v3/merchants/{merchant_id}/items/{item_id}"
+        url = f"{self.base_url}/v3/merchants/{merchant_id}/items/{raw_id}"
         try:
             response = await client.get(url, headers=self._headers())
         except httpx.RequestError as e:
             logger.error(
-                "Clover API request failed",
+                "Clover API get_item request failed",
                 merchant_id=merchant_id,
-                item_id=item_id,
+                item_id=raw_id,
                 error=str(e),
             )
             raise CloverAPIError(0, str(e)) from e
@@ -177,11 +168,11 @@ class CloverAPIClient:
             return None
         if response.status_code != 200:
             logger.error(
-                "Clover API error",
+                "Clover API error get_item",
                 status_code=response.status_code,
                 body=response.text[:500],
                 merchant_id=merchant_id,
-                item_id=item_id,
+                item_id=raw_id,
             )
             raise CloverAPIError(
                 response.status_code,
@@ -201,7 +192,8 @@ class CloverAPIClient:
         """
         Update an item's price (and optionally other fields).
 
-        PATCH /v3/merchants/{mId}/items/{itemId}
+        POST /v3/merchants/{mId}/items/{itemId}
+        Clover v3 Inventory API requires POST (not PATCH) to update an existing item.
         Price must be in cents. Clover API expects integer cents (e.g., $20.99 = 2099).
 
         Args:
@@ -226,7 +218,7 @@ class CloverAPIClient:
         url = f"{self.base_url}/v3/merchants/{merchant_id}/items/{raw_id}"
         body: Dict[str, Any] = {"price": price_cents, **kwargs}
         try:
-            response = await client.patch(
+            response = await client.post(
                 url,
                 headers=self._headers(),
                 json=body,
@@ -250,7 +242,7 @@ class CloverAPIClient:
             )
             raise CloverAPIError(
                 response.status_code,
-                f"PATCH item failed: {response.status_code}",
+                f"POST item failed: {response.status_code}",
                 body=response.text,
             )
 
@@ -269,11 +261,11 @@ class CloverAPIClient:
 
         Args:
             merchant_id: Clover merchant ID (mId).
-            modified_since: Unix timestamp in MILLISECONDS; items with modifiedTime >= this are returned.
-            limit: Page size (default 100).
+            modified_since: Unix timestamp in milliseconds; items with modifiedTime >= this are returned.
+            limit: Max items per request.
 
         Returns:
-            List of item dicts (raw API shape). First run with modified_since=0 returns all items.
+            List of item dicts (raw API shape).
         """
         all_items: List[Dict[str, Any]] = []
         offset = 0
@@ -282,9 +274,9 @@ class CloverAPIClient:
         while True:
             url = f"{self.base_url}/v3/merchants/{merchant_id}/items"
             params = {
-                "filter": f"modifiedTime>={modified_since}",
                 "limit": limit,
                 "offset": offset,
+                "filter": f"modifiedTime>={modified_since}",
             }
             try:
                 response = await client.get(
@@ -296,7 +288,7 @@ class CloverAPIClient:
                 logger.error(
                     "Clover API list_items_modified_since request failed",
                     merchant_id=merchant_id,
-                    offset=offset,
+                    modified_since=modified_since,
                     error=str(e),
                 )
                 raise CloverAPIError(0, str(e)) from e
@@ -315,42 +307,29 @@ class CloverAPIClient:
                 )
 
             data = response.json()
-            if isinstance(data, list):
-                items = data
-            elif isinstance(data, dict) and "elements" in data:
-                items = data.get("elements", [])
-            else:
-                items = data if isinstance(data, list) else []
-
-            all_items.extend(items)
-            if len(items) < limit:
+            elements = data.get("elements") if isinstance(data, dict) else []
+            if not elements:
+                break
+            all_items.extend(elements)
+            if len(elements) < limit:
                 break
             offset += limit
-            if offset > 0:
-                await asyncio.sleep(PAGINATION_DELAY_SECONDS)
+            await asyncio.sleep(PAGINATION_DELAY_SECONDS)
 
-        logger.debug(
-            "Clover list_items_modified_since completed",
-            merchant_id=merchant_id,
-            modified_since=modified_since,
-            total_items=len(all_items),
-        )
         return all_items
 
     async def list_all_item_ids(self, merchant_id: str) -> List[str]:
         """
-        Fetch only item IDs for ghost-item cleanup (lightweight).
-
-        GET /v3/merchants/{mId}/items with minimal payload.
-        If the API does not support sparse fields, we still paginate and collect ids.
+        Fetch all item IDs for a merchant (for ghost-item cleanup).
+        Uses list_items and extracts IDs to avoid holding full payloads.
 
         Args:
             merchant_id: Clover merchant ID (mId).
 
         Returns:
-            List of Clover item ID strings.
+            List of Clover item IDs (without I: prefix).
         """
-        all_ids: List[str] = []
+        ids: List[str] = []
         offset = 0
         client = await self._get_client()
 
@@ -381,33 +360,19 @@ class CloverAPIClient:
                 )
                 raise CloverAPIError(
                     response.status_code,
-                    f"GET items (ids) failed: {response.status_code}",
+                    f"GET items failed: {response.status_code}",
                     body=response.text,
                 )
 
             data = response.json()
-            if isinstance(data, list):
-                items = data
-            elif isinstance(data, dict) and "elements" in data:
-                items = data.get("elements", [])
-            else:
-                items = data if isinstance(data, list) else []
-
-            for item in items:
-                if isinstance(item, dict) and item.get("id"):
-                    all_ids.append(str(item["id"]))
-                elif isinstance(item, str):
-                    all_ids.append(item)
-
-            if len(items) < DEFAULT_LIMIT:
+            elements = data.get("elements") if isinstance(data, dict) else []
+            for item in elements:
+                item_id = item.get("id")
+                if item_id:
+                    ids.append(str(item_id))
+            if len(elements) < DEFAULT_LIMIT:
                 break
             offset += DEFAULT_LIMIT
-            if offset > 0:
-                await asyncio.sleep(PAGINATION_DELAY_SECONDS)
+            await asyncio.sleep(PAGINATION_DELAY_SECONDS)
 
-        logger.debug(
-            "Clover list_all_item_ids completed",
-            merchant_id=merchant_id,
-            total_ids=len(all_ids),
-        )
-        return all_ids
+        return ids

@@ -159,7 +159,7 @@ class CloverIntegrationAdapter(BaseIntegrationAdapter):
         Update a single item's price in Clover and optionally in the local DB.
 
         Uses on-demand token refresh. Converts dollars to cents with round() to avoid
-        floating-point truncation. After a successful PATCH, updates the product's
+        floating-point truncation. After a successful POST, updates the product's
         price in the database when existing_product is provided (mirrors Square behavior).
 
         Args:
@@ -202,7 +202,7 @@ class CloverIntegrationAdapter(BaseIntegrationAdapter):
                         existing_product
                     )
                     logger.debug(
-                        "Updated local DB price after Clover PATCH",
+                        "Updated local DB price after Clover POST",
                         product_id=str(existing_product.id),
                         store_mapping_id=str(store_mapping.id),
                     )

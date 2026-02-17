@@ -1440,8 +1440,10 @@ class PriceScheduler:
         Update prices in Clover for products.
 
         Called by the price scheduler when schedules trigger (apply or restore).
-        Uses on-demand token refresh inside the adapter. Rate-limits PATCH calls
-        with a short delay between items.
+        Uses on-demand token refresh inside the adapter. Rate-limits POST calls
+        with a short delay between items. When use_original=True, None or missing
+        original_price is treated as 0 and that product is skipped so one bad
+        entry does not abort the rest.
 
         Args:
             products_data: List of product data dicts with 'pc' (Clover item ID),
@@ -1462,30 +1464,42 @@ class PriceScheduler:
             failed = 0
 
             for product_data in products_data:
-                item_id = product_data["pc"]
-                if use_original:
-                    price_dollars = float(product_data.get("original_price", 0))
-                else:
-                    price_dollars = float(product_data.get("pp", 0))
-
-                if price_dollars <= 0:
+                item_id = product_data.get("pc")
+                if not item_id:
                     logger.warning(
-                        "Invalid price for Clover update",
-                        item_id=item_id,
-                        price=price_dollars,
+                        "Clover update skipped: missing product code (pc)",
                         store_mapping_id=str(store_mapping.id),
                     )
                     failed += 1
                     continue
 
-                products_by_source = self.supabase_service.get_products_by_source_id(
-                    "clover",
-                    item_id,
-                    source_store_id=store_mapping.source_store_id,
-                )
-                existing_product = products_by_source[0] if products_by_source else None
-
                 try:
+                    if use_original:
+                        price_dollars = float(
+                            product_data.get("original_price") or 0
+                        )
+                    else:
+                        price_dollars = float(product_data.get("pp") or 0)
+
+                    if price_dollars <= 0:
+                        logger.warning(
+                            "Invalid price for Clover update (missing or non-positive)",
+                            item_id=item_id,
+                            price=price_dollars,
+                            store_mapping_id=str(store_mapping.id),
+                        )
+                        failed += 1
+                        continue
+
+                    products_by_source = self.supabase_service.get_products_by_source_id(
+                        "clover",
+                        item_id,
+                        source_store_id=store_mapping.source_store_id,
+                    )
+                    existing_product = (
+                        products_by_source[0] if products_by_source else None
+                    )
+
                     await clover_adapter.update_item_price(
                         store_mapping=store_mapping,
                         item_id=item_id,
@@ -1497,7 +1511,6 @@ class PriceScheduler:
                     logger.error(
                         "Failed to update Clover price",
                         item_id=item_id,
-                        price=price_dollars,
                         store_mapping_id=str(store_mapping.id),
                         error=str(e),
                     )
