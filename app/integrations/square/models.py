@@ -3,8 +3,9 @@ Pydantic models for Square webhook payloads.
 Handles catalog.version.updated and inventory.count.updated events.
 """
 
+from typing import Any
+
 from pydantic import BaseModel
-from typing import Optional, List, Dict, Any
 
 
 class SquareMoney(BaseModel):
@@ -16,57 +17,60 @@ class SquareMoney(BaseModel):
 
 class MeasurementUnit(BaseModel):
     """Square measurement unit (weight, volume, etc.)"""
-    weight_unit: Optional[str] = None  # IMPERIAL_WEIGHT_OUNCE, IMPERIAL_POUND, etc.
-    custom_unit: Optional[dict] = None
+
+    weight_unit: str | None = None  # IMPERIAL_WEIGHT_OUNCE, IMPERIAL_POUND, etc.
+    custom_unit: dict | None = None
 
 
 class MeasurementUnitData(BaseModel):
     """Container for measurement unit info"""
-    measurement_unit: Optional[MeasurementUnit] = None
-    precision: Optional[int] = None
+
+    measurement_unit: MeasurementUnit | None = None
+    precision: int | None = None
 
 
 class CatalogMeasurementUnit(BaseModel):
     """Full measurement unit catalog object"""
+
     type: str  # "MEASUREMENT_UNIT"
     id: str
-    measurement_unit_data: Optional[MeasurementUnitData] = None
+    measurement_unit_data: MeasurementUnitData | None = None
 
 
 class SquareItemData(BaseModel):
     """Square item data within a catalog object."""
 
-    name: Optional[str] = None
-    description: Optional[str] = None
-    variations: Optional[List[Dict[str, Any]]] = None
-    product_type: Optional[str] = None
-    ean: Optional[str] = None  # Barcode (EAN-13 format)
-    image_ids: Optional[List[str]] = None
+    name: str | None = None
+    description: str | None = None
+    variations: list[dict[str, Any]] | None = None
+    product_type: str | None = None
+    ean: str | None = None  # Barcode (EAN-13 format)
+    image_ids: list[str] | None = None
 
 
 class SquareCatalogObjectVariation(BaseModel):
     """Square catalog object variation (like Shopify variant)."""
 
-    id: Optional[str] = None
-    type: Optional[str] = None
-    item_variation_data: Optional[Dict[str, Any]] = None
+    id: str | None = None
+    type: str | None = None
+    item_variation_data: dict[str, Any] | None = None
 
     @property
-    def sku(self) -> Optional[str]:
+    def sku(self) -> str | None:
         """Extract SKU from item_variation_data."""
         if not self.item_variation_data:
             return None
         return self.item_variation_data.get("sku")
 
     @property
-    def name(self) -> Optional[str]:
+    def name(self) -> str | None:
         """Extract name from item_variation_data."""
         if not self.item_variation_data:
             return None
         return self.item_variation_data.get("name")
 
     @property
-    def price_money(self) -> Optional[SquareMoney]:
+    def price_money(self) -> SquareMoney | None:
         """Extract price_money from item_variation_data."""
         if not self.item_variation_data:
             return None
@@ -74,7 +78,7 @@ class SquareCatalogObjectVariation(BaseModel):
         return SquareMoney(**price_data) if price_data else None
 
     @property
-    def measurement_unit_id(self) -> Optional[str]:
+    def measurement_unit_id(self) -> str | None:
         """Extract measurement_unit_id from item_variation_data."""
         if not self.item_variation_data:
             return None
@@ -84,30 +88,30 @@ class SquareCatalogObjectVariation(BaseModel):
 class SquareCatalogObject(BaseModel):
     """Square catalog object (product/item)."""
 
-    id: Optional[str] = None
-    type: Optional[str] = None  # "ITEM", "ITEM_VARIATION", etc.
-    catalog_v1_id: Optional[str] = None
-    present_at_all_locations: Optional[bool] = None
-    present_at_location_ids: Optional[List[str]] = None
-    item_data: Optional[SquareItemData] = None
-    is_deleted: Optional[bool] = None
+    id: str | None = None
+    type: str | None = None  # "ITEM", "ITEM_VARIATION", etc.
+    catalog_v1_id: str | None = None
+    present_at_all_locations: bool | None = None
+    present_at_location_ids: list[str] | None = None
+    item_data: SquareItemData | None = None
+    is_deleted: bool | None = None
 
 
 class CatalogVersionUpdatedWebhook(BaseModel):
     """Webhook payload for catalog.version.updated event."""
 
-    merchant_id: Optional[str] = None
-    type: Optional[str] = None
-    event_id: Optional[str] = None
-    created_at: Optional[str] = None
-    data: Optional[Dict[str, Any]] = None  # Contains catalog_object
+    merchant_id: str | None = None
+    type: str | None = None
+    event_id: str | None = None
+    created_at: str | None = None
+    data: dict[str, Any] | None = None  # Contains catalog_object
 
 
 class InventoryCountUpdatedWebhook(BaseModel):
     """Webhook payload for inventory.count.updated event."""
 
-    merchant_id: Optional[str] = None
-    type: Optional[str] = None
-    event_id: Optional[str] = None
-    created_at: Optional[str] = None
-    data: Optional[Dict[str, Any]] = None
+    merchant_id: str | None = None
+    type: str | None = None
+    event_id: str | None = None
+    created_at: str | None = None
+    data: dict[str, Any] | None = None

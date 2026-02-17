@@ -5,18 +5,18 @@ Polls Supabase sync_queue, transforms data to Hipoink format, and syncs to Hipoi
 
 import asyncio
 import time
+
 import structlog
-from typing import Optional
 
 from app.config import settings
-from app.services.supabase_service import SupabaseService
+from app.models.database import Product, StoreMapping, SyncQueueItem
 from app.services.hipoink_client import (
-    HipoinkClient,
     HipoinkAPIError,
+    HipoinkClient,
     HipoinkProductItem,
 )
 from app.services.slack_service import get_slack_service
-from app.models.database import SyncQueueItem, Product, StoreMapping
+from app.services.supabase_service import SupabaseService
 from app.utils.retry import PermanentError, TransientError
 
 logger = structlog.get_logger()
@@ -111,21 +111,15 @@ class SyncWorker:
                 queue_item.store_mapping_id  # type: ignore
             )
             if not store_mapping:
-                raise Exception(
-                    f"Store mapping not found: {queue_item.store_mapping_id}"
-                )
+                raise Exception(f"Store mapping not found: {queue_item.store_mapping_id}")
 
             # Validate store mapping is active
             if not store_mapping.is_active:
-                raise Exception(
-                    f"Store mapping is not active: {store_mapping.id}"
-                )
+                raise Exception(f"Store mapping is not active: {store_mapping.id}")
 
             # Validate hipoink_store_code is set
             if not store_mapping.hipoink_store_code:
-                raise Exception(
-                    f"Store mapping missing hipoink_store_code: {store_mapping.id}"
-                )
+                raise Exception(f"Store mapping missing hipoink_store_code: {store_mapping.id}")
 
             # Validate product source_system matches store mapping source_system
             if product.source_system != store_mapping.source_system:
@@ -203,12 +197,14 @@ class SyncWorker:
                 )
                 merchant_id = store_mapping.source_store_id if store_mapping else None
                 store_code = store_mapping.hipoink_store_code if store_mapping else None
-                
+
                 slack_service = get_slack_service()
                 await slack_service.send_sync_failure_alert(
                     error_message=str(e),
                     product_id=str(queue_item.product_id) if queue_item.product_id else None,
-                    store_mapping_id=str(queue_item.store_mapping_id) if queue_item.store_mapping_id else None,
+                    store_mapping_id=str(queue_item.store_mapping_id)
+                    if queue_item.store_mapping_id
+                    else None,
                     operation=queue_item.operation,
                     merchant_id=merchant_id,
                     store_code=store_code,
@@ -259,12 +255,14 @@ class SyncWorker:
                     )
                     merchant_id = store_mapping.source_store_id if store_mapping else None
                     store_code = store_mapping.hipoink_store_code if store_mapping else None
-                    
+
                     slack_service = get_slack_service()
                     await slack_service.send_sync_failure_alert(
                         error_message=f"Max retries exceeded: {str(e)}",
                         product_id=str(queue_item.product_id) if queue_item.product_id else None,
-                        store_mapping_id=str(queue_item.store_mapping_id) if queue_item.store_mapping_id else None,
+                        store_mapping_id=str(queue_item.store_mapping_id)
+                        if queue_item.store_mapping_id
+                        else None,
                         operation=queue_item.operation,
                         merchant_id=merchant_id,
                         store_code=store_code,
@@ -272,7 +270,7 @@ class SyncWorker:
                 except Exception as slack_error:
                     logger.warning("Failed to send Slack alert", error=str(slack_error))
 
-                raise PermanentError(f"Max retries exceeded: {str(e)}")
+                raise PermanentError(f"Max retries exceeded: {str(e)}") from e
             else:
                 # Update retry count and reschedule
                 self.supabase_service.update_sync_queue_status(
@@ -300,7 +298,7 @@ class SyncWorker:
 
     async def _handle_create_or_update(
         self, product: Product, store_mapping: StoreMapping, queue_item: SyncQueueItem
-    ) -> Optional[str]:
+    ) -> str | None:
         """
         Handle create or update operation.
         Syncs product to Hipoink ESL system.
@@ -352,22 +350,24 @@ class SyncWorker:
                         vd = var.get("item_variation_data") or {}
                         if not vd:
                             break
-                        
+
                         # Try to extract unit cost and recalculate using transformer logic
                         from app.integrations.square.transformer import SquareTransformer
-                        
+
                         # Get price for calculation
                         pm = vd.get("price_money") or {}
                         price_cents = pm.get("amount", 0) or 0
                         total_price = (price_cents / 100.0) if price_cents else 0.0
-                        
+
                         # Try to extract unit cost (for Plus users)
-                        catalog_object_dict = item_data  # Use item_data as catalog_object for custom attributes
+                        catalog_object_dict = (
+                            item_data  # Use item_data as catalog_object for custom attributes
+                        )
                         unit_cost = SquareTransformer.extract_unit_cost(vd, catalog_object_dict)
-                        
+
                         # Determine if weight-based or per-item
                         has_measurement_unit = bool(vd.get("measurement_unit_id"))
-                        
+
                         # Only calculate if we have unit cost (Plus users)
                         if unit_cost and unit_cost > 0 and total_price > 0:
                             if has_measurement_unit:
@@ -414,7 +414,7 @@ class SyncWorker:
                             elif weight_unit == "oz":
                                 ounce_amount = weight
                             elif weight_unit == "g":
-                                ounce_amount = weight / 28.3495  
+                                ounce_amount = weight / 28.3495
                         unit_amount = variant.get("inventory_quantity", 1)
                         break
 
@@ -440,8 +440,7 @@ class SyncWorker:
                 round(final_price, 2)
             ),  # pp - required (as string, with multiplier applied)
             product_inner_code=normalized.get("sku") or product.sku,  # pi - using SKU
-            product_image_url=normalized.get("image_url")
-            or product.image_url,  # pim - optional
+            product_image_url=normalized.get("image_url") or product.image_url,  # pim - optional
             product_qrcode_url=normalized.get("image_url")
             or product.image_url,  # pqr - optional (using image URL)
             # f1-f4 fields for pricing calculations
@@ -478,9 +477,7 @@ class SyncWorker:
         error_code = response.get("error_code")
         if error_code != 0:
             error_msg = response.get("error_msg", "Unknown error")
-            raise HipoinkAPIError(
-                f"Hipoink import failed: {error_msg} (code: {error_code})"
-            )
+            raise HipoinkAPIError(f"Hipoink import failed: {error_msg} (code: {error_code})")
 
         logger.info(
             "Hipoink product created/updated successfully",

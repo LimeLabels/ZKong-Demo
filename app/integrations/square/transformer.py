@@ -4,14 +4,15 @@ Transforms Square catalog data into normalized format for Hipoink ESL API.
 Each Square variation becomes a separate Hipoink product.
 """
 
-from typing import List, Dict, Any, Optional, Tuple, Literal
+from typing import Any, Literal
+
+import structlog
+
+from app.integrations.base import NormalizedProduct
 from app.integrations.square.models import (
     SquareCatalogObject,
     SquareCatalogObjectVariation,
-    SquareItemData,
 )
-from app.integrations.base import NormalizedProduct
-import structlog
 
 logger = structlog.get_logger()
 
@@ -37,36 +38,35 @@ class SquareTransformer:
 
     @staticmethod
     def get_sell_type(
-        variation_data: dict,
-        measurement_units_cache: Dict[str, dict]
+        variation_data: dict, measurement_units_cache: dict[str, dict]
     ) -> Literal["weight", "item"]:
         """
         Determine if item is sold by weight or per item.
-        
+
         Args:
             variation_data: The item_variation_data from Square
             measurement_units_cache: Cache of measurement_unit_id → unit data
-        
+
         Returns:
             'weight' (use f1/f2) or 'item' (use f3/f4)
         """
         measurement_unit_id = variation_data.get("measurement_unit_id")
-        
+
         if not measurement_unit_id:
             return "item"  # No unit = sold as "each" → f3/f4
-        
+
         # Look up the measurement unit
         unit_data = measurement_units_cache.get(measurement_unit_id, {})
         measurement_unit_data = unit_data.get("measurement_unit_data", {})
         measurement_unit = measurement_unit_data.get("measurement_unit", {})
-        
+
         if measurement_unit.get("weight_unit"):
             return "weight"  # Has weight unit (oz, lb) → f1/f2
-        
+
         return "item"  # Default to per-item
 
     @staticmethod
-    def get_weight_unit_abbrev(measurement_unit_id: str, cache: Dict[str, dict]) -> str:
+    def get_weight_unit_abbrev(measurement_unit_id: str, cache: dict[str, dict]) -> str:
         """Get the abbreviated unit string (oz, lb, g, kg)"""
         unit_data = cache.get(measurement_unit_id, {})
         measurement_unit_data = unit_data.get("measurement_unit_data", {})
@@ -75,22 +75,19 @@ class SquareTransformer:
         return WEIGHT_UNITS.get(weight_unit, "ea")
 
     @staticmethod
-    def extract_unit_cost(
-        variation_data: dict,
-        catalog_object: Optional[dict] = None
-    ) -> Optional[float]:
+    def extract_unit_cost(variation_data: dict, catalog_object: dict | None = None) -> float | None:
         """
         Extract unit cost for Square Plus/Retail users.
-        
+
         Priority order (most likely first):
         1. default_unit_cost (native Square Retail field) - stored in CENTS
         2. Direct keys in variation_data (unit_cost, cost_per_unit, etc.)
         3. Custom attributes (fallback)
-        
+
         Args:
             variation_data: The item_variation_data dict from Square
             catalog_object: Optional parent catalog object dict (for custom attributes)
-        
+
         Returns:
             Unit cost as float (in dollars) if found, None otherwise
         """
@@ -98,7 +95,7 @@ class SquareTransformer:
         # This is stored like price_money: {"amount": 500, "currency": "USD"} or just 500 (in cents)
         if "default_unit_cost" in variation_data:
             cost_money = variation_data["default_unit_cost"]
-            
+
             if isinstance(cost_money, dict):
                 # Money object format: {"amount": 500, "currency": "USD"}
                 amount = cost_money.get("amount")
@@ -107,7 +104,7 @@ class SquareTransformer:
             elif isinstance(cost_money, (int, float)):
                 # Direct number (already in cents)
                 return float(cost_money) / 100.0
-        
+
         # Priority 2: Check direct keys in variation_data
         # Sometimes stored as flat fields (already in dollars)
         for key in ["unit_cost", "cost_per_unit", "unit_price", "cost"]:
@@ -122,7 +119,7 @@ class SquareTransformer:
                         return cost  # Already in dollars
                     except (ValueError, TypeError):
                         continue
-        
+
         # Priority 3: Check custom attributes (fallback - rarely used for unit cost)
         custom_attrs = variation_data.get("custom_attribute_values", {})
         if custom_attrs:
@@ -136,7 +133,7 @@ class SquareTransformer:
                                 return float(val)
                             except (ValueError, TypeError):
                                 continue
-        
+
         # Check parent catalog object custom attributes (if provided)
         if catalog_object and isinstance(catalog_object, dict):
             parent_attrs = catalog_object.get("custom_attribute_values", {})
@@ -150,40 +147,38 @@ class SquareTransformer:
                                     return float(val)
                                 except (ValueError, TypeError):
                                     continue
-        
+
         return None
 
     @staticmethod
     def normalize_unit_cost_to_ounces(
-        unit_cost: float,
-        measurement_unit_id: Optional[str],
-        measurement_units_cache: Dict[str, dict]
+        unit_cost: float, measurement_unit_id: str | None, measurement_units_cache: dict[str, dict]
     ) -> float:
         """
         Normalize unit cost to price per ounce for weight-based items.
-        
+
         If the measurement unit is pounds, converts to ounces (1 lb = 16 oz).
         If already in ounces, returns as-is.
         For non-weight items, returns the cost unchanged.
-        
+
         Args:
             unit_cost: Unit cost in dollars (already extracted)
             measurement_unit_id: Square measurement unit ID
             measurement_units_cache: Cache of measurement_unit_id → unit data
-        
+
         Returns:
             Unit cost normalized to price per ounce (for weight items) or original cost
         """
         if not measurement_unit_id:
             # Not a weight-based item, return as-is
             return unit_cost
-        
+
         # Look up the measurement unit
         unit_data = measurement_units_cache.get(measurement_unit_id, {})
         measurement_unit_data = unit_data.get("measurement_unit_data", {})
         measurement_unit = measurement_unit_data.get("measurement_unit", {})
         weight_unit = measurement_unit.get("weight_unit", "")
-        
+
         # Convert pounds to ounces (1 pound = 16 ounces)
         if weight_unit == "IMPERIAL_POUND":
             # Unit cost is per pound, convert to per ounce
@@ -199,12 +194,12 @@ class SquareTransformer:
     @staticmethod
     def calculate_dynamic_fields(
         variation_data: dict,
-        measurement_units_cache: Dict[str, dict],
-        catalog_object: Optional[dict] = None
+        measurement_units_cache: dict[str, dict],
+        catalog_object: dict | None = None,
     ) -> dict:
         """
         Calculate f1, f2, f3, f4 based on unit cost calculation.
-        
+
         Logic:
         - pp (product_price) = Total pack price (from Square price_money)
         - For weight-based items:
@@ -215,34 +210,28 @@ class SquareTransformer:
           - f2 = Price per unit (from unit cost)
           - f1 = Total units (calculated: pp ÷ f2)
           - f3 and f4 = None (not used)
-        
+
         Args:
             variation_data: The item_variation_data dict from Square
             measurement_units_cache: Cache of measurement_unit_id → unit data
             catalog_object: Optional parent catalog object dict (for custom attributes)
-        
+
         Returns:
             Dict with keys: sell_type, f1, f2, f3, f4
         """
         sell_type = SquareTransformer.get_sell_type(variation_data, measurement_units_cache)
-        
+
         # Get total price in dollars (the pack price - pp)
         price_money = variation_data.get("price_money") or {}
         price_cents = price_money.get("amount", 0) or 0
         total_price = (price_cents / 100.0) if price_cents else 0.0
-        
+
         # Extract unit cost (for Plus users)
         unit_cost = SquareTransformer.extract_unit_cost(variation_data, catalog_object)
-        
+
         # Initialize result
-        result = {
-            "sell_type": sell_type,
-            "f1": None,
-            "f2": None,
-            "f3": None,
-            "f4": None
-        }
-        
+        result = {"sell_type": sell_type, "f1": None, "f2": None, "f3": None, "f4": None}
+
         # Calculate fields only if unit cost exists (Plus users)
         if unit_cost and unit_cost > 0 and total_price > 0:
             # For weight-based items: use f3 (total ounces) and f4 (price per ounce)
@@ -250,18 +239,16 @@ class SquareTransformer:
                 measurement_unit_id = variation_data.get("measurement_unit_id")
                 # Normalize to ounces (converts pounds to ounces if needed)
                 unit_cost_per_ounce = SquareTransformer.normalize_unit_cost_to_ounces(
-                    unit_cost,
-                    measurement_unit_id,
-                    measurement_units_cache
+                    unit_cost, measurement_unit_id, measurement_units_cache
                 )
                 # Calculate total ounces: total_price ÷ price_per_ounce
                 total_ounces = total_price / unit_cost_per_ounce
-                
+
                 # Format as numeric strings (no currency symbols, no units)
                 ounces_str = f"{total_ounces:.2f}"
                 cost_per_ounce_str = f"{unit_cost_per_ounce:.2f}"
-                
-                result["f3"] = ounces_str        # Total ounces (pp ÷ f4)
+
+                result["f3"] = ounces_str  # Total ounces (pp ÷ f4)
                 result["f4"] = cost_per_ounce_str  # Price per ounce (numeric only)
                 # f1 and f2 remain None for weight-based items
             else:
@@ -270,22 +257,22 @@ class SquareTransformer:
                 total_units = total_price / unit_cost
                 units_str = f"{total_units:.2f}"
                 cost_per_unit_str = f"{unit_cost:.2f}"
-                
-                result["f1"] = units_str         # Total units (pp ÷ f2)
+
+                result["f1"] = units_str  # Total units (pp ÷ f2)
                 result["f2"] = cost_per_unit_str  # Price per unit (numeric only)
                 # f3 and f4 remain None for per-item products
-        
+
         # If no unit cost (non-Plus user), fields stay None - that's OK!
         # Users can manually enter f1-f4 values in ESL dashboard if needed
         # The main price field (pp) will still show the total_price
-        
+
         return result
 
     @staticmethod
     def extract_variations_from_catalog_object(
         catalog_object: SquareCatalogObject,
-        measurement_units_cache: Optional[Dict[str, dict]] = None,
-    ) -> List[NormalizedProduct]:
+        measurement_units_cache: dict[str, dict] | None = None,
+    ) -> list[NormalizedProduct]:
         """
         Extract and normalize variations from Square catalog object.
         Each variation becomes a separate normalized product.
@@ -357,7 +344,7 @@ class SquareTransformer:
     def _normalize_variation(
         catalog_object: SquareCatalogObject,
         variation: SquareCatalogObjectVariation,
-        measurement_units_cache: Optional[Dict[str, dict]] = None,
+        measurement_units_cache: dict[str, dict] | None = None,
     ) -> NormalizedProduct:
         """
         Normalize a single Square variation to normalized format.
@@ -420,24 +407,26 @@ class SquareTransformer:
                     # But we still pass a dict structure for consistency
                     try:
                         # Try to get as dict (Pydantic v1 uses .dict(), v2 uses .model_dump())
-                        if hasattr(catalog_object, 'model_dump'):
+                        if hasattr(catalog_object, "model_dump"):
                             catalog_object_dict = catalog_object.model_dump()
-                        elif hasattr(catalog_object, 'dict'):
+                        elif hasattr(catalog_object, "dict"):
                             catalog_object_dict = catalog_object.dict()
                         else:
                             # Fallback: create minimal dict
                             catalog_object_dict = {
-                                "id": catalog_object.id if hasattr(catalog_object, 'id') else None,
-                                "type": catalog_object.type if hasattr(catalog_object, 'type') else None,
+                                "id": catalog_object.id if hasattr(catalog_object, "id") else None,
+                                "type": catalog_object.type
+                                if hasattr(catalog_object, "type")
+                                else None,
                             }
                     except Exception as e:
                         logger.debug(
                             "Could not convert catalog_object to dict",
                             error=str(e),
-                            catalog_object_id=getattr(catalog_object, 'id', None),
+                            catalog_object_id=getattr(catalog_object, "id", None),
                         )
                         catalog_object_dict = None
-            
+
             dynamic_fields = SquareTransformer.calculate_dynamic_fields(
                 variation.item_variation_data,
                 measurement_units_cache or {},
@@ -466,7 +455,7 @@ class SquareTransformer:
     @staticmethod
     def validate_normalized_product(
         product: NormalizedProduct,
-    ) -> Tuple[bool, List[str]]:
+    ) -> tuple[bool, list[str]]:
         """
         Validate normalized product data before syncing to Hipoink.
 
@@ -499,8 +488,8 @@ class SquareTransformer:
 
     @staticmethod
     def extract_location_id_from_webhook(
-        headers: Dict[str, str], payload: Dict[str, Any]
-    ) -> Optional[str]:
+        headers: dict[str, str], payload: dict[str, Any]
+    ) -> str | None:
         """
         Extract Square Location ID from webhook.
 

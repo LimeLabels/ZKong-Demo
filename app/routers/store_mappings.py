@@ -3,13 +3,14 @@ FastAPI router for store mapping management.
 Allows creating, listing, and managing store mappings without SQL.
 """
 
-from fastapi import APIRouter, HTTPException, status, Query
-from typing import List, Optional
 from uuid import UUID
+
 import structlog
+from fastapi import APIRouter, HTTPException, Query, status
+from pydantic import BaseModel
+
 from app.models.database import StoreMapping
 from app.services.supabase_service import SupabaseService
-from pydantic import BaseModel
 
 logger = structlog.get_logger()
 
@@ -20,7 +21,7 @@ supabase_service = SupabaseService()
 # NOTE: /current endpoint must be defined BEFORE /{mapping_id} to avoid route conflicts
 @router.get("/current")
 async def get_current_store_mapping(
-    shop: Optional[str] = Query(None, description="Shop domain"),
+    shop: str | None = Query(None, description="Shop domain"),
 ):
     """Get current shop's store mapping."""
     if not shop or not shop.strip():
@@ -71,7 +72,7 @@ async def get_current_store_mapping(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to get current store mapping: {str(e)}",
-        )
+        ) from e
 
 
 class CreateStoreMappingRequest(BaseModel):
@@ -90,16 +91,14 @@ class StoreMappingResponse(BaseModel):
     id: str
     source_system: str
     source_store_id: str
-    hipoink_store_code: Optional[str] = None
+    hipoink_store_code: str | None = None
     is_active: bool
-    metadata: Optional[dict] = None
+    metadata: dict | None = None
     created_at: str
     updated_at: str
 
 
-@router.post(
-    "/", response_model=StoreMappingResponse, status_code=status.HTTP_201_CREATED
-)
+@router.post("/", response_model=StoreMappingResponse, status_code=status.HTTP_201_CREATED)
 async def create_store_mapping(request: CreateStoreMappingRequest):
     """
     Create a new store mapping.
@@ -156,10 +155,10 @@ async def create_store_mapping(request: CreateStoreMappingRequest):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to create store mapping: {str(e)}",
-        )
+        ) from e
 
 
-@router.get("/", response_model=List[StoreMappingResponse])
+@router.get("/", response_model=list[StoreMappingResponse])
 async def list_store_mappings(source_system: str = None, is_active: bool = None):
     """
     List all store mappings.
@@ -200,7 +199,7 @@ async def list_store_mappings(source_system: str = None, is_active: bool = None)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to list store mappings: {str(e)}",
-        )
+        ) from e
 
 
 @router.get("/{mapping_id}", response_model=StoreMappingResponse)
@@ -233,7 +232,7 @@ async def get_store_mapping(mapping_id: UUID):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to get store mapping: {str(e)}",
-        )
+        ) from e
 
 
 @router.put("/{mapping_id}", response_model=StoreMappingResponse)
@@ -250,16 +249,17 @@ async def update_store_mapping(mapping_id: UUID, request: CreateStoreMappingRequ
 
         # Update mapping - merge metadata instead of replacing
         update_data = request.dict(exclude_none=True)
-        
+
         # Merge metadata if both exist
         if "metadata" in update_data:
             import copy
+
             if existing.metadata:
                 merged_metadata = copy.deepcopy(existing.metadata)
                 merged_metadata.update(update_data["metadata"])
                 update_data["metadata"] = merged_metadata
             # If existing has no metadata, use the new one as-is
-        
+
         result = (
             supabase_service.client.table("store_mappings")
             .update(update_data)
@@ -293,7 +293,7 @@ async def update_store_mapping(mapping_id: UUID, request: CreateStoreMappingRequ
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to update store mapping: {str(e)}",
-        )
+        ) from e
 
 
 @router.delete("/{mapping_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -323,4 +323,4 @@ async def delete_store_mapping(mapping_id: UUID):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to delete store mapping: {str(e)}",
-        )
+        ) from e

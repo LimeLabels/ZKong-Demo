@@ -3,15 +3,17 @@ NCR data transformation service.
 Transforms normalized product data into NCR PRO Catalog API format.
 """
 
-from typing import List, Dict, Any, Optional
+from typing import Any
+
+import structlog
+
 from app.integrations.base import NormalizedProduct
 from app.integrations.ncr.models import (
-    ItemWriteData,
     ItemIdData,
+    ItemWriteData,
     MultiLanguageTextData,
     NodeIdData,
 )
-import structlog
 
 logger = structlog.get_logger()
 
@@ -40,15 +42,11 @@ class NCRTransformer:
         """
         # Use barcode as item_code if available, otherwise use SKU or source_id
         item_code = (
-            normalized_product.barcode
-            or normalized_product.sku
-            or normalized_product.source_id
+            normalized_product.barcode or normalized_product.sku or normalized_product.source_id
         )
 
         if not item_code:
-            raise ValueError(
-                "Product must have barcode, sku, or source_id to create NCR item"
-            )
+            raise ValueError("Product must have barcode, sku, or source_id to create NCR item")
 
         # Ensure item_code meets NCR requirements (alphanumeric, max 100 chars)
         item_code = str(item_code)[:100]
@@ -70,14 +68,12 @@ class NCRTransformer:
 
         # Add barcode to package identifiers if different from item_code
         if normalized_product.barcode and normalized_product.barcode != item_code:
-            item_data.packageIdentifiers = [
-                {"type": "UPC", "value": normalized_product.barcode}
-            ]
+            item_data.packageIdentifiers = [{"type": "UPC", "value": normalized_product.barcode}]
 
         return item_data
 
     @staticmethod
-    def extract_store_id_from_config(config: Dict[str, Any]) -> Optional[str]:
+    def extract_store_id_from_config(config: dict[str, Any]) -> str | None:
         """
         Extract NCR store/enterprise unit identifier from store mapping config.
 
@@ -97,4 +93,3 @@ class NCRTransformer:
             or config.get("ncr_enterprise_unit")
             or config.get("store_id")
         )
-

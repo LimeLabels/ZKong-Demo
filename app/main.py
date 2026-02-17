@@ -3,27 +3,29 @@ FastAPI application entry point.
 Initializes the FastAPI app, configures logging, and includes webhook routes.
 """
 
+import structlog
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.utils.logger import configure_logging
-from app.routers import (
-    webhooks,
-    store_mappings,
-    webhooks_new,
-    shopify_auth,
-    square_auth,
-    clover_auth,
-    price_adjustments,
-    products,
-    ncr_test,
-    external_webhooks,
-    auth,
-)
-from app.integrations.registry import integration_registry
+
+import app.integrations.shopify.adapter  # noqa: F401
+
 # Explicitly import adapters to ensure they're loaded and registered
 import app.integrations.square.adapter  # noqa: F401
-import app.integrations.shopify.adapter  # noqa: F401
-import structlog
+from app.integrations.registry import integration_registry
+from app.routers import (
+    auth,
+    clover_auth,
+    external_webhooks,
+    ncr_test,
+    price_adjustments,
+    products,
+    shopify_auth,
+    square_auth,
+    store_mappings,
+    webhooks,
+    webhooks_new,
+)
+from app.utils.logger import configure_logging
 
 # Configure logging first
 configure_logging()
@@ -65,7 +67,7 @@ app.include_router(auth.router)  # Authentication endpoints
 async def startup_event():
     """Application startup event."""
     logger.info("Hipoink ESL Integration Middleware started")
-    
+
     # Log loaded integrations to verify adapters are registered
     loaded_integrations = integration_registry.list_available()
     logger.info(

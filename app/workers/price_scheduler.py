@@ -1,21 +1,21 @@
 import asyncio
-import structlog
-import pytz
 from datetime import datetime, timedelta
-from typing import Optional, Tuple
+
+import pytz
+import structlog
 
 from app.config import settings
-from app.services.supabase_service import SupabaseService
-from app.services.hipoink_client import (
-    HipoinkClient,
-    HipoinkAPIError,
-    HipoinkProductItem,
-)
-from app.services.shopify_api_client import ShopifyAPIClient
 from app.integrations.clover.adapter import CloverIntegrationAdapter
 from app.integrations.ncr.adapter import NCRIntegrationAdapter
 from app.integrations.square.adapter import SquareIntegrationAdapter
 from app.models.database import PriceAdjustmentSchedule, StoreMapping
+from app.services.hipoink_client import (
+    HipoinkAPIError,
+    HipoinkClient,
+    HipoinkProductItem,
+)
+from app.services.shopify_api_client import ShopifyAPIClient
+from app.services.supabase_service import SupabaseService
 
 logger = structlog.get_logger()
 
@@ -89,10 +89,8 @@ class PriceScheduler:
         try:
             # Get schedules due for trigger (stored in UTC)
             current_time_utc = datetime.now(pytz.UTC)
-            
-            schedules = self.supabase_service.get_schedules_due_for_trigger(
-                current_time_utc
-            )
+
+            schedules = self.supabase_service.get_schedules_due_for_trigger(current_time_utc)
 
             if not schedules:
                 return  # No schedules to process
@@ -117,9 +115,7 @@ class PriceScheduler:
         except Exception as e:
             logger.error("Error processing schedules", error=str(e))
 
-    async def process_schedule(
-        self, schedule: PriceAdjustmentSchedule, current_time_utc: datetime
-    ):
+    async def process_schedule(self, schedule: PriceAdjustmentSchedule, current_time_utc: datetime):
         """
         Process a single schedule - apply price changes and calculate next trigger.
 
@@ -136,7 +132,7 @@ class PriceScheduler:
                 repeat_type=schedule.repeat_type,
                 time_slots=schedule.time_slots,
             )
-            
+
             # Get store mapping
             store_mapping = self.supabase_service.get_store_mapping_by_id(
                 schedule.store_mapping_id  # type: ignore
@@ -151,22 +147,22 @@ class PriceScheduler:
 
             # Get store timezone
             store_timezone = get_store_timezone(store_mapping)
-            
+
             logger.info(
                 "Schedule timezone info",
                 schedule_id=str(schedule.id),
                 store_timezone=str(store_timezone),
-                has_timezone_in_metadata=bool(store_mapping.metadata and "timezone" in store_mapping.metadata),
+                has_timezone_in_metadata=bool(
+                    store_mapping.metadata and "timezone" in store_mapping.metadata
+                ),
             )
 
             # Convert current time to store timezone
             current_time = current_time_utc.astimezone(store_timezone)
 
             # Check if we're in a time slot
-            in_time_slot, is_start = self._check_time_slot(
-                schedule, current_time, store_timezone
-            )
-            
+            in_time_slot, is_start = self._check_time_slot(schedule, current_time, store_timezone)
+
             logger.info(
                 "Time slot check result",
                 schedule_id=str(schedule.id),
@@ -183,18 +179,16 @@ class PriceScheduler:
                     schedule_id=str(schedule.id),
                     current_time=current_time.isoformat(),
                 )
-                next_trigger = self._calculate_next_trigger(
-                    schedule, current_time, store_timezone
-                )
+                next_trigger = self._calculate_next_trigger(schedule, current_time, store_timezone)
                 logger.info(
                     "Next trigger calculated (not in slot)",
                     schedule_id=str(schedule.id),
-                    next_trigger=next_trigger.isoformat() if next_trigger else "None - schedule will be deactivated",
+                    next_trigger=next_trigger.isoformat()
+                    if next_trigger
+                    else "None - schedule will be deactivated",
                 )
                 # Convert to UTC for storage
-                next_trigger_utc = (
-                    next_trigger.astimezone(pytz.UTC) if next_trigger else None
-                )
+                next_trigger_utc = next_trigger.astimezone(pytz.UTC) if next_trigger else None
                 self._update_schedule_next_trigger(schedule, next_trigger_utc)
                 return
 
@@ -210,9 +204,7 @@ class PriceScheduler:
             # Determine if we should apply promotional price or restore original
             if is_start:
                 # Apply promotional prices
-                await self._apply_promotional_prices(
-                    schedule, store_mapping, products_data
-                )
+                await self._apply_promotional_prices(schedule, store_mapping, products_data)
                 # After applying promotional price, next trigger should be end of current slot
                 # Find the current slot's end time
                 current_time_str = current_time.strftime("%H:%M")
@@ -229,9 +221,7 @@ class PriceScheduler:
                         next_trigger = store_timezone.localize(
                             datetime.combine(
                                 current_date,
-                                datetime.min.time().replace(
-                                    hour=end_hour, minute=end_minute
-                                ),
+                                datetime.min.time().replace(hour=end_hour, minute=end_minute),
                             )
                         )
                         break
@@ -242,19 +232,13 @@ class PriceScheduler:
                     )
             else:
                 # Restore original prices (end of time slot)
-                await self._restore_original_prices(
-                    schedule, store_mapping, products_data
-                )
+                await self._restore_original_prices(schedule, store_mapping, products_data)
                 # After restoring, next trigger is tomorrow's start time (for daily repeat)
                 # or calculate normally for other repeat types
-                next_trigger = self._calculate_next_trigger(
-                    schedule, current_time, store_timezone
-                )
+                next_trigger = self._calculate_next_trigger(schedule, current_time, store_timezone)
 
             # Convert next trigger to UTC for storage
-            next_trigger_utc = (
-                next_trigger.astimezone(pytz.UTC) if next_trigger else None
-            )
+            next_trigger_utc = next_trigger.astimezone(pytz.UTC) if next_trigger else None
 
             # Update schedule (store times in UTC)
             self._update_schedule_next_trigger(
@@ -282,7 +266,7 @@ class PriceScheduler:
         schedule: PriceAdjustmentSchedule,
         current_time: datetime,
         store_timezone: pytz.BaseTzInfo,
-    ) -> Tuple[bool, bool]:
+    ) -> tuple[bool, bool]:
         """
         Check if current time is within any time slot.
 
@@ -291,7 +275,7 @@ class PriceScheduler:
         """
         current_time_str = current_time.strftime("%H:%M")
         current_time_only = datetime.strptime(current_time_str, "%H:%M").time()
-        
+
         # Log for debugging
         logger.debug(
             "Checking time slots",
@@ -309,13 +293,11 @@ class PriceScheduler:
                 datetime.combine(current_time.date(), start_time)
             )
             time_diff_start = abs((current_time - start_datetime).total_seconds())
-            
+
             # Check if we're at the end time (within 2 minutes)
-            end_datetime = store_timezone.localize(
-                datetime.combine(current_time.date(), end_time)
-            )
+            end_datetime = store_timezone.localize(datetime.combine(current_time.date(), end_time))
             time_diff_end = abs((current_time - end_datetime).total_seconds())
-            
+
             logger.debug(
                 "Time slot comparison",
                 slot_start=slot["start_time"],
@@ -323,7 +305,7 @@ class PriceScheduler:
                 time_diff_start_seconds=time_diff_start,
                 time_diff_end_seconds=time_diff_end,
             )
-            
+
             if time_diff_start <= 120:  # Within 2 minutes of start
                 logger.info("At start of time slot", slot=slot, time_diff=time_diff_start)
                 return (True, True)
@@ -346,11 +328,16 @@ class PriceScheduler:
                     last_trigger_local = schedule.last_triggered_at.astimezone(store_timezone)
                     if last_trigger_local.date() < current_time.date():
                         # Last trigger was before today - treat as start
-                        logger.info("In time slot, last trigger was different day - treating as start", slot=slot)
+                        logger.info(
+                            "In time slot, last trigger was different day - treating as start",
+                            slot=slot,
+                        )
                         return (True, True)
                     else:
                         # Already triggered today - we're in the middle, waiting for end
-                        logger.info("In time slot, already triggered today - waiting for end", slot=slot)
+                        logger.info(
+                            "In time slot, already triggered today - waiting for end", slot=slot
+                        )
                         return (True, False)
 
         return (False, False)
@@ -360,7 +347,7 @@ class PriceScheduler:
         schedule: PriceAdjustmentSchedule,
         current_time: datetime,
         store_timezone: pytz.BaseTzInfo,
-    ) -> Optional[datetime]:
+    ) -> datetime | None:
         """
         Calculate the next trigger time for a schedule.
         All datetime operations are performed in the store's timezone.
@@ -373,7 +360,7 @@ class PriceScheduler:
             start_date=schedule.start_date.isoformat() if schedule.start_date else None,
             end_date=schedule.end_date.isoformat() if schedule.end_date else None,
         )
-        
+
         # Ensure schedule dates are in store timezone
         start_date = schedule.start_date
         if start_date.tzinfo is None:
@@ -389,23 +376,23 @@ class PriceScheduler:
                 end_date = end_date.astimezone(store_timezone)
 
         # Check if schedule has ended
-        # IMPORTANT: If end_date has time component (e.g. from frontend creation time), 
+        # IMPORTANT: If end_date has time component (e.g. from frontend creation time),
         # we should treat it as inclusive or end-of-day.
         if end_date:
             # If end_date is exactly the same as start_date (common UI pattern for single day),
             # or if we want to be generous, verify if it's strictly past the end date.
             # But better yet, let's normalize end_date to end-of-day if it seems to be mid-day
             # and potentially causing issues.
-            
+
             # Use a grace period or check date component only if times are close?
             # Safer: Compare with end of the day of end_date if the time component seems arbitrary
             # But strictly speaking, if user set specific time, we should respect it.
             # However, the frontend sends new Date() which captures creation time.
-            
+
             # Let's adjust end_date to end of day for comparison if it's the same day as current
             # This fixes the issue where "today" end date expires "today's" later schedules
             end_of_end_date = end_date.replace(hour=23, minute=59, second=59, microsecond=999999)
-            
+
             if current_time > end_of_end_date:
                 logger.info(
                     "Schedule has ended (past end of end_date day)",
@@ -415,7 +402,7 @@ class PriceScheduler:
                     current_time=current_time.isoformat(),
                 )
                 return None
-        
+
         # Check if schedule hasn't started yet
         if current_time < start_date:
             if schedule.time_slots:
@@ -534,7 +521,7 @@ class PriceScheduler:
                         next_trigger=last_end.isoformat(),
                     )
                     return last_end
-                
+
                 logger.info(
                     "No more triggers for 'none' repeat schedule - past all slots",
                     schedule_id=str(schedule.id),
@@ -552,8 +539,8 @@ class PriceScheduler:
     def _update_schedule_next_trigger(
         self,
         schedule: PriceAdjustmentSchedule,
-        next_trigger: Optional[datetime],
-        last_triggered_at: Optional[datetime] = None,
+        next_trigger: datetime | None,
+        last_triggered_at: datetime | None = None,
     ):
         """Update schedule's next trigger time."""
         update_data = {}
@@ -572,9 +559,7 @@ class PriceScheduler:
             update_data,
         )
 
-    def _get_shopify_credentials(
-        self, store_mapping: StoreMapping
-    ) -> Optional[Tuple[str, str]]:
+    def _get_shopify_credentials(self, store_mapping: StoreMapping) -> tuple[str, str] | None:
         """
         Get Shopify credentials from store mapping metadata.
 
@@ -595,9 +580,7 @@ class PriceScheduler:
             logger.warning(
                 "Shopify shop domain not found in store mapping metadata",
                 store_mapping_id=str(store_mapping.id),
-                metadata_keys=list(store_mapping.metadata.keys())
-                if store_mapping.metadata
-                else [],
+                metadata_keys=list(store_mapping.metadata.keys()) if store_mapping.metadata else [],
             )
             return None
 
@@ -614,9 +597,9 @@ class PriceScheduler:
     async def _update_shopify_prices(
         self,
         products_data: list,
-        new_price: Optional[str] = None,
+        new_price: str | None = None,
         use_original: bool = False,
-        shopify_credentials: Optional[Tuple[str, str]] = None,
+        shopify_credentials: tuple[str, str] | None = None,
     ):
         """
         Update prices in Shopify for products.
@@ -641,9 +624,7 @@ class PriceScheduler:
                     barcode = product_data["pc"]
 
                     # Get product from database to find Shopify IDs
-                    existing_product = self.supabase_service.get_product_by_barcode(
-                        barcode
-                    )
+                    existing_product = self.supabase_service.get_product_by_barcode(barcode)
 
                     if not existing_product:
                         logger.warning(
@@ -698,9 +679,7 @@ class PriceScheduler:
                     )
 
                 if updates:
-                    results = await shopify_client.update_multiple_variant_prices(
-                        updates
-                    )
+                    results = await shopify_client.update_multiple_variant_prices(updates)
                     logger.info(
                         "Updated Shopify prices",
                         succeeded=len(results["succeeded"]),
@@ -767,7 +746,7 @@ class PriceScheduler:
             # Build Hipoink product items with full product data, only updating price
             hipoink_products = []
             updated_products_data = []  # Store updated product data with calculated prices for Shopify
-            
+
             for product_data in products_data:
                 barcode = product_data["pc"]
 
@@ -775,24 +754,28 @@ class PriceScheduler:
                 # We need to find the product in DB to get the real barcode for Hipoink
                 if store_mapping.source_system == "square":
                     # Try to find by source_variant_id first (most common for Square products)
-                    existing_product = self.supabase_service.get_product_by_source_variant_id(barcode)
+                    existing_product = self.supabase_service.get_product_by_source_variant_id(
+                        barcode
+                    )
                     if not existing_product:
                         # Fallback to source_id (with multi-tenant filtering)
                         products_by_source = self.supabase_service.get_products_by_source_id(
-                            "square", barcode, store_mapping.source_store_id  # Multi-tenant isolation
+                            "square",
+                            barcode,
+                            store_mapping.source_store_id,  # Multi-tenant isolation
                         )
                         if products_by_source:
                             existing_product = products_by_source[0]
-                    
+
                     if existing_product and existing_product.barcode:
                         barcode = existing_product.barcode
-                        # Also update the product_data pc for consistency in loop if needed, 
+                        # Also update the product_data pc for consistency in loop if needed,
                         # but be careful not to break other logic that expects the ID
                     else:
                         logger.warning(
                             "Could not find barcode for Square product",
                             square_id=product_data["pc"],
-                            schedule_id=str(schedule.id)
+                            schedule_id=str(schedule.id),
                         )
                         # If we can't find the barcode, we can't update ESL properly.
                         # We'll continue with the Square ID as barcode, which will create an orphan product.
@@ -820,9 +803,7 @@ class PriceScheduler:
                     original_price = product_data.get("original_price")
                     if original_price is None:
                         # Try to get original price from database
-                        existing_product = self.supabase_service.get_product_by_barcode(
-                            barcode
-                        )
+                        existing_product = self.supabase_service.get_product_by_barcode(barcode)
                         if existing_product:
                             original_price = existing_product.price
 
@@ -841,7 +822,7 @@ class PriceScheduler:
                         new_price = str(product_data["pp"])
                 else:
                     new_price = str(product_data["pp"])
-                
+
                 # Create updated product data with calculated price for Shopify
                 updated_product_data = product_data.copy()
                 updated_product_data["pp"] = new_price
@@ -855,14 +836,10 @@ class PriceScheduler:
                     normalized = existing_product.normalized_data
                     hipoink_product = HipoinkProductItem(
                         product_code=barcode,
-                        product_name=normalized.get("title")
-                        or existing_product.title
-                        or "",
+                        product_name=normalized.get("title") or existing_product.title or "",
                         product_price=new_price,  # Updated price
-                        product_inner_code=normalized.get("sku")
-                        or existing_product.sku,
-                        product_image_url=normalized.get("image_url")
-                        or existing_product.image_url,
+                        product_inner_code=normalized.get("sku") or existing_product.sku,
+                        product_image_url=normalized.get("image_url") or existing_product.image_url,
                         product_qrcode_url=normalized.get("image_url")
                         or existing_product.image_url,
                         f1=existing_product.source_system
@@ -983,19 +960,23 @@ class PriceScheduler:
             hipoink_products = []
             for product_data in products_data:
                 barcode = product_data["pc"]
-                
+
                 # For Square, product_data["pc"] is the object_id
                 if store_mapping.source_system == "square":
                     # Try to find by source_variant_id first
-                    existing_product = self.supabase_service.get_product_by_source_variant_id(barcode)
+                    existing_product = self.supabase_service.get_product_by_source_variant_id(
+                        barcode
+                    )
                     if not existing_product:
                         # Fallback to source_id (with multi-tenant filtering)
                         products_by_source = self.supabase_service.get_products_by_source_id(
-                            "square", barcode, store_mapping.source_store_id  # Multi-tenant isolation
+                            "square",
+                            barcode,
+                            store_mapping.source_store_id,  # Multi-tenant isolation
                         )
                         if products_by_source:
                             existing_product = products_by_source[0]
-                    
+
                     if existing_product and existing_product.barcode:
                         barcode = existing_product.barcode
 
@@ -1034,14 +1015,10 @@ class PriceScheduler:
                     normalized = existing_product.normalized_data
                     hipoink_product = HipoinkProductItem(
                         product_code=barcode,
-                        product_name=normalized.get("title")
-                        or existing_product.title
-                        or "",
+                        product_name=normalized.get("title") or existing_product.title or "",
                         product_price=str(original_price),  # Restored original price
-                        product_inner_code=normalized.get("sku")
-                        or existing_product.sku,
-                        product_image_url=normalized.get("image_url")
-                        or existing_product.image_url,
+                        product_inner_code=normalized.get("sku") or existing_product.sku,
+                        product_image_url=normalized.get("image_url") or existing_product.image_url,
                         product_qrcode_url=normalized.get("image_url")
                         or existing_product.image_url,
                         f1=existing_product.source_system
@@ -1142,7 +1119,7 @@ class PriceScheduler:
     ):
         """
         Update prices in NCR for products.
-        
+
         This method is called by the price scheduler to update NCR prices when schedules trigger.
         Since NCR doesn't provide webhooks, the scheduler polls every minute and updates prices directly.
 
@@ -1179,7 +1156,7 @@ class PriceScheduler:
                 # Update price in NCR using the adapter
                 # The adapter handles NCR API calls and updates the database
                 try:
-                    result = await ncr_adapter.update_price(
+                    await ncr_adapter.update_price(
                         item_code=item_code,
                         price=price,
                         store_mapping_config={
@@ -1206,7 +1183,7 @@ class PriceScheduler:
 
         except Exception as e:
             # Log error but don't fail the entire operation
-                logger.error(
+            logger.error(
                 "Failed to update NCR prices (non-critical)",
                 store_mapping_id=str(store_mapping.id),
                 error=str(e),
@@ -1228,7 +1205,7 @@ class PriceScheduler:
             products_count=len(products_data),
             use_original=use_original,
         )
-        
+
         if store_mapping.source_system != "square":
             logger.debug("Store mapping is not for Square, skipping Square update")
             return
@@ -1244,7 +1221,9 @@ class PriceScheduler:
                     "=== SQUARE UPDATE ABORTED: NO CREDENTIALS ===",
                     store_mapping_id=str(store_mapping.id),
                     has_metadata=bool(store_mapping.metadata),
-                    metadata_keys=list(store_mapping.metadata.keys()) if store_mapping.metadata else [],
+                    metadata_keys=list(store_mapping.metadata.keys())
+                    if store_mapping.metadata
+                    else [],
                 )
                 return
 
@@ -1283,10 +1262,8 @@ class PriceScheduler:
 
                 # Try to find product by barcode first, then by source_id or source_variant_id
                 # This handles cases where object_id might be the catalog object ID, not barcode
-                existing_product = self.supabase_service.get_product_by_barcode(
-                    object_id
-                )
-                
+                existing_product = self.supabase_service.get_product_by_barcode(object_id)
+
                 # If not found by barcode, try by source_id (catalog object ID)
                 if not existing_product:
                     logger.debug(
@@ -1360,12 +1337,14 @@ class PriceScheduler:
                         price=price,
                         use_original=use_original,
                     )
-                    
+
                     # Update local product price in database immediately
                     if existing_product and existing_product.id:
                         try:
                             existing_product.price = price
-                            updated_product, changed = self.supabase_service.create_or_update_product(existing_product)
+                            updated_product, changed = (
+                                self.supabase_service.create_or_update_product(existing_product)
+                            )
                             # Note: We don't queue here because price scheduler handles its own sync logic
                             logger.info(
                                 "=== LOCAL DB PRICE UPDATED ===",
@@ -1440,8 +1419,10 @@ class PriceScheduler:
         Update prices in Clover for products.
 
         Called by the price scheduler when schedules trigger (apply or restore).
-        Uses on-demand token refresh inside the adapter. Rate-limits PATCH calls
-        with a short delay between items.
+        Uses on-demand token refresh inside the adapter. Rate-limits POST calls
+        with a short delay between items. When use_original=True, None or missing
+        original_price is treated as 0 and that product is skipped so one bad
+        entry does not abort the rest.
 
         Args:
             products_data: List of product data dicts with 'pc' (Clover item ID),
@@ -1462,30 +1443,42 @@ class PriceScheduler:
             failed = 0
 
             for product_data in products_data:
-                item_id = product_data["pc"]
-                if use_original:
-                    price_dollars = float(product_data.get("original_price", 0))
-                else:
-                    price_dollars = float(product_data.get("pp", 0))
-
-                if price_dollars <= 0:
+                item_id = product_data.get("pc")
+                if not item_id:
                     logger.warning(
-                        "Invalid price for Clover update",
-                        item_id=item_id,
-                        price=price_dollars,
+                        "Clover update skipped: missing product code (pc)",
                         store_mapping_id=str(store_mapping.id),
                     )
                     failed += 1
                     continue
 
-                products_by_source = self.supabase_service.get_products_by_source_id(
-                    "clover",
-                    item_id,
-                    source_store_id=store_mapping.source_store_id,
-                )
-                existing_product = products_by_source[0] if products_by_source else None
-
                 try:
+                    if use_original:
+                        price_dollars = float(
+                            product_data.get("original_price") or 0
+                        )
+                    else:
+                        price_dollars = float(product_data.get("pp") or 0)
+
+                    if price_dollars <= 0:
+                        logger.warning(
+                            "Invalid price for Clover update (missing or non-positive)",
+                            item_id=item_id,
+                            price=price_dollars,
+                            store_mapping_id=str(store_mapping.id),
+                        )
+                        failed += 1
+                        continue
+
+                    products_by_source = self.supabase_service.get_products_by_source_id(
+                        "clover",
+                        item_id,
+                        source_store_id=store_mapping.source_store_id,
+                    )
+                    existing_product = (
+                        products_by_source[0] if products_by_source else None
+                    )
+
                     await clover_adapter.update_item_price(
                         store_mapping=store_mapping,
                         item_id=item_id,
@@ -1497,7 +1490,6 @@ class PriceScheduler:
                     logger.error(
                         "Failed to update Clover price",
                         item_id=item_id,
-                        price=price_dollars,
                         store_mapping_id=str(store_mapping.id),
                         error=str(e),
                     )

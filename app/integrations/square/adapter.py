@@ -3,20 +3,22 @@ Square integration adapter.
 Implements BaseIntegrationAdapter for Square webhooks and data transformation.
 """
 
-import hmac
-import hashlib
-import base64
-import httpx
 import asyncio
-from typing import List, Dict, Any, Optional, Tuple
-from fastapi import Request, HTTPException, status
+import base64
+import hashlib
+import hmac
+from typing import Any
 from uuid import UUID, uuid4
-import structlog
 
+import httpx
+import structlog
+from fastapi import HTTPException, Request, status
+
+from app.config import settings
 from app.integrations.base import (
     BaseIntegrationAdapter,
-    NormalizedProduct,
     NormalizedInventory,
+    NormalizedProduct,
 )
 from app.integrations.square.models import (
     CatalogVersionUpdatedWebhook,
@@ -24,10 +26,9 @@ from app.integrations.square.models import (
     SquareCatalogObject,
 )
 from app.integrations.square.transformer import SquareTransformer
-from app.config import settings
-from app.services.supabase_service import SupabaseService
-from app.services.slack_service import get_slack_service
 from app.models.database import Product, StoreMapping
+from app.services.slack_service import get_slack_service
+from app.services.supabase_service import SupabaseService
 
 logger = structlog.get_logger()
 
@@ -45,7 +46,11 @@ class SquareIntegrationAdapter(BaseIntegrationAdapter):
         return "square"
 
     def verify_signature(
-        self, payload: bytes, signature: str, headers: Dict[str, str], request_url: Optional[str] = None
+        self,
+        payload: bytes,
+        signature: str,
+        headers: dict[str, str],
+        request_url: str | None = None,
     ) -> bool:
         """
         Verify Square webhook signature using HMAC SHA256.
@@ -71,7 +76,7 @@ class SquareIntegrationAdapter(BaseIntegrationAdapter):
             # Square uses HMAC SHA256 of (notification_url + payload)
             # Square does NOT send x-square-notification-url header
             # We must use the actual request URL (from request.url)
-            
+
             if request_url:
                 # Use provided request URL
                 notification_url = request_url
@@ -112,9 +117,7 @@ class SquareIntegrationAdapter(BaseIntegrationAdapter):
             logger.error("Error verifying Square signature", error=str(e))
             return False
 
-    def extract_store_id(
-        self, headers: Dict[str, str], payload: Dict[str, Any]
-    ) -> Optional[str]:
+    def extract_store_id(self, headers: dict[str, str], payload: dict[str, Any]) -> str | None:
         """
         Extract Square merchant/location ID from webhook.
 
@@ -127,7 +130,7 @@ class SquareIntegrationAdapter(BaseIntegrationAdapter):
         """
         return self.transformer.extract_location_id_from_webhook(headers, payload)
 
-    def transform_product(self, raw_data: Dict[str, Any]) -> List[NormalizedProduct]:
+    def transform_product(self, raw_data: dict[str, Any]) -> list[NormalizedProduct]:
         """
         Transform Square webhook payload to normalized products.
 
@@ -152,9 +155,7 @@ class SquareIntegrationAdapter(BaseIntegrationAdapter):
         # Transform to normalized products
         return self.transformer.extract_variations_from_catalog_object(catalog_object)
 
-    def transform_inventory(
-        self, raw_data: Dict[str, Any]
-    ) -> Optional[NormalizedInventory]:
+    def transform_inventory(self, raw_data: dict[str, Any]) -> NormalizedInventory | None:
         """
         Transform Square inventory webhook to normalized inventory.
 
@@ -167,9 +168,7 @@ class SquareIntegrationAdapter(BaseIntegrationAdapter):
         # For basic version, return None (inventory sync not critical)
         return None
 
-    def validate_normalized_product(
-        self, product: NormalizedProduct
-    ) -> tuple[bool, List[str]]:
+    def validate_normalized_product(self, product: NormalizedProduct) -> tuple[bool, list[str]]:
         """
         Validate normalized product data.
 
@@ -184,9 +183,9 @@ class SquareIntegrationAdapter(BaseIntegrationAdapter):
     async def _fetch_measurement_units(
         self,
         access_token: str,
-        measurement_unit_ids: List[str],
+        measurement_unit_ids: list[str],
         base_url: str,
-    ) -> Dict[str, dict]:
+    ) -> dict[str, dict]:
         """
         Fetch CatalogMeasurementUnit objects from Square API.
 
@@ -224,9 +223,7 @@ class SquareIntegrationAdapter(BaseIntegrationAdapter):
                 if obj.get("type") == "MEASUREMENT_UNIT":
                     oid = obj.get("id")
                     if oid:
-                        cache[oid] = {
-                            "measurement_unit_data": obj.get("measurement_unit_data", {})
-                        }
+                        cache[oid] = {"measurement_unit_data": obj.get("measurement_unit_data", {})}
             logger.info(
                 "Fetched measurement units from Square",
                 unit_count=len(cache),
@@ -241,9 +238,7 @@ class SquareIntegrationAdapter(BaseIntegrationAdapter):
             )
             return {}
 
-    async def _ensure_valid_token(
-        self, store_mapping: StoreMapping
-    ) -> Optional[str]:
+    async def _ensure_valid_token(self, store_mapping: StoreMapping) -> str | None:
         """
         Ensure store mapping has a valid, non-expiring access token.
         Refreshes token if expiring soon.
@@ -271,8 +266,8 @@ class SquareIntegrationAdapter(BaseIntegrationAdapter):
             )
 
             # Refresh token
-            success, updated_mapping = (
-                await token_refresh_service.refresh_token_and_update(store_mapping)
+            success, updated_mapping = await token_refresh_service.refresh_token_and_update(
+                store_mapping
             )
 
             if success and updated_mapping:
@@ -301,19 +296,19 @@ class SquareIntegrationAdapter(BaseIntegrationAdapter):
         access_token: str,
         store_mapping_id: UUID,
         base_url: str,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         Fetch all products from Square Catalog API and sync to database.
-        
+
         This function is called during initial onboarding to sync all existing
         products from Square to the database and queue them for Hipoink sync.
-        
+
         Args:
             merchant_id: Square merchant ID
             access_token: Square OAuth access token (optional if store_mapping_id provided)
             store_mapping_id: Store mapping UUID
             base_url: Square API base URL (sandbox or production)
-        
+
         Returns:
             Dict with sync statistics (total_items, products_created, products_updated, errors)
         """
@@ -322,7 +317,7 @@ class SquareIntegrationAdapter(BaseIntegrationAdapter):
             merchant_id=merchant_id,
             store_mapping_id=str(store_mapping_id),
         )
-        
+
         # If access_token not provided, get from store mapping and ensure it's valid
         if not access_token and store_mapping_id:
             store_mapping = self.supabase_service.get_store_mapping_by_id(store_mapping_id)
@@ -333,19 +328,19 @@ class SquareIntegrationAdapter(BaseIntegrationAdapter):
                     raise Exception("Failed to obtain valid access token")
             else:
                 raise Exception(f"Store mapping not found: {store_mapping_id}")
-        
+
         # 1. Fetch all items with pagination
         all_items = []
         cursor = None
         page_count = 0
-        
+
         async with httpx.AsyncClient() as client:
             while True:
                 page_count += 1
                 url = f"{base_url}/v2/catalog/list?types=ITEM"
                 if cursor:
                     url += f"&cursor={cursor}"
-                
+
                 try:
                     response = await client.get(
                         url,
@@ -355,7 +350,7 @@ class SquareIntegrationAdapter(BaseIntegrationAdapter):
                         },
                         timeout=30.0,
                     )
-                    
+
                     if response.status_code != 200:
                         logger.error(
                             "Square API error during pagination",
@@ -364,25 +359,25 @@ class SquareIntegrationAdapter(BaseIntegrationAdapter):
                             page=page_count,
                         )
                         break
-                    
+
                     data = response.json()
                     items = data.get("objects", [])
                     all_items.extend(items)
-                    
+
                     logger.debug(
                         "Fetched page of items",
                         page=page_count,
                         items_in_page=len(items),
                         total_items_so_far=len(all_items),
                     )
-                    
+
                     cursor = data.get("cursor")
                     if not cursor:
                         break  # No more pages
-                    
+
                     # Rate limiting: wait 100ms between requests
                     await asyncio.sleep(0.1)
-                    
+
                 except httpx.TimeoutException:
                     logger.error("Timeout fetching Square catalog page", page=page_count)
                     break
@@ -394,13 +389,13 @@ class SquareIntegrationAdapter(BaseIntegrationAdapter):
                         error_type=type(e).__name__,
                     )
                     break
-        
+
         logger.info(
             "Finished fetching items from Square",
             total_items=len(all_items),
             total_pages=page_count,
         )
-        
+
         if not all_items:
             return {
                 "status": "success",
@@ -411,7 +406,7 @@ class SquareIntegrationAdapter(BaseIntegrationAdapter):
                 "errors": 0,
                 "message": "No items found in Square catalog",
             }
-        
+
         # 2. Collect measurement unit IDs
         measurement_unit_ids = set()
         for item in all_items:
@@ -422,9 +417,9 @@ class SquareIntegrationAdapter(BaseIntegrationAdapter):
                 unit_id = var_data.get("measurement_unit_id")
                 if unit_id:
                     measurement_unit_ids.add(unit_id)
-        
+
         # 3. Fetch measurement units in batch
-        measurement_units_cache: Dict[str, dict] = {}
+        measurement_units_cache: dict[str, dict] = {}
         if measurement_unit_ids:
             measurement_units_cache = await self._fetch_measurement_units(
                 access_token=access_token,
@@ -436,27 +431,27 @@ class SquareIntegrationAdapter(BaseIntegrationAdapter):
                 unit_count=len(measurement_units_cache),
                 requested_count=len(measurement_unit_ids),
             )
-        
+
         # 4. Process each item
         products_created = 0
         products_updated = 0
         errors = 0
         queued_count = 0
-        
+
         for item in all_items:
             item_id = item.get("id")
-            
+
             try:
                 catalog_object = SquareCatalogObject(**item)
                 normalized_variants = self.transformer.extract_variations_from_catalog_object(
                     catalog_object,
                     measurement_units_cache=measurement_units_cache,
                 )
-                
+
                 for normalized in normalized_variants:
                     # Validate
                     is_valid, validation_errors = self.validate_normalized_product(normalized)
-                    
+
                     # Check if product already exists (with multi-tenant filtering)
                     existing = self.supabase_service.get_product_by_source(
                         source_system="square",
@@ -464,7 +459,7 @@ class SquareIntegrationAdapter(BaseIntegrationAdapter):
                         source_variant_id=normalized.source_variant_id,
                         source_store_id=merchant_id,  # Multi-tenant isolation
                     )
-                    
+
                     # Create or update product
                     product = Product(
                         source_system="square",
@@ -480,16 +475,18 @@ class SquareIntegrationAdapter(BaseIntegrationAdapter):
                         raw_data={"item_data": item},
                         normalized_data=normalized.to_dict(),
                         status="validated" if is_valid else "pending",
-                        validation_errors={"errors": validation_errors} if validation_errors else None,
+                        validation_errors={"errors": validation_errors}
+                        if validation_errors
+                        else None,
                     )
-                    
+
                     saved, changed = self.supabase_service.create_or_update_product(product)
-                    
+
                     if existing:
                         products_updated += 1
                     else:
                         products_created += 1
-                    
+
                     # Add to sync queue if valid and not already synced to Hipoink
                     if is_valid and store_mapping_id:
                         # Check if product already has a Hipoink mapping for this store
@@ -497,7 +494,7 @@ class SquareIntegrationAdapter(BaseIntegrationAdapter):
                             saved.id,  # type: ignore
                             store_mapping_id,
                         )
-                        
+
                         if existing_hipoink:
                             logger.debug(
                                 "Skipping queue - product already synced to Hipoink",
@@ -526,7 +523,7 @@ class SquareIntegrationAdapter(BaseIntegrationAdapter):
                                     product_id=str(saved.id),
                                     error=str(e),
                                 )
-                
+
             except Exception as e:
                 logger.error(
                     "Error processing item",
@@ -535,7 +532,7 @@ class SquareIntegrationAdapter(BaseIntegrationAdapter):
                     error_type=type(e).__name__,
                 )
                 errors += 1
-        
+
         logger.info(
             "Initial product sync completed",
             merchant_id=merchant_id,
@@ -545,7 +542,7 @@ class SquareIntegrationAdapter(BaseIntegrationAdapter):
             queued_for_sync=queued_count,
             errors=errors,
         )
-        
+
         return {
             "status": "success",
             "total_items": len(all_items),
@@ -555,7 +552,7 @@ class SquareIntegrationAdapter(BaseIntegrationAdapter):
             "errors": errors,
         }
 
-    def get_supported_events(self) -> List[str]:
+    def get_supported_events(self) -> list[str]:
         """Return list of supported Square webhook events."""
         return [
             "catalog.version.updated",
@@ -568,9 +565,9 @@ class SquareIntegrationAdapter(BaseIntegrationAdapter):
         self,
         event_type: str,
         request: Request,
-        headers: Dict[str, str],
-        payload: Dict[str, Any],
-    ) -> Dict[str, Any]:
+        headers: dict[str, str],
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
         """
         Handle a Square webhook event.
 
@@ -595,14 +592,15 @@ class SquareIntegrationAdapter(BaseIntegrationAdapter):
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Unsupported event type: {event_type}",
             )
+
     async def _handle_catalog_update(
-        self, headers: Dict[str, str], payload: Dict[str, Any]
-    ) -> Dict[str, Any]:
+        self, headers: dict[str, str], payload: dict[str, Any]
+    ) -> dict[str, Any]:
         """
         Handle catalog update with hybrid approach:
         - If webhook payload contains catalog_object: process only that item (optimized)
         - If webhook payload doesn't contain catalog_object: fall back to full sync (safe)
-        
+
         This method ensures webhooks always work while optimizing performance when possible.
         """
         # Validate payload structure
@@ -637,13 +635,17 @@ class SquareIntegrationAdapter(BaseIntegrationAdapter):
                 )
             except Exception as slack_error:
                 logger.warning("Failed to send Slack alert", error=str(slack_error))
-            
+
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="No access token found",
             )
 
-        base_url = "https://connect.squareupsandbox.com" if settings.square_environment == "sandbox" else "https://connect.squareup.com"
+        base_url = (
+            "https://connect.squareupsandbox.com"
+            if settings.square_environment == "sandbox"
+            else "https://connect.squareup.com"
+        )
 
         use_fallback = False
 
@@ -711,7 +713,7 @@ class SquareIntegrationAdapter(BaseIntegrationAdapter):
                     else:
                         data = response.json()
                         item_to_process = data.get("object", {})
-                        
+
                 elif object_type == "ITEM_VARIATION":
                     retrieve_url = f"{base_url}/v2/catalog/object/{object_id}"
                     response = await client.get(
@@ -731,7 +733,7 @@ class SquareIntegrationAdapter(BaseIntegrationAdapter):
                         variation_object = variation_data.get("object", {})
                         variation_data_dict = variation_object.get("item_variation_data", {})
                         parent_item_id = variation_data_dict.get("item_id")
-                        
+
                         if not parent_item_id:
                             logger.warning(
                                 "Variation has no parent item_id, falling back to full sync",
@@ -767,7 +769,7 @@ class SquareIntegrationAdapter(BaseIntegrationAdapter):
                     if unit_id:
                         measurement_unit_ids.add(unit_id)
 
-                measurement_units_cache: Dict[str, dict] = {}
+                measurement_units_cache: dict[str, dict] = {}
                 if measurement_unit_ids:
                     measurement_units_cache = await self._fetch_measurement_units(
                         access_token=access_token,
@@ -777,7 +779,7 @@ class SquareIntegrationAdapter(BaseIntegrationAdapter):
 
                 processed_products = []
                 normalized_variants = []
-                
+
                 try:
                     catalog_object = SquareCatalogObject(**item_to_process)
                     normalized_variants = self.transformer.extract_variations_from_catalog_object(
@@ -785,11 +787,11 @@ class SquareIntegrationAdapter(BaseIntegrationAdapter):
                     )
 
                     all_variants_processed = True
-                    
+
                     for normalized in normalized_variants:
                         try:
                             is_valid, errors = self.validate_normalized_product(normalized)
-                            
+
                             # Get existing product BEFORE updating (for logging unit cost changes)
                             existing_product = None
                             try:
@@ -797,12 +799,14 @@ class SquareIntegrationAdapter(BaseIntegrationAdapter):
                                     "square", normalized.source_id, source_store_id=merchant_id
                                 )
                                 for ep in existing_products:
-                                    if str(ep.source_variant_id) == str(normalized.source_variant_id):
+                                    if str(ep.source_variant_id) == str(
+                                        normalized.source_variant_id
+                                    ):
                                         existing_product = ep
                                         break
                             except Exception:
                                 pass  # Ignore errors when fetching existing product
-                            
+
                             product = Product(
                                 source_system="square",
                                 source_id=normalized.source_id,
@@ -819,17 +823,21 @@ class SquareIntegrationAdapter(BaseIntegrationAdapter):
                                 status="validated" if is_valid else "pending",
                                 validation_errors={"errors": errors} if errors else None,
                             )
-                            
+
                             saved, changed = self.supabase_service.create_or_update_product(product)
                             processed_products.append(saved)
 
                             # Enhanced logging for unit cost changes
                             if existing_product and existing_product.normalized_data:
-                                old_f2 = existing_product.normalized_data.get("f2")  # Price per unit (per-item)
-                                old_f4 = existing_product.normalized_data.get("f4")  # Price per ounce (weight-based)
+                                old_f2 = existing_product.normalized_data.get(
+                                    "f2"
+                                )  # Price per unit (per-item)
+                                old_f4 = existing_product.normalized_data.get(
+                                    "f4"
+                                )  # Price per ounce (weight-based)
                                 new_f2 = normalized.f2
                                 new_f4 = normalized.f4
-                                
+
                                 if old_f2 != new_f2 or old_f4 != new_f4:
                                     logger.info(
                                         "Unit cost change detected in webhook",
@@ -846,7 +854,7 @@ class SquareIntegrationAdapter(BaseIntegrationAdapter):
                                 queue_item = self.supabase_service.add_to_sync_queue(
                                     product_id=saved.id,
                                     store_mapping_id=store_mapping_id,
-                                    operation="update"
+                                    operation="update",
                                 )
                                 if queue_item:
                                     logger.info(
@@ -862,14 +870,20 @@ class SquareIntegrationAdapter(BaseIntegrationAdapter):
                         except Exception as variant_error:
                             logger.error(
                                 "Error processing variant, will fallback to full sync",
-                                variant_id=normalized.source_variant_id if 'normalized' in locals() else None,
+                                variant_id=normalized.source_variant_id
+                                if "normalized" in locals()
+                                else None,
                                 error=str(variant_error),
                             )
                             all_variants_processed = False
                             use_fallback = True
                             break
 
-                    if all_variants_processed and normalized_variants and len(processed_products) == len(normalized_variants):
+                    if (
+                        all_variants_processed
+                        and normalized_variants
+                        and len(processed_products) == len(normalized_variants)
+                    ):
                         logger.info(
                             "Successfully processed item via optimized path",
                             object_id=object_id,
@@ -889,7 +903,7 @@ class SquareIntegrationAdapter(BaseIntegrationAdapter):
                             object_id=object_id,
                         )
                         use_fallback = True
-                        
+
                 except Exception as e:
                     logger.error(
                         "Error processing item from webhook, falling back to full sync",
@@ -902,7 +916,9 @@ class SquareIntegrationAdapter(BaseIntegrationAdapter):
         if use_fallback or not catalog_object_data:
             logger.info(
                 "Using full sync fallback",
-                reason="webhook_missing_object" if not catalog_object_data else "optimization_failed",
+                reason="webhook_missing_object"
+                if not catalog_object_data
+                else "optimization_failed",
                 has_catalog_object=bool(catalog_object_data),
             )
 
@@ -911,21 +927,21 @@ class SquareIntegrationAdapter(BaseIntegrationAdapter):
 
             all_items = []
             cursor = None
-            
+
             async with httpx.AsyncClient() as client:
                 while True:
                     url = f"{base_url}/v2/catalog/list?types=ITEM"
                     if cursor:
                         url += f"&cursor={cursor}"
-                    
+
                     response = await client.get(
-                        url, 
-                        headers={"Authorization": f"Bearer {access_token}"},
-                        timeout=30.0
+                        url, headers={"Authorization": f"Bearer {access_token}"}, timeout=30.0
                     )
-                    
+
                     if response.status_code != 200:
-                        logger.error("Square API Error", status=response.status_code, body=response.text)
+                        logger.error(
+                            "Square API Error", status=response.status_code, body=response.text
+                        )
                         try:
                             slack_service = get_slack_service()
                             await slack_service.send_api_error_alert(
@@ -937,10 +953,10 @@ class SquareIntegrationAdapter(BaseIntegrationAdapter):
                         except Exception as slack_error:
                             logger.warning("Failed to send Slack alert", error=str(slack_error))
                         break
-                        
+
                     data = response.json()
                     all_items.extend(data.get("objects", []))
-                    
+
                     cursor = data.get("cursor")
                     if not cursor:
                         break
@@ -955,7 +971,7 @@ class SquareIntegrationAdapter(BaseIntegrationAdapter):
                     if unit_id:
                         measurement_unit_ids.add(unit_id)
 
-            measurement_units_cache: Dict[str, dict] = {}
+            measurement_units_cache: dict[str, dict] = {}
             if measurement_unit_ids:
                 measurement_units_cache = await self._fetch_measurement_units(
                     access_token=access_token,
@@ -969,7 +985,7 @@ class SquareIntegrationAdapter(BaseIntegrationAdapter):
             for item in all_items:
                 item_id = item.get("id")
                 api_source_ids.add(item_id)
-                
+
                 try:
                     catalog_object = SquareCatalogObject(**item)
                     normalized_variants = self.transformer.extract_variations_from_catalog_object(
@@ -978,7 +994,7 @@ class SquareIntegrationAdapter(BaseIntegrationAdapter):
 
                     for normalized in normalized_variants:
                         is_valid, errors = self.validate_normalized_product(normalized)
-                        
+
                         product = Product(
                             source_system="square",
                             source_id=normalized.source_id,
@@ -1003,7 +1019,7 @@ class SquareIntegrationAdapter(BaseIntegrationAdapter):
                             queue_item = self.supabase_service.add_to_sync_queue(
                                 product_id=saved.id,
                                 store_mapping_id=store_mapping_id,
-                                operation="update"
+                                operation="update",
                             )
                             if not queue_item:
                                 logger.debug(
@@ -1019,9 +1035,7 @@ class SquareIntegrationAdapter(BaseIntegrationAdapter):
                 for p in prods_to_mark:
                     if store_mapping_id:
                         queue_item = self.supabase_service.add_to_sync_queue(
-                            product_id=p.id,
-                            store_mapping_id=store_mapping_id,
-                            operation="delete"
+                            product_id=p.id, store_mapping_id=store_mapping_id, operation="delete"
                         )
                         if not queue_item:
                             logger.debug(
@@ -1035,7 +1049,7 @@ class SquareIntegrationAdapter(BaseIntegrationAdapter):
                 "deleted": len(deleted_source_ids),
                 "optimized": False,
             }
-        
+
         return {
             "status": "success",
             "updated": 0,
@@ -1045,11 +1059,11 @@ class SquareIntegrationAdapter(BaseIntegrationAdapter):
 
     async def _handle_catalog_delete(
         self,
-        headers: Dict[str, str],
-        payload: Dict[str, Any],
+        headers: dict[str, str],
+        payload: dict[str, Any],
         store_mapping: Any,
-        catalog_object_data: Dict[str, Any],
-    ) -> Dict[str, Any]:
+        catalog_object_data: dict[str, Any],
+    ) -> dict[str, Any]:
         """Handle catalog object deletion."""
         source_id = catalog_object_data.get("id")
 
@@ -1067,7 +1081,9 @@ class SquareIntegrationAdapter(BaseIntegrationAdapter):
 
         # Find all products with this source_id (filtered by merchant for multi-tenant safety)
         products_to_delete = self.supabase_service.get_products_by_source_id(
-            "square", source_id, source_store_id=merchant_id  # Multi-tenant isolation
+            "square",
+            source_id,
+            source_store_id=merchant_id,  # Multi-tenant isolation
         )
 
         if not products_to_delete:
@@ -1121,8 +1137,8 @@ class SquareIntegrationAdapter(BaseIntegrationAdapter):
         }
 
     async def _handle_inventory_update(
-        self, headers: Dict[str, str], payload: Dict[str, Any]
-    ) -> Dict[str, Any]:
+        self, headers: dict[str, str], payload: dict[str, Any]
+    ) -> dict[str, Any]:
         """Handle inventory.count.updated webhook."""
         # Validate payload
         InventoryCountUpdatedWebhook(**payload)
@@ -1141,11 +1157,11 @@ class SquareIntegrationAdapter(BaseIntegrationAdapter):
         }
 
     async def _handle_order_event(
-        self, headers: Dict[str, str], payload: Dict[str, Any], event_type: str
-    ) -> Dict[str, Any]:
+        self, headers: dict[str, str], payload: dict[str, Any], event_type: str
+    ) -> dict[str, Any]:
         """
         Handle order.created and order.updated webhooks.
-        
+
         Currently acknowledges receipt. Future: Extract order items to update
         "Last Sold" date on ESL tags or track popularity metrics.
         """
@@ -1181,9 +1197,7 @@ class SquareIntegrationAdapter(BaseIntegrationAdapter):
             "message": f"Order event {event_type} acknowledged",
         }
 
-    async def _get_square_credentials(
-        self, store_mapping: Any
-    ) -> Optional[Tuple[str, str]]:
+    async def _get_square_credentials(self, store_mapping: Any) -> tuple[str, str] | None:
         """
         Get Square credentials from store mapping metadata.
         Ensures token is valid and refreshes if necessary.
@@ -1199,7 +1213,7 @@ class SquareIntegrationAdapter(BaseIntegrationAdapter):
             return None
 
         merchant_id = store_mapping.source_store_id  # Square merchant/location ID
-        
+
         # Ensure valid token (auto-refresh if needed)
         access_token = await self._ensure_valid_token(store_mapping)
         # No global SQUARE_ACCESS_TOKEN fallback: use only the token for this store (multi-tenant safety)
@@ -1219,7 +1233,7 @@ class SquareIntegrationAdapter(BaseIntegrationAdapter):
         object_id: str,
         price: float,
         access_token: str,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         Update a catalog object's price in Square.
 
@@ -1268,7 +1282,7 @@ class SquareIntegrationAdapter(BaseIntegrationAdapter):
                 # Square catalog objects should be ITEM_VARIATION for price updates
                 # Prices are stored on ITEM_VARIATION objects
                 object_type = catalog_object.get("type")
-                
+
                 if object_type != "ITEM_VARIATION":
                     logger.warning(
                         "Catalog object is not a variation, cannot update price directly",
@@ -1278,12 +1292,12 @@ class SquareIntegrationAdapter(BaseIntegrationAdapter):
                     raise Exception(
                         f"Object {object_id} is type '{object_type}', expected ITEM_VARIATION. Use variation ID instead."
                     )
-                
+
                 # Update price_money for the variation
                 item_variation_data = catalog_object.get("item_variation_data", {})
                 if not item_variation_data:
                     raise Exception(f"Item variation data not found for object {object_id}")
-                
+
                 item_variation_data["price_money"] = {
                     "amount": price_cents,
                     "currency": "USD",
@@ -1292,10 +1306,10 @@ class SquareIntegrationAdapter(BaseIntegrationAdapter):
 
                 # Update the catalog object
                 update_url = f"{base_url}/v2/catalog/object"
-                
+
                 # Generate idempotency key for Square API
                 idempotency_key = str(uuid4())
-                
+
                 update_payload = {
                     "idempotency_key": idempotency_key,
                     "object": catalog_object,

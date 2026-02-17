@@ -3,10 +3,10 @@ Generic webhook router that delegates to integration adapters.
 This is the new router that supports multiple integrations.
 """
 
-from fastapi import APIRouter, Request, HTTPException, Header, status
-from typing import Optional
-import structlog
 import json
+
+import structlog
+from fastapi import APIRouter, Header, HTTPException, Request, status
 
 from app.integrations.registry import integration_registry
 from app.services.slack_service import get_slack_service
@@ -21,8 +21,8 @@ async def handle_webhook(
     integration_name: str,
     event_type: str,
     request: Request,
-    x_shopify_hmac_sha256: Optional[str] = Header(None, alias="X-Shopify-Hmac-Sha256"),
-    x_square_hmacsha256_signature: Optional[str] = Header(None, alias="x-square-hmacsha256-signature"),
+    x_shopify_hmac_sha256: str | None = Header(None, alias="X-Shopify-Hmac-Sha256"),
+    x_square_hmacsha256_signature: str | None = Header(None, alias="x-square-hmacsha256-signature"),
 ):
     """
     Generic webhook handler that routes to the appropriate integration adapter.
@@ -34,7 +34,7 @@ async def handle_webhook(
     """
     payload = None  # Initialize payload variable for exception handler
     merchant_id = None  # Initialize merchant_id for exception handler
-    
+
     try:
         # Get the integration adapter
         adapter = integration_registry.get_adapter(integration_name)
@@ -90,7 +90,9 @@ async def handle_webhook(
                     detail="Missing webhook signature",
                 )
             request_url = str(request.url)
-            is_valid = adapter.verify_signature(body_bytes, signature, headers, request_url=request_url)
+            is_valid = adapter.verify_signature(
+                body_bytes, signature, headers, request_url=request_url
+            )
             if not is_valid:
                 logger.warning(
                     "Invalid Square webhook signature",
@@ -152,7 +154,7 @@ async def handle_webhook(
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Invalid JSON payload: {str(e)}",
-            )
+            ) from e
 
         logger.info(
             "Processing webhook",
@@ -176,7 +178,7 @@ async def handle_webhook(
             event_type=event_type,
             error=str(e),
         )
-        
+
         # Send Slack alert for webhook errors
         try:
             slack_service = get_slack_service()
@@ -188,11 +190,11 @@ async def handle_webhook(
             )
         except Exception as slack_error:
             logger.warning("Failed to send Slack alert", error=str(slack_error))
-        
+
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to process webhook: {str(e)}",
-        )
+        ) from e
 
 
 @router.get("/health")

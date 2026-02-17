@@ -4,9 +4,8 @@ This router delegates to the new integration adapter system.
 New code should use the generic webhook router at /webhooks/{integration_name}/{event_type}
 """
 
-from fastapi import APIRouter, Request, Header
-from typing import Optional
 import structlog
+from fastapi import APIRouter, Header, Request
 
 # Import new integration system
 
@@ -20,7 +19,7 @@ router = APIRouter(prefix="/webhooks", tags=["webhooks"])
 @router.post("/shopify/products/create")
 async def shopify_product_create(
     request: Request,
-    x_shopify_hmac_sha256: Optional[str] = Header(None, alias="X-Shopify-Hmac-Sha256"),
+    x_shopify_hmac_sha256: str | None = Header(None, alias="X-Shopify-Hmac-Sha256"),
 ):
     """Handle Shopify products/create webhook (legacy endpoint for backward compatibility)."""
     from app.routers.webhooks_new import handle_webhook
@@ -36,7 +35,7 @@ async def shopify_product_create(
 @router.post("/shopify/products/update")
 async def shopify_product_update(
     request: Request,
-    x_shopify_hmac_sha256: Optional[str] = Header(None, alias="X-Shopify-Hmac-Sha256"),
+    x_shopify_hmac_sha256: str | None = Header(None, alias="X-Shopify-Hmac-Sha256"),
 ):
     """Handle Shopify products/update webhook (legacy endpoint for backward compatibility)."""
     from app.routers.webhooks_new import handle_webhook
@@ -52,7 +51,7 @@ async def shopify_product_update(
 @router.post("/shopify/products/delete")
 async def shopify_product_delete(
     request: Request,
-    x_shopify_hmac_sha256: Optional[str] = Header(None, alias="X-Shopify-Hmac-Sha256"),
+    x_shopify_hmac_sha256: str | None = Header(None, alias="X-Shopify-Hmac-Sha256"),
 ):
     """Handle Shopify products/delete webhook (legacy endpoint for backward compatibility)."""
     from app.routers.webhooks_new import handle_webhook
@@ -68,7 +67,7 @@ async def shopify_product_delete(
 @router.post("/shopify/inventory_levels/update")
 async def shopify_inventory_update(
     request: Request,
-    x_shopify_hmac_sha256: Optional[str] = Header(None, alias="X-Shopify-Hmac-Sha256"),
+    x_shopify_hmac_sha256: str | None = Header(None, alias="X-Shopify-Hmac-Sha256"),
 ):
     """Handle Shopify inventory_levels/update webhook (legacy endpoint for backward compatibility)."""
     from app.routers.webhooks_new import handle_webhook

@@ -2,8 +2,9 @@
 Pydantic models for Clover webhook payloads and inventory item API responses.
 """
 
+from typing import Any, Literal
+
 from pydantic import BaseModel
-from typing import Optional, List, Dict, Any, Literal
 
 
 class CloverWebhookUpdate(BaseModel):
@@ -17,8 +18,8 @@ class CloverWebhookUpdate(BaseModel):
 class CloverWebhookPayload(BaseModel):
     """Clover webhook payload: appId + merchants map to list of updates."""
 
-    appId: Optional[str] = None
-    merchants: Dict[str, List[CloverWebhookUpdate]] = {}
+    appId: str | None = None
+    merchants: dict[str, list[CloverWebhookUpdate]] = {}
 
     class Config:
         extra = "allow"  # Allow verificationCode and other fields
@@ -36,15 +37,15 @@ class CloverItem(BaseModel):
     Price is in cents (integer). id is the item identifier.
     """
 
-    id: Optional[str] = None
-    name: Optional[str] = None
-    price: Optional[int] = None  # Cents
-    sku: Optional[str] = None
-    code: Optional[str] = None  # Alternate/barcode field in some responses
-    alternateName: Optional[str] = None
-    priceType: Optional[str] = None
-    defaultTaxRates: Optional[List[Dict[str, Any]]] = None 
-    cost: Optional[int] = None #cost
+    id: str | None = None
+    name: str | None = None
+    price: int | None = None  # Cents
+    sku: str | None = None
+    code: str | None = None  # Alternate/barcode field in some responses
+    alternateName: str | None = None
+    priceType: str | None = None
+    defaultTaxRates: list[dict[str, Any]] | None = None
+    cost: int | None = None  # cost
 
     class Config:
         extra = "allow"

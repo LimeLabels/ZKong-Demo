@@ -5,16 +5,14 @@ Compares with database and syncs new/updated products.
 """
 
 import asyncio
-import structlog
-from typing import List, Dict, Any, Optional
-from datetime import datetime
+from typing import Any
 
-from app.config import settings
-from app.services.supabase_service import SupabaseService
+import structlog
+
 from app.integrations.ncr.adapter import NCRIntegrationAdapter
 from app.integrations.ncr.api_client import NCRAPIClient
-from app.integrations.base import NormalizedProduct
-from app.models.database import StoreMapping, Product
+from app.models.database import Product, StoreMapping
+from app.services.supabase_service import SupabaseService
 
 logger = structlog.get_logger()
 
@@ -57,7 +55,7 @@ class NCRSyncWorker:
         try:
             # Get all NCR store mappings
             store_mappings = self.supabase_service.get_store_mappings_by_source_system("ncr")
-            
+
             if not store_mappings:
                 logger.debug("No NCR store mappings found, skipping sync")
                 return
@@ -92,7 +90,7 @@ class NCRSyncWorker:
         """
         # Extract NCR configuration from store mapping metadata
         ncr_config = store_mapping.metadata or {}
-        
+
         # Initialize NCR API client
         api_client = NCRAPIClient(
             base_url=ncr_config.get("ncr_base_url", "https://api.ncr.com/catalog"),
@@ -108,9 +106,9 @@ class NCRSyncWorker:
                 "Fetching items from NCR API",
                 store_mapping_id=str(store_mapping.id),
             )
-            
+
             ncr_items = await self.fetch_all_ncr_items(api_client)
-            
+
             logger.info(
                 "Fetched items from NCR",
                 store_mapping_id=str(store_mapping.id),
@@ -120,32 +118,28 @@ class NCRSyncWorker:
             # Get existing products from database for this store
             # CRITICAL: Filter by source_store_id for multi-tenant isolation
             existing_products = self.supabase_service.get_products_by_system(
-                "ncr", 
-                source_store_id=store_mapping.source_store_id
+                "ncr", source_store_id=store_mapping.source_store_id
             )
-            existing_item_codes = {
-                p.source_id: p for p in existing_products if p.source_id
-            }
+            existing_item_codes = {p.source_id: p for p in existing_products if p.source_id}
 
             # Process each NCR item
             new_count = 0
             updated_count = 0
-            
+
             for ncr_item in ncr_items:
                 try:
                     # Extract item code (primary identifier)
-                    item_code = (
-                        ncr_item.get("itemId", {}).get("itemCode")
-                        or ncr_item.get("itemCode")
+                    item_code = ncr_item.get("itemId", {}).get("itemCode") or ncr_item.get(
+                        "itemCode"
                     )
-                    
+
                     if not item_code:
                         logger.warning("NCR item missing itemCode", item=ncr_item)
                         continue
 
                     # Check if product exists in database
                     existing_product = existing_item_codes.get(item_code)
-                    
+
                     # Also check for products without source_store_id (created before this fix)
                     # This ensures we can update them with the correct source_store_id
                     if not existing_product:
@@ -156,7 +150,10 @@ class NCRSyncWorker:
                         )
                         # Filter to find products without source_store_id or with wrong one
                         for p in products_by_source:
-                            if not p.source_store_id or p.source_store_id != store_mapping.source_store_id:
+                            if (
+                                not p.source_store_id
+                                or p.source_store_id != store_mapping.source_store_id
+                            ):
                                 existing_product = p
                                 logger.info(
                                     "Found NCR product without source_store_id, will update",
@@ -166,11 +163,11 @@ class NCRSyncWorker:
                                     correct_source_store_id=store_mapping.source_store_id,
                                 )
                                 break
-                    
+
                     # Transform NCR item to normalized product
                     ncr_adapter = NCRIntegrationAdapter()
                     normalized_products = ncr_adapter.transform_product(ncr_item)
-                    
+
                     if not normalized_products:
                         logger.warning(
                             "Failed to transform NCR item",
@@ -179,7 +176,7 @@ class NCRSyncWorker:
                         continue
 
                     normalized_product = normalized_products[0]
-                    
+
                     # Fetch current price from NCR API (respects effectiveDate)
                     # This ensures we get the actual current price, including scheduled prices
                     try:
@@ -200,10 +197,10 @@ class NCRSyncWorker:
                         # Fallback to price from item data if available
                         if normalized_product.price is None or normalized_product.price == 0:
                             normalized_product.price = ncr_item.get("price") or 0.0
-                    
+
                     # Create or update product in database
                     is_new = existing_product is None
-                    
+
                     if is_new:
                         # New product - create it
                         product = Product(
@@ -221,9 +218,11 @@ class NCRSyncWorker:
                             normalized_data=normalized_product.to_dict(),
                             status="validated",
                         )
-                        
-                        saved_product, changed = self.supabase_service.create_or_update_product(product)
-                        
+
+                        saved_product, changed = self.supabase_service.create_or_update_product(
+                            product
+                        )
+
                         # Queue for ESL sync
                         if saved_product.id and store_mapping.id:
                             queue_item = self.supabase_service.add_to_sync_queue(
@@ -248,9 +247,12 @@ class NCRSyncWorker:
                         # Existing product - check if it needs updating
                         # Compare key fields to see if product changed
                         needs_update = False
-                        
+
                         # CRITICAL: Always ensure source_store_id is set correctly
-                        if not existing_product.source_store_id or existing_product.source_store_id != store_mapping.source_store_id:
+                        if (
+                            not existing_product.source_store_id
+                            or existing_product.source_store_id != store_mapping.source_store_id
+                        ):
                             needs_update = True
                             logger.info(
                                 "source_store_id missing or incorrect, will update",
@@ -258,7 +260,7 @@ class NCRSyncWorker:
                                 current_source_store_id=existing_product.source_store_id,
                                 correct_source_store_id=store_mapping.source_store_id,
                             )
-                        
+
                         if normalized_product.title != existing_product.title:
                             needs_update = True
                         if normalized_product.barcode != existing_product.barcode:
@@ -267,7 +269,9 @@ class NCRSyncWorker:
                             needs_update = True
                         # Check if price changed (within tolerance)
                         # This detects both scheduled price activations and manual changes
-                        price_diff = abs((normalized_product.price or 0) - (existing_product.price or 0))
+                        price_diff = abs(
+                            (normalized_product.price or 0) - (existing_product.price or 0)
+                        )
                         if price_diff > 0.01:
                             needs_update = True
                             logger.info(
@@ -277,7 +281,7 @@ class NCRSyncWorker:
                                 new_price=normalized_product.price,
                                 difference=price_diff,
                             )
-                        
+
                         if needs_update:
                             # Update product
                             existing_product.title = normalized_product.title
@@ -290,9 +294,11 @@ class NCRSyncWorker:
                             existing_product.normalized_data = normalized_product.to_dict()
                             # Always ensure source_store_id is set correctly
                             existing_product.source_store_id = store_mapping.source_store_id
-                            
-                            updated_product, changed = self.supabase_service.create_or_update_product(existing_product)
-                            
+
+                            updated_product, changed = (
+                                self.supabase_service.create_or_update_product(existing_product)
+                            )
+
                             # Queue for ESL sync
                             if updated_product.id and store_mapping.id:
                                 queue_item = self.supabase_service.add_to_sync_queue(
@@ -317,7 +323,7 @@ class NCRSyncWorker:
                 except Exception as e:
                     logger.error(
                         "Failed to process NCR item",
-                        item_code=item_code if 'item_code' in locals() else "unknown",
+                        item_code=item_code if "item_code" in locals() else "unknown",
                         error=str(e),
                     )
                     continue
@@ -333,7 +339,7 @@ class NCRSyncWorker:
         finally:
             await api_client.close()
 
-    async def fetch_all_ncr_items(self, api_client: NCRAPIClient) -> List[Dict[str, Any]]:
+    async def fetch_all_ncr_items(self, api_client: NCRAPIClient) -> list[dict[str, Any]]:
         """
         Fetch all items from NCR API.
         Uses pagination to get all items.
@@ -347,7 +353,7 @@ class NCRSyncWorker:
         all_items = []
         page_number = 0
         page_size = 200  # NCR API default page size
-        
+
         while True:
             try:
                 # Use the list_items method from API client
@@ -355,23 +361,23 @@ class NCRSyncWorker:
                     page_number=page_number,
                     page_size=page_size,
                 )
-                
+
                 # Extract items from response
                 # NCR API response structure: { "content": [...], "totalPages": ..., ... }
                 items = data.get("content", []) or data.get("items", []) or []
                 all_items.extend(items)
-                
+
                 # Check if there are more pages
                 total_pages = data.get("totalPages") or data.get("total_pages")
                 if total_pages and page_number >= total_pages - 1:
                     break
-                
+
                 # Check if we got fewer items than page size (last page)
                 if len(items) < page_size:
                     break
-                
+
                 page_number += 1
-                
+
             except Exception as e:
                 logger.error(
                     "Error fetching NCR items",
@@ -379,7 +385,7 @@ class NCRSyncWorker:
                     error=str(e),
                 )
                 break
-        
+
         return all_items
 
 
@@ -395,4 +401,3 @@ async def run_ncr_sync_worker():
         logger.info("Received interrupt signal, shutting down NCR sync worker")
     finally:
         await worker.stop()
-

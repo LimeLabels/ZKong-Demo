@@ -4,7 +4,8 @@ All integrations must implement this interface to be compatible with the system.
 """
 
 from abc import ABC, abstractmethod
-from typing import List, Dict, Any, Optional, Tuple
+from typing import Any
+
 from fastapi import Request
 
 
@@ -14,13 +15,13 @@ class NormalizedProduct:
     def __init__(
         self,
         source_id: str,
-        source_variant_id: Optional[str] = None,
+        source_variant_id: str | None = None,
         title: str = "",
-        barcode: Optional[str] = None,
-        sku: Optional[str] = None,
+        barcode: str | None = None,
+        sku: str | None = None,
         price: float = 0.0,
         currency: str = "USD",
-        image_url: Optional[str] = None,
+        image_url: str | None = None,
         **kwargs,
     ):
         self.source_id = source_id
@@ -33,7 +34,7 @@ class NormalizedProduct:
         self.image_url = image_url
         self.extra_data = kwargs
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary format for storage."""
         data = {
             "source_id": self.source_id,
@@ -55,9 +56,9 @@ class NormalizedInventory:
     def __init__(
         self,
         inventory_item_id: str,
-        location_id: Optional[str] = None,
-        available: Optional[int] = None,
-        updated_at: Optional[str] = None,
+        location_id: str | None = None,
+        available: int | None = None,
+        updated_at: str | None = None,
         **kwargs,
     ):
         self.inventory_item_id = inventory_item_id
@@ -66,7 +67,7 @@ class NormalizedInventory:
         self.updated_at = updated_at
         self.extra_data = kwargs
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary format."""
         data = {
             "inventory_item_id": self.inventory_item_id,
@@ -92,9 +93,7 @@ class BaseIntegrationAdapter(ABC):
         pass
 
     @abstractmethod
-    def verify_signature(
-        self, payload: bytes, signature: str, headers: Dict[str, str]
-    ) -> bool:
+    def verify_signature(self, payload: bytes, signature: str, headers: dict[str, str]) -> bool:
         """
         Verify webhook/event signature for authenticity.
 
@@ -109,9 +108,7 @@ class BaseIntegrationAdapter(ABC):
         pass
 
     @abstractmethod
-    def extract_store_id(
-        self, headers: Dict[str, str], payload: Dict[str, Any]
-    ) -> Optional[str]:
+    def extract_store_id(self, headers: dict[str, str], payload: dict[str, Any]) -> str | None:
         """
         Extract store identifier from webhook/event.
 
@@ -125,7 +122,7 @@ class BaseIntegrationAdapter(ABC):
         pass
 
     @abstractmethod
-    def transform_product(self, raw_data: Dict[str, Any]) -> List[NormalizedProduct]:
+    def transform_product(self, raw_data: dict[str, Any]) -> list[NormalizedProduct]:
         """
         Transform integration-specific product data to normalized format.
 
@@ -138,9 +135,7 @@ class BaseIntegrationAdapter(ABC):
         pass
 
     @abstractmethod
-    def transform_inventory(
-        self, raw_data: Dict[str, Any]
-    ) -> Optional[NormalizedInventory]:
+    def transform_inventory(self, raw_data: dict[str, Any]) -> NormalizedInventory | None:
         """
         Transform integration-specific inventory data to normalized format.
 
@@ -153,7 +148,7 @@ class BaseIntegrationAdapter(ABC):
         pass
 
     @abstractmethod
-    def get_supported_events(self) -> List[str]:
+    def get_supported_events(self) -> list[str]:
         """
         Return list of supported webhook/event types.
 
@@ -167,9 +162,9 @@ class BaseIntegrationAdapter(ABC):
         self,
         event_type: str,
         request: Request,
-        headers: Dict[str, str],
-        payload: Dict[str, Any],
-    ) -> Dict[str, Any]:
+        headers: dict[str, str],
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
         """
         Handle a webhook event.
 
@@ -184,7 +179,7 @@ class BaseIntegrationAdapter(ABC):
         """
         pass
 
-    async def subscribe_webhooks(self, store_config: Dict[str, Any]) -> bool:
+    async def subscribe_webhooks(self, store_config: dict[str, Any]) -> bool:
         """
         Subscribe to webhooks via integration's API (if applicable).
 
@@ -200,9 +195,7 @@ class BaseIntegrationAdapter(ABC):
         """
         return False
 
-    def validate_normalized_product(
-        self, product: NormalizedProduct
-    ) -> Tuple[bool, List[str]]:
+    def validate_normalized_product(self, product: NormalizedProduct) -> tuple[bool, list[str]]:
         """
         Validate normalized product data.
 

@@ -3,8 +3,7 @@ Shopify data transformation service (backward compatibility).
 This module re-exports from the new integrations structure.
 """
 
-from app.integrations.shopify.transformer import ShopifyTransformer
-from app.integrations.shopify.transformer import ShopifyTransformError
+from app.integrations.shopify.transformer import ShopifyTransformer, ShopifyTransformError
 
 # Maintain backward compatibility by making it work like the old service
 # The old code expected static methods, so we expose them

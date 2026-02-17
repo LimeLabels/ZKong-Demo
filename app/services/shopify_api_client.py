@@ -3,9 +3,10 @@ Shopify API client for making direct API calls to Shopify.
 Handles product variant price updates.
 """
 
+from typing import Any
+
 import httpx
 import structlog
-from typing import Dict, Any, List
 
 logger = structlog.get_logger()
 
@@ -34,7 +35,7 @@ class ShopifyAPIClient:
 
     async def update_variant_price(
         self, product_id: str, variant_id: str, price: str
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         Update a product variant's price in Shopify.
 
@@ -68,9 +69,7 @@ class ShopifyAPIClient:
                     break
 
             if not variant_found:
-                raise Exception(
-                    f"Variant {variant_id} not found in product {product_id}"
-                )
+                raise Exception(f"Variant {variant_id} not found in product {product_id}")
 
             # Update the product with modified variant
             update_url = f"{self.base_url}/products/{product_id}.json"
@@ -122,9 +121,7 @@ class ShopifyAPIClient:
             )
             raise
 
-    async def update_multiple_variant_prices(
-        self, updates: List[Dict[str, str]]
-    ) -> Dict[str, Any]:
+    async def update_multiple_variant_prices(self, updates: list[dict[str, str]]) -> dict[str, Any]:
         """
         Update multiple variant prices efficiently.
         Uses Shopify's bulk operations API if available, otherwise makes individual calls.

@@ -5,6 +5,7 @@ Runs every N minutes (configurable). Thin wrapper around CloverIntegrationAdapte
 """
 
 import asyncio
+
 import structlog
 
 from app.config import settings
@@ -27,7 +28,10 @@ class CloverSyncWorker:
 
     async def start(self) -> None:
         self.running = True
-        logger.info("Clover sync worker started", poll_interval_seconds=getattr(settings, "clover_sync_interval_seconds", 300))
+        logger.info(
+            "Clover sync worker started",
+            poll_interval_seconds=getattr(settings, "clover_sync_interval_seconds", 300),
+        )
 
         while self.running:
             try:
@@ -45,16 +49,12 @@ class CloverSyncWorker:
 
     async def poll_all_merchants(self) -> None:
         """Poll all active Clover store mappings."""
-        mappings = self.supabase_service.get_store_mappings_by_source_system(
-            "clover"
-        )
+        mappings = self.supabase_service.get_store_mappings_by_source_system("clover")
 
         for mapping in mappings:
             if not mapping.is_active:
                 continue
-            if not mapping.metadata or not mapping.metadata.get(
-                "clover_access_token"
-            ):
+            if not mapping.metadata or not mapping.metadata.get("clover_access_token"):
                 logger.warning(
                     "No access token for Clover merchant",
                     mapping_id=str(mapping.id),
