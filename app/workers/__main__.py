@@ -14,13 +14,15 @@ import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from app.utils.logger import configure_logging
-from app.workers.sync_worker import run_worker
-from app.workers.price_scheduler import run_price_scheduler
-from app.workers.token_refresh_scheduler import run_token_refresh_scheduler
 from app.workers.clover_sync_worker import run_clover_sync_worker
+from app.workers.price_scheduler import run_price_scheduler
+from app.workers.sync_worker import run_worker
+from app.workers.token_refresh_scheduler import run_token_refresh_scheduler
+
 # from app.workers.ncr_sync_worker import run_ncr_sync_worker  # Temporarily disabled
 
-#testing
+# testing
+
 
 def _run_health_server():
     """Run a minimal HTTP server for GET /health so Railway health checks pass."""

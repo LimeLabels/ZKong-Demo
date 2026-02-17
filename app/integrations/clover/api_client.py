@@ -5,9 +5,10 @@ Supports list_items, list_items_modified_since (polling), and list_all_item_ids 
 """
 
 import asyncio
+from typing import Any
+
 import httpx
 import structlog
-from typing import Dict, Any, Optional, List
 
 from app.config import settings
 
@@ -22,7 +23,7 @@ PAGINATION_DELAY_SECONDS = 0.15
 class CloverAPIError(Exception):
     """Raised when Clover API returns an error."""
 
-    def __init__(self, status_code: int, message: str, body: Optional[str] = None):
+    def __init__(self, status_code: int, message: str, body: str | None = None):
         self.status_code = status_code
         self.message = message
         self.body = body
@@ -35,7 +36,7 @@ class CloverAPIClient:
     def __init__(
         self,
         access_token: str,
-        base_url: Optional[str] = None,
+        base_url: str | None = None,
     ):
         """
         Initialize the Clover API client.
@@ -52,9 +53,9 @@ class CloverAPIClient:
                 self.base_url = "https://sandbox.dev.clover.com"
             else:
                 self.base_url = "https://api.clover.com"
-        self._client: Optional[httpx.AsyncClient] = None
+        self._client: httpx.AsyncClient | None = None
 
-    def _headers(self) -> Dict[str, str]:
+    def _headers(self) -> dict[str, str]:
         return {
             "Authorization": f"Bearer {self.access_token}",
             "Content-Type": "application/json",
@@ -71,7 +72,7 @@ class CloverAPIClient:
             await self._client.aclose()
             self._client = None
 
-    async def list_items(self, merchant_id: str) -> List[Dict[str, Any]]:
+    async def list_items(self, merchant_id: str) -> list[dict[str, Any]]:
         """
         Fetch all items for a merchant using limit/offset pagination.
 
@@ -83,7 +84,7 @@ class CloverAPIClient:
         Returns:
             List of item dicts (raw API shape).
         """
-        all_items: List[Dict[str, Any]] = []
+        all_items: list[dict[str, Any]] = []
         offset = 0
         client = await self._get_client()
 
@@ -147,7 +148,7 @@ class CloverAPIClient:
         self,
         merchant_id: str,
         item_id: str,
-    ) -> Optional[Dict[str, Any]]:
+    ) -> dict[str, Any] | None:
         """
         Fetch a single item by ID.
 
@@ -197,7 +198,7 @@ class CloverAPIClient:
         item_id: str,
         price_cents: int,
         **kwargs: Any,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         Update an item's price (and optionally other fields).
 
@@ -220,11 +221,13 @@ class CloverAPIClient:
         if raw_id.upper().startswith("I:"):
             raw_id = raw_id[2:].strip()
         if not raw_id:
-            raise CloverAPIError(0, "item_id is required and cannot be empty after stripping I: prefix")
+            raise CloverAPIError(
+                0, "item_id is required and cannot be empty after stripping I: prefix"
+            )
 
         client = await self._get_client()
         url = f"{self.base_url}/v3/merchants/{merchant_id}/items/{raw_id}"
-        body: Dict[str, Any] = {"price": price_cents, **kwargs}
+        body: dict[str, Any] = {"price": price_cents, **kwargs}
         try:
             response = await client.patch(
                 url,
@@ -261,7 +264,7 @@ class CloverAPIClient:
         merchant_id: str,
         modified_since: int,
         limit: int = DEFAULT_LIMIT,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """
         Fetch items modified since timestamp (incremental sync for polling).
 
@@ -275,7 +278,7 @@ class CloverAPIClient:
         Returns:
             List of item dicts (raw API shape). First run with modified_since=0 returns all items.
         """
-        all_items: List[Dict[str, Any]] = []
+        all_items: list[dict[str, Any]] = []
         offset = 0
         client = await self._get_client()
 
@@ -337,7 +340,7 @@ class CloverAPIClient:
         )
         return all_items
 
-    async def list_all_item_ids(self, merchant_id: str) -> List[str]:
+    async def list_all_item_ids(self, merchant_id: str) -> list[str]:
         """
         Fetch only item IDs for ghost-item cleanup (lightweight).
 
@@ -350,7 +353,7 @@ class CloverAPIClient:
         Returns:
             List of Clover item ID strings.
         """
-        all_ids: List[str] = []
+        all_ids: list[str] = []
         offset = 0
         client = await self._get_client()
 

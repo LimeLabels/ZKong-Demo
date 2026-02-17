@@ -10,14 +10,14 @@ API Documentation (Version V1.0.0):
   - Default client_id: "default"
 """
 
+from typing import Any
+
 import httpx
 import structlog
-from typing import Optional, List, Dict, Any
+
 from app.config import settings
 from app.services.slack_service import get_slack_service
-from app.utils.retry import retry_with_backoff, TransientError, PermanentError
-
-
+from app.utils.retry import PermanentError, TransientError, retry_with_backoff
 
 logger = structlog.get_logger()
 
@@ -42,17 +42,17 @@ class HipoinkProductItem:
         product_code: str,  # pc - required
         product_name: str,  # pn - required
         product_price: str,  # pp - required (as string)
-        product_inner_code: Optional[str] = None,  # pi
-        product_spec: Optional[str] = None,  # ps
-        product_grade: Optional[str] = None,  # pg
-        product_unit: Optional[str] = None,  # pu
-        vip_price: Optional[str] = None,  # vp
-        origin_price: Optional[str] = None,  # pop
-        product_origin: Optional[str] = None,  # po
-        product_manufacturer: Optional[str] = None,  # pm
-        promotion: Optional[int] = None,  # promotion
-        product_image_url: Optional[str] = None,  # pim
-        product_qrcode_url: Optional[str] = None,  # pqr
+        product_inner_code: str | None = None,  # pi
+        product_spec: str | None = None,  # ps
+        product_grade: str | None = None,  # pg
+        product_unit: str | None = None,  # pu
+        vip_price: str | None = None,  # vp
+        origin_price: str | None = None,  # pop
+        product_origin: str | None = None,  # po
+        product_manufacturer: str | None = None,  # pm
+        promotion: int | None = None,  # promotion
+        product_image_url: str | None = None,  # pim
+        product_qrcode_url: str | None = None,  # pqr
         **kwargs,  # For f1-f16 and other fields
     ):
         self.pc = product_code
@@ -80,7 +80,7 @@ class HipoinkProductItem:
         if "extend" in kwargs:
             self.extend = kwargs["extend"]
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary, excluding None values."""
         result = {
             "pc": self.pc,
@@ -121,9 +121,7 @@ class HipoinkProductItem:
 class HipoinkClient:
     """Client for interacting with Hipoink ESL API."""
 
-    def __init__(
-        self, base_url: str = None, client_id: str = "default", api_secret: str = None
-    ):
+    def __init__(self, base_url: str = None, client_id: str = "default", api_secret: str = None):
         """
         Initialize Hipoink API client.
 
@@ -133,8 +131,7 @@ class HipoinkClient:
             api_secret: API secret for signing requests (optional)
         """
         self.base_url = (
-            base_url
-            or getattr(settings, "hipoink_api_base_url", "http://208.167.248.129")
+            base_url or getattr(settings, "hipoink_api_base_url", "http://208.167.248.129")
         ).rstrip("/")
         self.client_id = client_id
         self.api_secret = api_secret or getattr(settings, "hipoink_api_secret", "")
@@ -149,7 +146,7 @@ class HipoinkClient:
             follow_redirects=True,
         )
 
-    def _generate_sign(self, data: Dict[str, Any]) -> str:
+    def _generate_sign(self, data: dict[str, Any]) -> str:
         """
         Generate sign for API request.
         Based on Hipoink API documentation, sign is required.
@@ -173,8 +170,8 @@ class HipoinkClient:
 
     @retry_with_backoff(max_attempts=3, initial_delay=1.0, multiplier=2.0)
     async def create_products_multiple(
-        self, store_code: str, products: List[HipoinkProductItem], is_base64: str = "0"
-    ) -> Dict[str, Any]:
+        self, store_code: str, products: list[HipoinkProductItem], is_base64: str = "0"
+    ) -> dict[str, Any]:
         """
         Create multiple products in Hipoink ESL system.
         Uses endpoint: POST /api/{i_client_id}/product/create_multiple
@@ -223,10 +220,8 @@ class HipoinkClient:
             error_code = response_data.get("error_code")
             if error_code != 0:
                 error_msg = response_data.get("error_msg", "Unknown error")
-                error = HipoinkAPIError(
-                    f"Hipoink API error: {error_msg} (code: {error_code})"
-                )
-                
+                error = HipoinkAPIError(f"Hipoink API error: {error_msg} (code: {error_code})")
+
                 # Send Slack alert for Hipoink API errors
                 try:
                     slack_service = get_slack_service()
@@ -237,7 +232,7 @@ class HipoinkClient:
                     )
                 except Exception as slack_error:
                     logger.warning("Failed to send Slack alert", error=str(slack_error))
-                
+
                 raise error
 
             logger.info(
@@ -260,10 +255,10 @@ class HipoinkClient:
                 )
             except Exception as slack_error:
                 logger.warning("Failed to send Slack alert", error=str(slack_error))
-            
+
             if 500 <= e.response.status_code < 600:
-                raise TransientError(f"Hipoink API error: {e.response.status_code}")
-            raise PermanentError(f"Hipoink API error: {e.response.status_code}")
+                raise TransientError(f"Hipoink API error: {e.response.status_code}") from e
+            raise PermanentError(f"Hipoink API error: {e.response.status_code}") from e
         except Exception as e:
             # Send Slack alert for unexpected errors
             try:
@@ -275,13 +270,13 @@ class HipoinkClient:
                 )
             except Exception as slack_error:
                 logger.warning("Failed to send Slack alert", error=str(slack_error))
-            
-            raise HipoinkAPIError(f"Product creation failed: {str(e)}")
+
+            raise HipoinkAPIError(f"Product creation failed: {str(e)}") from e
 
     @retry_with_backoff(max_attempts=3, initial_delay=1.0, multiplier=2.0)
     async def create_product(
         self, store_code: str, product: HipoinkProductItem, is_base64: str = "0"
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         Create or edit a single product in Hipoink ESL system.
         Uses endpoint: POST /api/{i_client_id}/product/create
@@ -339,10 +334,8 @@ class HipoinkClient:
             error_code = response_data.get("error_code")
             if error_code != 0:
                 error_msg = response_data.get("error_msg", "Unknown error")
-                error = HipoinkAPIError(
-                    f"Hipoink API error: {error_msg} (code: {error_code})"
-                )
-                
+                error = HipoinkAPIError(f"Hipoink API error: {error_msg} (code: {error_code})")
+
                 # Send Slack alert for Hipoink API errors
                 try:
                     slack_service = get_slack_service()
@@ -353,7 +346,7 @@ class HipoinkClient:
                     )
                 except Exception as slack_error:
                     logger.warning("Failed to send Slack alert", error=str(slack_error))
-                
+
                 raise error
 
             logger.info(
@@ -376,10 +369,10 @@ class HipoinkClient:
                 )
             except Exception as slack_error:
                 logger.warning("Failed to send Slack alert", error=str(slack_error))
-            
+
             if 500 <= e.response.status_code < 600:
-                raise TransientError(f"Hipoink API error: {e.response.status_code}")
-            raise PermanentError(f"Hipoink API error: {e.response.status_code}")
+                raise TransientError(f"Hipoink API error: {e.response.status_code}") from e
+            raise PermanentError(f"Hipoink API error: {e.response.status_code}") from e
         except Exception as e:
             # Send Slack alert for unexpected errors
             try:
@@ -391,17 +384,17 @@ class HipoinkClient:
                 )
             except Exception as slack_error:
                 logger.warning("Failed to send Slack alert", error=str(slack_error))
-            
-            raise HipoinkAPIError(f"Product creation failed: {str(e)}")
+
+            raise HipoinkAPIError(f"Product creation failed: {str(e)}") from e
 
     @retry_with_backoff(max_attempts=3, initial_delay=1.0, multiplier=2.0)
     async def delete_products(
-        self, store_code: str, product_codes: List[str], is_base64: str = "0"
-    ) -> Dict[str, Any]:
+        self, store_code: str, product_codes: list[str], is_base64: str = "0"
+    ) -> dict[str, Any]:
         """
         Delete products from Hipoink ESL system.
         Uses endpoint: POST /api/{client_id}/product/del_multiple
-        
+
         When a product is deleted, any ESL tag bound to it will be unbound.
 
         Args:
@@ -444,9 +437,7 @@ class HipoinkClient:
             error_code = response_data.get("error_code")
             if error_code != 0:
                 error_msg = response_data.get("error_msg", "Unknown error")
-                raise HipoinkAPIError(
-                    f"Hipoink API error: {error_msg} (code: {error_code})"
-                )
+                raise HipoinkAPIError(f"Hipoink API error: {error_msg} (code: {error_code})")
 
             deleted_count = response_data.get("count", 0)
             logger.info(
@@ -459,10 +450,10 @@ class HipoinkClient:
 
         except httpx.HTTPStatusError as e:
             if 500 <= e.response.status_code < 600:
-                raise TransientError(f"Hipoink API error: {e.response.status_code}")
-            raise PermanentError(f"Hipoink API error: {e.response.status_code}")
+                raise TransientError(f"Hipoink API error: {e.response.status_code}") from e
+            raise PermanentError(f"Hipoink API error: {e.response.status_code}") from e
         except Exception as e:
-            raise HipoinkAPIError(f"Product deletion failed: {str(e)}")
+            raise HipoinkAPIError(f"Product deletion failed: {str(e)}") from e
 
     async def close(self):
         """Close the HTTP client."""

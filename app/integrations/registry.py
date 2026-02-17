@@ -2,8 +2,8 @@
 Integration registry for auto-discovery and management of integrations.
 """
 
-from typing import Dict, Optional
 import structlog
+
 from app.integrations.base import BaseIntegrationAdapter
 
 logger = structlog.get_logger()
@@ -14,7 +14,7 @@ class IntegrationRegistry:
 
     def __init__(self):
         """Initialize the integration registry."""
-        self._integrations: Dict[str, BaseIntegrationAdapter] = {}
+        self._integrations: dict[str, BaseIntegrationAdapter] = {}
         self._load_integrations()
 
     def _load_integrations(self):
@@ -25,9 +25,7 @@ class IntegrationRegistry:
 
             shopify_adapter = ShopifyIntegrationAdapter()
             self.register(shopify_adapter)
-            logger.info(
-                "Loaded Shopify integration", adapter_name=shopify_adapter.get_name()
-            )
+            logger.info("Loaded Shopify integration", adapter_name=shopify_adapter.get_name())
         except ImportError as e:
             logger.warning("Could not load Shopify integration", error=str(e))
         except Exception as e:
@@ -39,9 +37,7 @@ class IntegrationRegistry:
 
             ncr_adapter = NCRIntegrationAdapter()
             self.register(ncr_adapter)
-            logger.info(
-                "Loaded NCR integration", adapter_name=ncr_adapter.get_name()
-            )
+            logger.info("Loaded NCR integration", adapter_name=ncr_adapter.get_name())
         except ImportError as e:
             logger.warning("Could not load NCR integration", error=str(e))
         except Exception as e:
@@ -54,9 +50,7 @@ class IntegrationRegistry:
 
             square_adapter = SquareIntegrationAdapter()
             self.register(square_adapter)
-            logger.info(
-                "Loaded Square integration", adapter_name=square_adapter.get_name()
-            )
+            logger.info("Loaded Square integration", adapter_name=square_adapter.get_name())
         except ImportError as e:
             logger.warning("Could not load Square integration", error=str(e))
         except Exception as e:
@@ -68,9 +62,7 @@ class IntegrationRegistry:
 
             clover_adapter = CloverIntegrationAdapter()
             self.register(clover_adapter)
-            logger.info(
-                "Loaded Clover integration", adapter_name=clover_adapter.get_name()
-            )
+            logger.info("Loaded Clover integration", adapter_name=clover_adapter.get_name())
         except ImportError as e:
             logger.warning("Could not load Clover integration", error=str(e))
         except Exception as e:
@@ -85,13 +77,11 @@ class IntegrationRegistry:
         """
         name = adapter.get_name()
         if name in self._integrations:
-            logger.warning(
-                "Integration already registered, replacing", integration_name=name
-            )
+            logger.warning("Integration already registered, replacing", integration_name=name)
         self._integrations[name] = adapter
         logger.info("Registered integration", integration_name=name)
 
-    def get_adapter(self, integration_name: str) -> Optional[BaseIntegrationAdapter]:
+    def get_adapter(self, integration_name: str) -> BaseIntegrationAdapter | None:
         """
         Get adapter for specific integration.
 

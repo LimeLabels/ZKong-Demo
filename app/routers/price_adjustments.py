@@ -3,28 +3,26 @@ API router for time-based price adjustment schedules.
 Manages scheduling price changes and triggers updates via product update endpoint.
 """
 
-from fastapi import APIRouter, HTTPException, status, Query
-from typing import List, Optional, Dict, Any
-from uuid import UUID
 from datetime import datetime, timedelta
-import structlog
+from typing import Any
+from uuid import UUID
+
 import pytz
+import structlog
+from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
+from app.config import settings
+from app.models.database import PriceAdjustmentSchedule, StoreMapping
 from app.services.hipoink_client import HipoinkClient
 from app.services.supabase_service import SupabaseService
-from app.models.database import PriceAdjustmentSchedule, StoreMapping
-from app.config import settings
-from app.integrations.ncr.adapter import NCRIntegrationAdapter
 
 logger = structlog.get_logger()
 
 router = APIRouter(prefix="/api/price-adjustments", tags=["price-adjustments"])
 
 # Service instances
-hipoink_client = HipoinkClient(
-    client_id=getattr(settings, "hipoink_client_id", "default")
-)
+hipoink_client = HipoinkClient(client_id=getattr(settings, "hipoink_client_id", "default"))
 supabase_service = SupabaseService()
 
 
@@ -36,9 +34,7 @@ class PriceAdjustmentProduct(BaseModel):
 
     pc: str = Field(..., description="Product code (barcode)")
     pp: str = Field(..., description="Product price (as string)")
-    original_price: Optional[float] = Field(
-        None, description="Original price to restore later"
-    )
+    original_price: float | None = Field(None, description="Original price to restore later")
 
 
 class TimeSlot(BaseModel):
@@ -53,28 +49,20 @@ class CreatePriceAdjustmentRequest(BaseModel):
 
     store_mapping_id: UUID = Field(..., description="Store mapping UUID")
     name: str = Field(..., description="Schedule name")
-    order_number: Optional[str] = Field(
+    order_number: str | None = Field(
         None, description="Order number (auto-generated if not provided)"
     )
-    products: List[PriceAdjustmentProduct] = Field(
-        ..., description="Products to adjust"
-    )
+    products: list[PriceAdjustmentProduct] = Field(..., description="Products to adjust")
     start_date: datetime = Field(..., description="Schedule start date")
-    end_date: Optional[datetime] = Field(None, description="Schedule end date")
-    repeat_type: str = Field(
-        "none", description="Repeat type: none, daily, weekly, monthly"
-    )
-    trigger_days: Optional[List[str]] = Field(
+    end_date: datetime | None = Field(None, description="Schedule end date")
+    repeat_type: str = Field("none", description="Repeat type: none, daily, weekly, monthly")
+    trigger_days: list[str] | None = Field(
         None,
         description="Days of week: ['1']=Mon, ['2']=Tue, ['3']=Wed, ['4']=Thu, ['5']=Fri, ['6']=Sat, ['7']=Sun",
     )
-    trigger_stores: Optional[List[str]] = Field(
-        None, description="Store codes to trigger (optional)"
-    )
-    time_slots: List[TimeSlot] = Field(
-        ..., description="Time slots for price adjustments"
-    )
-    multiplier_percentage: Optional[float] = Field(
+    trigger_stores: list[str] | None = Field(None, description="Store codes to trigger (optional)")
+    time_slots: list[TimeSlot] = Field(..., description="Time slots for price adjustments")
+    multiplier_percentage: float | None = Field(
         None,
         description="Percentage multiplier for selected products (e.g., 10.0 for 10% increase, -5.0 for 5% decrease). If provided, applies to all products in the schedule.",
     )
@@ -87,7 +75,7 @@ class PriceAdjustmentResponse(BaseModel):
     name: str
     order_number: str
     is_active: bool
-    next_trigger_at: Optional[datetime] = None
+    next_trigger_at: datetime | None = None
     created_at: datetime
 
 
@@ -119,7 +107,7 @@ def calculate_next_trigger_time(
     schedule: PriceAdjustmentSchedule,
     current_time: datetime,
     store_timezone: pytz.BaseTzInfo,
-) -> Optional[datetime]:
+) -> datetime | None:
     """
     Calculate the next trigger time for a schedule based on current time.
     All datetime operations are performed in the store's timezone.
@@ -194,9 +182,7 @@ def calculate_next_trigger_time(
             last_trigger = store_timezone.localize(
                 datetime.combine(
                     start_date_only,
-                    datetime.min.time().replace(
-                        hour=last_trigger_hour, minute=last_trigger_minute
-                    ),
+                    datetime.min.time().replace(hour=last_trigger_hour, minute=last_trigger_minute),
                 )
             )
             if current_time > last_trigger:
@@ -224,17 +210,13 @@ def calculate_next_trigger_time(
                 slot_start = store_timezone.localize(
                     datetime.combine(
                         start_date_only,
-                        datetime.min.time().replace(
-                            hour=slot_start_hour, minute=slot_start_minute
-                        ),
+                        datetime.min.time().replace(hour=slot_start_hour, minute=slot_start_minute),
                     )
                 )
                 slot_end = store_timezone.localize(
                     datetime.combine(
                         start_date_only,
-                        datetime.min.time().replace(
-                            hour=slot_end_hour, minute=slot_end_minute
-                        ),
+                        datetime.min.time().replace(hour=slot_end_hour, minute=slot_end_minute),
                     )
                 )
                 if slot_start <= current_time <= slot_end:
@@ -346,9 +328,7 @@ async def create_price_adjustment(request: CreatePriceAdjustmentRequest):
     """
     try:
         # Get store mapping
-        store_mapping = supabase_service.get_store_mapping_by_id(
-            request.store_mapping_id
-        )
+        store_mapping = supabase_service.get_store_mapping_by_id(request.store_mapping_id)
         if not store_mapping:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -363,9 +343,7 @@ async def create_price_adjustment(request: CreatePriceAdjustmentRequest):
             )
 
         # Generate order number if not provided
-        order_number = (
-            request.order_number or f"PA-{int(datetime.utcnow().timestamp() * 1000)}"
-        )
+        order_number = request.order_number or f"PA-{int(datetime.utcnow().timestamp() * 1000)}"
 
         # Prepare products data
         products_data = []
@@ -380,8 +358,7 @@ async def create_price_adjustment(request: CreatePriceAdjustmentRequest):
 
         # Prepare time slots
         time_slots_data = [
-            {"start_time": ts.start_time, "end_time": ts.end_time}
-            for ts in request.time_slots
+            {"start_time": ts.start_time, "end_time": ts.end_time} for ts in request.time_slots
         ]
 
         # Get store timezone
@@ -451,7 +428,7 @@ async def create_price_adjustment(request: CreatePriceAdjustmentRequest):
         # because NCR applies prices immediately when status="ACTIVE", even with future effectiveDate.
         # Instead, the price scheduler worker will apply prices at the scheduled time using update_price.
         # This ensures prices only appear on the POS at the correct scheduled time.
-        
+
         # Pre-schedule prices in NCR if store mapping is for NCR
         # DISABLED: Prices will be applied by the price scheduler worker at the scheduled time
         # if store_mapping.source_system == "ncr":
@@ -484,15 +461,13 @@ async def create_price_adjustment(request: CreatePriceAdjustmentRequest):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to create price adjustment schedule: {str(e)}",
-        )
+        ) from e
 
 
-@router.get("/", response_model=List[PriceAdjustmentSchedule])
+@router.get("/", response_model=list[PriceAdjustmentSchedule])
 async def list_price_adjustments(
-    store_mapping_id: Optional[UUID] = Query(
-        None, description="Filter by store mapping ID"
-    ),
-    is_active: Optional[bool] = Query(None, description="Filter by active status"),
+    store_mapping_id: UUID | None = Query(None, description="Filter by store mapping ID"),
+    is_active: bool | None = Query(None, description="Filter by active status"),
 ):
     """List price adjustment schedules, optionally filtered by store mapping and active status."""
     try:
@@ -512,9 +487,7 @@ async def list_price_adjustments(
             schedules = [PriceAdjustmentSchedule(**item) for item in result.data]
         else:
             # Get all active schedules
-            schedules = supabase_service.get_active_price_adjustment_schedules(
-                limit=100
-            )
+            schedules = supabase_service.get_active_price_adjustment_schedules(limit=100)
 
             if is_active is not None:
                 schedules = [s for s in schedules if s.is_active == is_active]
@@ -526,7 +499,7 @@ async def list_price_adjustments(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to list price adjustment schedules: {str(e)}",
-        )
+        ) from e
 
 
 @router.get("/{schedule_id}", response_model=PriceAdjustmentSchedule)
@@ -557,9 +530,7 @@ async def update_price_adjustment(
             )
 
         # Get store mapping
-        store_mapping = supabase_service.get_store_mapping_by_id(
-            request.store_mapping_id
-        )
+        store_mapping = supabase_service.get_store_mapping_by_id(request.store_mapping_id)
         if not store_mapping:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -567,7 +538,7 @@ async def update_price_adjustment(
             )
 
         # Prepare update data
-        update_data: Dict[str, Any] = {
+        update_data: dict[str, Any] = {
             "name": request.name,
             "products": {
                 "products": [
@@ -584,8 +555,7 @@ async def update_price_adjustment(
             else request.start_date,
             "repeat_type": request.repeat_type,
             "time_slots": [
-                {"start_time": ts.start_time, "end_time": ts.end_time}
-                for ts in request.time_slots
+                {"start_time": ts.start_time, "end_time": ts.end_time} for ts in request.time_slots
             ],
         }
 
@@ -612,9 +582,7 @@ async def update_price_adjustment(
         # Create temporary schedule object for calculation
         temp_schedule = PriceAdjustmentSchedule(**existing.dict(), **update_data)
 
-        next_trigger = calculate_next_trigger_time(
-            temp_schedule, current_time, store_timezone
-        )
+        next_trigger = calculate_next_trigger_time(temp_schedule, current_time, store_timezone)
 
         if next_trigger:
             update_data["next_trigger_at"] = next_trigger.isoformat()
@@ -623,9 +591,7 @@ async def update_price_adjustment(
             update_data["next_trigger_at"] = None
 
         # Update schedule
-        updated = supabase_service.update_price_adjustment_schedule(
-            schedule_id, update_data
-        )
+        updated = supabase_service.update_price_adjustment_schedule(schedule_id, update_data)
 
         if not updated:
             raise HTTPException(
@@ -634,12 +600,12 @@ async def update_price_adjustment(
             )
 
         logger.info("Updated price adjustment schedule", schedule_id=str(schedule_id))
-        
+
         # NOTE: Pre-scheduling prices in NCR using effectiveDate is disabled
         # because NCR applies prices immediately when status="ACTIVE", even with future effectiveDate.
         # Instead, the price scheduler worker will apply prices at the scheduled time using update_price.
         # This ensures prices only appear on the POS at the correct scheduled time.
-        
+
         # Pre-schedule prices in NCR if store mapping is for NCR
         # DISABLED: Prices will be applied by the price scheduler worker at the scheduled time
         # if store_mapping.source_system == "ncr":
@@ -655,7 +621,7 @@ async def update_price_adjustment(
         #         ...
         #     except Exception as e:
         #         ...
-        
+
         return updated
 
     except HTTPException:
@@ -665,7 +631,7 @@ async def update_price_adjustment(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to update price adjustment schedule: {str(e)}",
-        )
+        ) from e
 
 
 @router.delete("/{schedule_id}", status_code=status.HTTP_204_NO_CONTENT)

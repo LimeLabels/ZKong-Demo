@@ -4,10 +4,11 @@ One Clover item maps to one NormalizedProduct (no variants).
 Price is converted from cents to dollars.
 """
 
-from typing import List, Dict, Any, Tuple, Optional
+from typing import Any
+
+import structlog
 
 from app.integrations.base import NormalizedProduct
-import structlog
 
 logger = structlog.get_logger()
 
@@ -18,7 +19,7 @@ class CloverTransformer:
     INVENTORY_OBJECT_PREFIX = "I:"
 
     @staticmethod
-    def transform_item(raw_item: Dict[str, Any]) -> NormalizedProduct:
+    def transform_item(raw_item: dict[str, Any]) -> NormalizedProduct:
         """
         Convert a single Clover item to NormalizedProduct.
 
@@ -68,14 +69,14 @@ class CloverTransformer:
     @staticmethod
     def validate_normalized_product(
         product: NormalizedProduct,
-    ) -> Tuple[bool, List[str]]:
+    ) -> tuple[bool, list[str]]:
         """
         Validate normalized product before DB write.
 
         Returns:
             (is_valid, list of error messages)
         """
-        errors: List[str] = []
+        errors: list[str] = []
         if not product.title:
             errors.append("Title is required")
         if not product.barcode and not product.sku:
@@ -89,7 +90,7 @@ class CloverTransformer:
         return (len(errors) == 0, errors)
 
     @staticmethod
-    def parse_inventory_object_id(object_id: Optional[str]) -> Optional[str]:
+    def parse_inventory_object_id(object_id: str | None) -> str | None:
         """
         Extract item ID from webhook objectId. Inventory prefix is "I:".
 
@@ -111,6 +112,6 @@ class CloverTransformer:
         return item_id
 
     @staticmethod
-    def is_inventory_object(object_id: Optional[str]) -> bool:
+    def is_inventory_object(object_id: str | None) -> bool:
         """Return True if objectId is an inventory item (I:...)."""
         return CloverTransformer.parse_inventory_object_id(object_id) is not None

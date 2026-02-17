@@ -6,22 +6,22 @@ Includes retry logic (3 attempts with backoff) and Slack alert on final failure.
 
 import asyncio
 import time
-from typing import Any, Dict, Optional, Tuple
+from typing import Any
+from uuid import UUID
 
 import httpx
 import structlog
-from uuid import UUID
 
 from app.config import settings
 from app.models.database import StoreMapping
-from app.services.supabase_service import SupabaseService
 from app.services.slack_service import get_slack_service
+from app.services.supabase_service import SupabaseService
 
 logger = structlog.get_logger()
 
 # Per-merchant refresh locks to prevent concurrent refresh attempts
 # Module-level dictionary ensures all service instances share the same locks
-_refresh_locks: Dict[str, asyncio.Lock] = {}
+_refresh_locks: dict[str, asyncio.Lock] = {}
 _refresh_locks_lock = asyncio.Lock()  # Lock for managing the locks dict
 
 
@@ -34,6 +34,7 @@ async def _get_refresh_lock(merchant_id: str) -> asyncio.Lock:
         if merchant_id not in _refresh_locks:
             _refresh_locks[merchant_id] = asyncio.Lock()
         return _refresh_locks[merchant_id]
+
 
 CLOVER_REFRESH_URL_SANDBOX = "https://apisandbox.dev.clover.com/oauth/v2/refresh"
 CLOVER_REFRESH_URL_PRODUCTION = "https://api.clover.com/oauth/v2/refresh"
@@ -61,9 +62,9 @@ def _get_refresh_url() -> str:
 
 def _update_store_mapping_metadata_sync(
     store_mapping_id: UUID,
-    token_updates: Dict[str, Any],
+    token_updates: dict[str, Any],
     supabase_service: SupabaseService,
-) -> Optional[StoreMapping]:
+) -> StoreMapping | None:
     """
     Re-fetch current metadata, merge token fields, write back.
     Run via asyncio.to_thread to avoid blocking the event loop.
@@ -79,9 +80,9 @@ def _update_store_mapping_metadata_sync(
             return None
         current = (row.data[0].get("metadata") or {}).copy()
         current.update(token_updates)
-        supabase_service.client.table("store_mappings").update(
-            {"metadata": current}
-        ).eq("id", str(store_mapping_id)).execute()
+        supabase_service.client.table("store_mappings").update({"metadata": current}).eq(
+            "id", str(store_mapping_id)
+        ).execute()
         return supabase_service.get_store_mapping_by_id(store_mapping_id)
     except Exception as e:
         logger.error(
@@ -100,7 +101,7 @@ class CloverTokenRefreshService:
 
     def is_token_expiring_soon(
         self,
-        expiration: Optional[Any],
+        expiration: Any | None,
         threshold_seconds: int = REFRESH_THRESHOLD_SECONDS,
     ) -> bool:
         """
@@ -126,7 +127,7 @@ class CloverTokenRefreshService:
 
     async def refresh_token(
         self, store_mapping: StoreMapping
-    ) -> Tuple[bool, Optional[Dict[str, Any]]]:
+    ) -> tuple[bool, dict[str, Any] | None]:
         """
         Refresh Clover OAuth token. Uses ONLY client_id and refresh_token (no client_secret).
 
@@ -251,7 +252,7 @@ class CloverTokenRefreshService:
 
     async def refresh_token_and_update(
         self, store_mapping: StoreMapping
-    ) -> Tuple[bool, Optional[StoreMapping]]:
+    ) -> tuple[bool, StoreMapping | None]:
         """
         Refresh token and update store mapping metadata.
         Retries the Clover API call up to MAX_REFRESH_ATTEMPTS with RETRY_DELAY_SECONDS between attempts.
@@ -273,8 +274,8 @@ class CloverTokenRefreshService:
         lock = await _get_refresh_lock(merchant_id)
 
         async with lock:
-            last_error: Optional[str] = None
-            new_token_data: Optional[Dict[str, Any]] = None
+            last_error: str | None = None
+            new_token_data: dict[str, Any] | None = None
 
             # Re-fetch store mapping inside the lock to get latest refresh_token from DB
             # This ensures we have the absolute latest token even if another process just updated it

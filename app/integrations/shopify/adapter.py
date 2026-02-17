@@ -3,28 +3,29 @@ Shopify integration adapter.
 Implements BaseIntegrationAdapter for Shopify webhooks and data transformation.
 """
 
-import hmac
-import hashlib
 import base64
-from typing import List, Dict, Any, Optional
-from fastapi import Request, HTTPException, status
-import structlog
+import hashlib
+import hmac
+from typing import Any
 
+import structlog
+from fastapi import HTTPException, Request, status
+
+from app.config import settings
 from app.integrations.base import (
     BaseIntegrationAdapter,
-    NormalizedProduct,
     NormalizedInventory,
+    NormalizedProduct,
 )
 from app.integrations.shopify.models import (
-    ProductCreateWebhook,
-    ProductUpdateWebhook,
-    ProductDeleteWebhook,
     InventoryLevelsUpdateWebhook,
+    ProductCreateWebhook,
+    ProductDeleteWebhook,
+    ProductUpdateWebhook,
 )
 from app.integrations.shopify.transformer import ShopifyTransformer
-from app.config import settings
-from app.services.supabase_service import SupabaseService
 from app.models.database import Product
+from app.services.supabase_service import SupabaseService
 
 logger = structlog.get_logger()
 
@@ -41,9 +42,7 @@ class ShopifyIntegrationAdapter(BaseIntegrationAdapter):
         """Return integration name."""
         return "shopify"
 
-    def verify_signature(
-        self, payload: bytes, signature: str, headers: Dict[str, str]
-    ) -> bool:
+    def verify_signature(self, payload: bytes, signature: str, headers: dict[str, str]) -> bool:
         """
         Verify Shopify webhook signature using HMAC SHA256.
 
@@ -68,9 +67,7 @@ class ShopifyIntegrationAdapter(BaseIntegrationAdapter):
         # Compare using secure comparison to prevent timing attacks
         return hmac.compare_digest(calculated_hmac, signature)
 
-    def extract_store_id(
-        self, headers: Dict[str, str], payload: Dict[str, Any]
-    ) -> Optional[str]:
+    def extract_store_id(self, headers: dict[str, str], payload: dict[str, Any]) -> str | None:
         """
         Extract Shopify store domain from webhook headers.
 
@@ -83,7 +80,7 @@ class ShopifyIntegrationAdapter(BaseIntegrationAdapter):
         """
         return self.transformer.extract_store_domain_from_webhook(headers)
 
-    def transform_product(self, raw_data: Dict[str, Any]) -> List[NormalizedProduct]:
+    def transform_product(self, raw_data: dict[str, Any]) -> list[NormalizedProduct]:
         """
         Transform Shopify product data to normalized format.
 
@@ -98,9 +95,7 @@ class ShopifyIntegrationAdapter(BaseIntegrationAdapter):
         product_data = ProductCreateWebhook(**raw_data)
         return self.transformer.extract_variants_from_product(product_data)
 
-    def transform_inventory(
-        self, raw_data: Dict[str, Any]
-    ) -> Optional[NormalizedInventory]:
+    def transform_inventory(self, raw_data: dict[str, Any]) -> NormalizedInventory | None:
         """
         Transform Shopify inventory data to normalized format.
 
@@ -115,12 +110,10 @@ class ShopifyIntegrationAdapter(BaseIntegrationAdapter):
             inventory_item_id=str(inventory_data.inventory_item_id),
             location_id=str(inventory_data.location_id),
             available=inventory_data.available,
-            updated_at=inventory_data.updated_at.isoformat()
-            if inventory_data.updated_at
-            else None,
+            updated_at=inventory_data.updated_at.isoformat() if inventory_data.updated_at else None,
         )
 
-    def get_supported_events(self) -> List[str]:
+    def get_supported_events(self) -> list[str]:
         """Return list of supported Shopify webhook event types."""
         return [
             "products/create",
@@ -133,9 +126,9 @@ class ShopifyIntegrationAdapter(BaseIntegrationAdapter):
         self,
         event_type: str,
         request: Request,
-        headers: Dict[str, str],
-        payload: Dict[str, Any],
-    ) -> Dict[str, Any]:
+        headers: dict[str, str],
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
         """
         Handle a Shopify webhook event.
 
@@ -164,8 +157,8 @@ class ShopifyIntegrationAdapter(BaseIntegrationAdapter):
             )
 
     async def _handle_product_create(
-        self, headers: Dict[str, str], payload: Dict[str, Any]
-    ) -> Dict[str, Any]:
+        self, headers: dict[str, str], payload: dict[str, Any]
+    ) -> dict[str, Any]:
         """Handle products/create webhook."""
         # Validate payload structure (will raise if invalid)
         ProductCreateWebhook(**payload)
@@ -249,8 +242,8 @@ class ShopifyIntegrationAdapter(BaseIntegrationAdapter):
         }
 
     async def _handle_product_update(
-        self, headers: Dict[str, str], payload: Dict[str, Any]
-    ) -> Dict[str, Any]:
+        self, headers: dict[str, str], payload: dict[str, Any]
+    ) -> dict[str, Any]:
         """Handle products/update webhook."""
         # Validate payload structure (will raise if invalid)
         ProductUpdateWebhook(**payload)
@@ -318,8 +311,8 @@ class ShopifyIntegrationAdapter(BaseIntegrationAdapter):
         }
 
     async def _handle_product_delete(
-        self, headers: Dict[str, str], payload: Dict[str, Any]
-    ) -> Dict[str, Any]:
+        self, headers: dict[str, str], payload: dict[str, Any]
+    ) -> dict[str, Any]:
         """Handle products/delete webhook."""
         product_data = ProductDeleteWebhook(**payload)
 
@@ -343,7 +336,9 @@ class ShopifyIntegrationAdapter(BaseIntegrationAdapter):
         # Find all products with this source_id (all variants)
         source_id = str(product_data.id)
         products_to_delete = self.supabase_service.get_products_by_source_id(
-            "shopify", source_id, store_domain  # Multi-tenant isolation
+            "shopify",
+            source_id,
+            store_domain,  # Multi-tenant isolation
         )
 
         if not products_to_delete:
@@ -402,8 +397,8 @@ class ShopifyIntegrationAdapter(BaseIntegrationAdapter):
         }
 
     async def _handle_inventory_update(
-        self, headers: Dict[str, str], payload: Dict[str, Any]
-    ) -> Dict[str, Any]:
+        self, headers: dict[str, str], payload: dict[str, Any]
+    ) -> dict[str, Any]:
         """Handle inventory_levels/update webhook."""
         inventory_data = InventoryLevelsUpdateWebhook(**payload)
 

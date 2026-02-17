@@ -7,29 +7,29 @@ Polling sync: sync_products_via_polling() for incremental + ghost-item cleanup.
 
 import secrets
 import time
-from typing import List, Dict, Any, Optional, Tuple
+from typing import Any
 from uuid import UUID
 
-from fastapi import Request, HTTPException, status
-from pydantic import ValidationError
 import structlog
+from fastapi import HTTPException, Request, status
+from pydantic import ValidationError
 
+from app.config import settings
 from app.integrations.base import (
     BaseIntegrationAdapter,
-    NormalizedProduct,
     NormalizedInventory,
+    NormalizedProduct,
 )
-from app.integrations.clover.models import CloverWebhookPayload
-from app.integrations.clover.transformer import CloverTransformer
 from app.integrations.clover.api_client import CloverAPIClient, CloverAPIError
+from app.integrations.clover.models import CloverWebhookPayload
 from app.integrations.clover.token_refresh import (
-    CloverTokenRefreshService,
     ON_DEMAND_REFRESH_THRESHOLD_SECONDS,
+    CloverTokenRefreshService,
 )
-from app.config import settings
-from app.services.supabase_service import SupabaseService
-from app.services.slack_service import get_slack_service
+from app.integrations.clover.transformer import CloverTransformer
 from app.models.database import Product, StoreMapping
+from app.services.slack_service import get_slack_service
+from app.services.supabase_service import SupabaseService
 
 logger = structlog.get_logger()
 
@@ -48,7 +48,7 @@ class CloverIntegrationAdapter(BaseIntegrationAdapter):
         self,
         payload: bytes,
         signature: str,
-        headers: Dict[str, str],
+        headers: dict[str, str],
     ) -> bool:
         """
         Verify webhook using X-Clover-Auth header.
@@ -67,9 +67,9 @@ class CloverIntegrationAdapter(BaseIntegrationAdapter):
 
     def extract_store_id(
         self,
-        headers: Dict[str, str],
-        payload: Dict[str, Any],
-    ) -> Optional[str]:
+        headers: dict[str, str],
+        payload: dict[str, Any],
+    ) -> str | None:
         """Extract first merchant ID from payload.merchants for single-store context."""
         merchants = payload.get("merchants") or {}
         if not merchants:
@@ -77,35 +77,35 @@ class CloverIntegrationAdapter(BaseIntegrationAdapter):
         first_key = next(iter(merchants), None)
         return first_key
 
-    def transform_product(self, raw_data: Dict[str, Any]) -> List[NormalizedProduct]:
+    def transform_product(self, raw_data: dict[str, Any]) -> list[NormalizedProduct]:
         """Transform a single Clover item to one NormalizedProduct."""
         normalized = self.transformer.transform_item(raw_data)
         return [normalized]
 
     def transform_inventory(
         self,
-        raw_data: Dict[str, Any],
-    ) -> Optional[NormalizedInventory]:
+        raw_data: dict[str, Any],
+    ) -> NormalizedInventory | None:
         """Phase 1: not implemented."""
         return None
 
     def validate_normalized_product(
         self,
         product: NormalizedProduct,
-    ) -> Tuple[bool, List[str]]:
+    ) -> tuple[bool, list[str]]:
         return self.transformer.validate_normalized_product(product)
 
-    def get_supported_events(self) -> List[str]:
+    def get_supported_events(self) -> list[str]:
         return ["inventory"]
 
-    def _hours_since_last_cleanup(self, metadata: Dict[str, Any]) -> float:
+    def _hours_since_last_cleanup(self, metadata: dict[str, Any]) -> float:
         """Hours since clover_last_cleanup_time (ms). Returns 24+ if never run."""
         last = metadata.get("clover_last_cleanup_time") or 0
         if last <= 0:
             return 24.0
         return (time.time() * 1000 - last) / (1000 * 3600)
 
-    async def _ensure_valid_token(self, store_mapping: StoreMapping) -> Optional[str]:
+    async def _ensure_valid_token(self, store_mapping: StoreMapping) -> str | None:
         """
         Return a valid access token for API calls, refreshing if expiring within 15 minutes.
         Used before each sync to avoid using an expired token (on-demand refresh).
@@ -129,9 +129,7 @@ class CloverIntegrationAdapter(BaseIntegrationAdapter):
                 "Clover token expiring soon, refreshing before API call",
                 merchant_id=store_mapping.source_store_id,
             )
-            success, updated_mapping = await refresh_service.refresh_token_and_update(
-                store_mapping
-            )
+            success, updated_mapping = await refresh_service.refresh_token_and_update(store_mapping)
             if success and updated_mapping and updated_mapping.metadata:
                 # FIX 4: Use the updated_mapping returned from refresh (it has fresh tokens)
                 # Don't fall back to old store_mapping object
@@ -153,7 +151,7 @@ class CloverIntegrationAdapter(BaseIntegrationAdapter):
         store_mapping: StoreMapping,
         item_id: str,
         price_dollars: float,
-        existing_product: Optional[Product] = None,
+        existing_product: Product | None = None,
     ) -> None:
         """
         Update a single item's price in Clover and optionally in the local DB.
@@ -171,15 +169,11 @@ class CloverIntegrationAdapter(BaseIntegrationAdapter):
         """
         access_token = await self._ensure_valid_token(store_mapping)
         if not access_token:
-            raise ValueError(
-                "No valid Clover access token; cannot update item price"
-            )
+            raise ValueError("No valid Clover access token; cannot update item price")
         merchant_id = store_mapping.source_store_id
         price_cents = round(price_dollars * 100)
         if price_cents < 0:
-            raise ValueError(
-                f"Invalid price_dollars={price_dollars} (cents={price_cents})"
-            )
+            raise ValueError(f"Invalid price_dollars={price_dollars} (cents={price_cents})")
 
         client = CloverAPIClient(access_token=access_token)
         try:
@@ -198,9 +192,7 @@ class CloverIntegrationAdapter(BaseIntegrationAdapter):
             if existing_product and existing_product.id:
                 try:
                     existing_product.price = price_dollars
-                    self.supabase_service.create_or_update_product(
-                        existing_product
-                    )
+                    self.supabase_service.create_or_update_product(existing_product)
                     logger.debug(
                         "Updated local DB price after Clover PATCH",
                         product_id=str(existing_product.id),
@@ -221,7 +213,7 @@ class CloverIntegrationAdapter(BaseIntegrationAdapter):
         store_mapping: StoreMapping,
         *,
         skip_token_refresh: bool = False,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         Main polling sync. Called by worker for each active Clover store mapping.
         Incremental updates via modifiedTime filter; periodic ghost-item cleanup.
@@ -241,7 +233,7 @@ class CloverIntegrationAdapter(BaseIntegrationAdapter):
         merchant_id = store_mapping.source_store_id
         last_sync_time = metadata.get("clover_last_sync_time", 0)
         poll_count = metadata.get("clover_poll_count", 0)
-        results: Dict[str, Any] = {
+        results: dict[str, Any] = {
             "items_processed": 0,
             "items_deleted": 0,
             "errors": [],
@@ -279,9 +271,7 @@ class CloverIntegrationAdapter(BaseIntegrationAdapter):
                     if not normalized_list:
                         continue
                     normalized = normalized_list[0]
-                    is_valid, validation_errors = self.validate_normalized_product(
-                        normalized
-                    )
+                    is_valid, validation_errors = self.validate_normalized_product(normalized)
                     product = Product(
                         source_system="clover",
                         source_id=normalized.source_id,
@@ -297,21 +287,15 @@ class CloverIntegrationAdapter(BaseIntegrationAdapter):
                         normalized_data=normalized.to_dict(),
                         status="validated" if is_valid else "pending",
                         validation_errors=(
-                            {"errors": validation_errors}
-                            if validation_errors
-                            else None
+                            {"errors": validation_errors} if validation_errors else None
                         ),
                     )
-                    saved, changed = self.supabase_service.create_or_update_product(
-                        product
-                    )
+                    saved, changed = self.supabase_service.create_or_update_product(product)
                     results["items_processed"] += 1
                     if is_valid and saved.id:
-                        existing_hipoink = (
-                            self.supabase_service.get_hipoink_product_by_product_id(
-                                saved.id,
-                                store_mapping_id,
-                            )
+                        existing_hipoink = self.supabase_service.get_hipoink_product_by_product_id(
+                            saved.id,
+                            store_mapping_id,
                         )
                         # Queue if: new product OR product data changed (so price updates sync to ESL)
                         if changed or not existing_hipoink:
@@ -326,9 +310,7 @@ class CloverIntegrationAdapter(BaseIntegrationAdapter):
                         item_id=item.get("id"),
                         error=str(e),
                     )
-                    results["errors"].append(
-                        {"item_id": item.get("id"), "message": str(e)}
-                    )
+                    results["errors"].append({"item_id": item.get("id"), "message": str(e)})
 
             # --- STEP B: Ghost item cleanup (every 10th poll OR every 24 hours) ---
             cleanup_interval_hours = getattr(
@@ -340,31 +322,27 @@ class CloverIntegrationAdapter(BaseIntegrationAdapter):
                 self._hours_since_last_cleanup(metadata) >= cleanup_interval_hours
             )
             if should_run_cleanup:
-                deleted_count = await self._cleanup_ghost_items(
-                    merchant_id, store_mapping, client
-                )
+                deleted_count = await self._cleanup_ghost_items(merchant_id, store_mapping, client)
                 results["items_deleted"] += deleted_count
                 metadata["clover_last_cleanup_time"] = int(time.time() * 1000)
             # --- STEP C: Update metadata (sync state only; do not overwrite tokens) ---
             # Only pass sync-related keys. The local `metadata` still has stale token
             # fields from the start of the call; if we refreshed during sync, the DB
             # has new tokens and we must not overwrite them with this stale dict.
-            sync_updates: Dict[str, Any] = {
+            sync_updates: dict[str, Any] = {
                 "clover_last_sync_time": int(time.time() * 1000),
                 "clover_poll_count": poll_count + 1,
             }
             if "clover_last_cleanup_time" in metadata:
                 sync_updates["clover_last_cleanup_time"] = metadata["clover_last_cleanup_time"]
-            self.supabase_service.update_store_mapping_metadata(
-                store_mapping_id, sync_updates
-            )
+            self.supabase_service.update_store_mapping_metadata(store_mapping_id, sync_updates)
         finally:
             await client.close()
 
         return results
 
     async def _handle_item_deletion(
-        self, item: Dict[str, Any], store_mapping: StoreMapping
+        self, item: dict[str, Any], store_mapping: StoreMapping
     ) -> None:
         """Mark item as deleted in DB and queue for ESL removal (deleted/hidden in Clover)."""
         item_id = item.get("id")
@@ -372,9 +350,7 @@ class CloverIntegrationAdapter(BaseIntegrationAdapter):
             return
         await self._mark_product_deleted(str(item_id), store_mapping)
 
-    async def _mark_product_deleted(
-        self, source_id: str, store_mapping: StoreMapping
-    ) -> None:
+    async def _mark_product_deleted(self, source_id: str, store_mapping: StoreMapping) -> None:
         """Mark product(s) with this source_id as deleted and queue delete for ESL."""
         store_mapping_id = store_mapping.id
         merchant_id = store_mapping.source_store_id
@@ -404,9 +380,7 @@ class CloverIntegrationAdapter(BaseIntegrationAdapter):
         Items in our DB but not in Clover = deleted in Clover (ghost items).
         Mark them deleted and queue for ESL removal.
         """
-        clover_ids = set(
-            await api_client.list_all_item_ids(merchant_id=merchant_id)
-        )
+        clover_ids = set(await api_client.list_all_item_ids(merchant_id=merchant_id))
         our_products = self.supabase_service.get_products_by_system(
             "clover",
             source_store_id=merchant_id,
@@ -428,9 +402,9 @@ class CloverIntegrationAdapter(BaseIntegrationAdapter):
         self,
         event_type: str,
         request: Request,
-        headers: Dict[str, str],
-        payload: Dict[str, Any],
-    ) -> Dict[str, Any]:
+        headers: dict[str, str],
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
         """
         Handle Clover webhook: verification POST first, then validate payload,
         then process all merchants (collect errors, always return 200).
@@ -451,7 +425,7 @@ class CloverIntegrationAdapter(BaseIntegrationAdapter):
 
         total_updated = 0
         total_deleted = 0
-        errors: List[Dict[str, str]] = []
+        errors: list[dict[str, str]] = []
 
         for merchant_id, updates in webhook_payload.merchants.items():
             try:
@@ -460,30 +434,22 @@ class CloverIntegrationAdapter(BaseIntegrationAdapter):
                     merchant_id,
                 )
                 if not store_mapping:
-                    errors.append(
-                        {"merchant_id": merchant_id, "message": "No store mapping found"}
-                    )
+                    errors.append({"merchant_id": merchant_id, "message": "No store mapping found"})
                     continue
                 metadata = store_mapping.metadata or {}
                 access_token = metadata.get("clover_access_token")
                 if not access_token:
-                    errors.append(
-                        {"merchant_id": merchant_id, "message": "No access token"}
-                    )
+                    errors.append({"merchant_id": merchant_id, "message": "No access token"})
                     continue
                 store_mapping_id = store_mapping.id
                 if not store_mapping_id:
-                    errors.append(
-                        {"merchant_id": merchant_id, "message": "Invalid store mapping"}
-                    )
+                    errors.append({"merchant_id": merchant_id, "message": "Invalid store mapping"})
                     continue
 
                 client = CloverAPIClient(access_token=access_token)
                 try:
                     for update in updates:
-                        item_id = CloverTransformer.parse_inventory_object_id(
-                            update.objectId
-                        )
+                        item_id = CloverTransformer.parse_inventory_object_id(update.objectId)
                         if item_id is None:
                             if CloverTransformer.INVENTORY_OBJECT_PREFIX in str(
                                 update.objectId or ""
@@ -496,12 +462,10 @@ class CloverIntegrationAdapter(BaseIntegrationAdapter):
                             continue
 
                         if update.type == "DELETE":
-                            products_to_delete = (
-                                self.supabase_service.get_products_by_source_id(
-                                    "clover",
-                                    item_id,
-                                    source_store_id=merchant_id,
-                                )
+                            products_to_delete = self.supabase_service.get_products_by_source_id(
+                                "clover",
+                                item_id,
+                                source_store_id=merchant_id,
                             )
                             for product in products_to_delete:
                                 if product.id and store_mapping_id:
@@ -531,9 +495,7 @@ class CloverIntegrationAdapter(BaseIntegrationAdapter):
                         if not normalized_list:
                             continue
                         normalized = normalized_list[0]
-                        is_valid, validation_errors = self.validate_normalized_product(
-                            normalized
-                        )
+                        is_valid, validation_errors = self.validate_normalized_product(normalized)
                         product = Product(
                             source_system="clover",
                             source_id=normalized.source_id,
@@ -552,9 +514,7 @@ class CloverIntegrationAdapter(BaseIntegrationAdapter):
                                 {"errors": validation_errors} if validation_errors else None
                             ),
                         )
-                        saved, changed = self.supabase_service.create_or_update_product(
-                            product
-                        )
+                        saved, changed = self.supabase_service.create_or_update_product(product)
                         total_updated += 1
                         if is_valid and saved.id and store_mapping_id:
                             existing_hipoink = (
@@ -577,9 +537,7 @@ class CloverIntegrationAdapter(BaseIntegrationAdapter):
                     merchant_id=merchant_id,
                     error=str(e),
                 )
-                errors.append(
-                    {"merchant_id": merchant_id, "message": str(e)}
-                )
+                errors.append({"merchant_id": merchant_id, "message": str(e)})
                 try:
                     slack = get_slack_service()
                     await slack.send_webhook_error_alert(
@@ -603,8 +561,8 @@ class CloverIntegrationAdapter(BaseIntegrationAdapter):
         merchant_id: str,
         access_token: str,
         store_mapping_id: UUID,
-        base_url: Optional[str] = None,
-    ) -> Dict[str, Any]:
+        base_url: str | None = None,
+    ) -> dict[str, Any]:
         """
         Fetch all items from Clover and sync to DB + queue.
         Used for initial onboarding (Phase 2). Phase 1 can call with test token.
@@ -640,9 +598,7 @@ class CloverIntegrationAdapter(BaseIntegrationAdapter):
                 if not normalized_list:
                     continue
                 normalized = normalized_list[0]
-                is_valid, validation_errors = self.validate_normalized_product(
-                    normalized
-                )
+                is_valid, validation_errors = self.validate_normalized_product(normalized)
                 existing = self.supabase_service.get_product_by_source(
                     source_system="clover",
                     source_id=normalized.source_id,
@@ -673,11 +629,9 @@ class CloverIntegrationAdapter(BaseIntegrationAdapter):
                 else:
                     products_created += 1
                 if is_valid and saved.id:
-                    existing_hipoink = (
-                        self.supabase_service.get_hipoink_product_by_product_id(
-                            saved.id,
-                            store_mapping_id,
-                        )
+                    existing_hipoink = self.supabase_service.get_hipoink_product_by_product_id(
+                        saved.id,
+                        store_mapping_id,
                     )
                     if changed or not existing_hipoink:
                         q = self.supabase_service.add_to_sync_queue(

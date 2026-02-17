@@ -4,24 +4,25 @@ Handles automatic refresh of expiring access tokens.
 """
 
 import asyncio
-import httpx
-import structlog
-from datetime import datetime, timezone
-from typing import Optional, Dict, Any, Tuple
+from datetime import UTC, datetime
+from typing import Any
 from uuid import UUID
 
+import httpx
+import structlog
+
 from app.config import settings
-from app.services.supabase_service import SupabaseService
 from app.models.database import StoreMapping
+from app.services.supabase_service import SupabaseService
 
 logger = structlog.get_logger()
 
 
 def _update_store_mapping_metadata_sync(
     store_mapping_id: UUID,
-    token_updates: Dict[str, Any],
+    token_updates: dict[str, Any],
     supabase_service: SupabaseService,
-) -> Optional[StoreMapping]:
+) -> StoreMapping | None:
     """
     Synchronous helper: re-fetch current metadata, merge token fields, write back.
     Run via asyncio.to_thread to avoid blocking the event loop.
@@ -39,9 +40,9 @@ def _update_store_mapping_metadata_sync(
             return None
         current = (row.data[0].get("metadata") or {}).copy()
         current.update(token_updates)
-        supabase_service.client.table("store_mappings").update(
-            {"metadata": current}
-        ).eq("id", str(store_mapping_id)).execute()
+        supabase_service.client.table("store_mappings").update({"metadata": current}).eq(
+            "id", str(store_mapping_id)
+        ).execute()
         return supabase_service.get_store_mapping_by_id(store_mapping_id)
     except Exception as e:
         logger.error(
@@ -61,7 +62,7 @@ class SquareTokenRefreshService:
         self.refresh_threshold_days = 7  # Refresh if less than 7 days remaining
 
     def is_token_expiring_soon(
-        self, expires_at: Optional[str], threshold_days: Optional[int] = None
+        self, expires_at: str | None, threshold_days: int | None = None
     ) -> bool:
         """
         Check if token is expiring within the threshold period.
@@ -89,11 +90,11 @@ class SquareTokenRefreshService:
 
             expires_dt = datetime.fromisoformat(expires_str)
             if expires_dt.tzinfo is None:
-                expires_dt = expires_dt.replace(tzinfo=timezone.utc)
+                expires_dt = expires_dt.replace(tzinfo=UTC)
             else:
-                expires_dt = expires_dt.astimezone(timezone.utc)
+                expires_dt = expires_dt.astimezone(UTC)
 
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
             # Use total_seconds() for fractional days instead of .days (which truncates)
             days_until_expiry = (expires_dt - now).total_seconds() / 86400.0
             is_expiring = days_until_expiry < threshold
@@ -116,7 +117,7 @@ class SquareTokenRefreshService:
 
     async def refresh_token(
         self, store_mapping: StoreMapping
-    ) -> Tuple[bool, Optional[Dict[str, Any]]]:
+    ) -> tuple[bool, dict[str, Any] | None]:
         """
         Refresh Square OAuth token for a store mapping.
 
@@ -197,7 +198,8 @@ class SquareTokenRefreshService:
                 # Return new token data
                 new_token_data = {
                     "access_token": access_token,
-                    "refresh_token": new_refresh_token or refresh_token,  # Use new if provided, else keep old
+                    "refresh_token": new_refresh_token
+                    or refresh_token,  # Use new if provided, else keep old
                     "expires_at": expires_at,
                 }
 
@@ -227,7 +229,7 @@ class SquareTokenRefreshService:
 
     async def refresh_token_and_update(
         self, store_mapping: StoreMapping
-    ) -> Tuple[bool, Optional[StoreMapping]]:
+    ) -> tuple[bool, StoreMapping | None]:
         """
         Refresh token and update store mapping metadata.
 
@@ -249,7 +251,7 @@ class SquareTokenRefreshService:
             "square_access_token": new_token_data["access_token"],
             "square_refresh_token": new_token_data["refresh_token"],
             "square_expires_at": new_token_data["expires_at"],
-            "square_token_refreshed_at": datetime.now(timezone.utc).isoformat(),
+            "square_token_refreshed_at": datetime.now(UTC).isoformat(),
         }
 
         try:
@@ -279,7 +281,7 @@ class SquareTokenRefreshService:
 
     def get_access_token(
         self, store_mapping: StoreMapping, auto_refresh: bool = True
-    ) -> Optional[str]:
+    ) -> str | None:
         """
         Get access token from store mapping, optionally checking if expiring.
 

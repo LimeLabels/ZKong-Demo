@@ -3,17 +3,17 @@ Shopify OAuth authentication endpoints for the embedded app.
 Handles OAuth flow and session management.
 """
 
-from fastapi import APIRouter, Request, HTTPException, status, Query, BackgroundTasks
-from fastapi.responses import RedirectResponse
-from typing import Optional
-import structlog
+import base64
 import hashlib
 import hmac as hmac_lib
-import base64
 import secrets
-import httpx
 from datetime import datetime
 from uuid import UUID
+
+import httpx
+import structlog
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request, status
+from fastapi.responses import RedirectResponse
 
 from app.config import settings
 from app.services.supabase_service import SupabaseService
@@ -47,13 +47,9 @@ async def _fetch_shopify_shop_info(shop: str, access_token: str) -> dict:
 @router.get("/shopify")
 async def shopify_oauth_initiate(
     shop: str = Query(..., description="Shop domain (e.g., myshop.myshopify.com)"),
-    hmac_param: Optional[str] = Query(
-        None, alias="hmac", description="HMAC for verification"
-    ),
-    timestamp: Optional[str] = Query(None, description="Request timestamp"),
-    state: Optional[str] = Query(
-        None, description="State parameter for CSRF protection"
-    ),
+    hmac_param: str | None = Query(None, alias="hmac", description="HMAC for verification"),
+    timestamp: str | None = Query(None, description="Request timestamp"),
+    state: str | None = Query(None, description="State parameter for CSRF protection"),
 ):
     """
     Initiate Shopify OAuth flow.
@@ -73,7 +69,7 @@ async def shopify_oauth_initiate(
     # redirect_uri must match the App URL domain (shopify-app URL)
     # For embedded apps, this must be the shopify-app frontend URL
     scopes = "read_products,write_products,read_inventory,write_inventory"
-    
+
     # Use shopify_app_url if set, otherwise fall back to frontend_url
     shopify_app_url = getattr(settings, "shopify_app_url", None)
     if shopify_app_url:
@@ -85,7 +81,7 @@ async def shopify_oauth_initiate(
         # If app_base_url looks like backend (port 8000), use frontend default
         if frontend_url.startswith("http://localhost:8000") or ":8000" in frontend_url:
             frontend_url = "http://localhost:3000"
-    
+
     redirect_uri = f"{frontend_url}/auth/shopify/callback"
     auth_url = (
         f"https://{shop}/admin/oauth/authorize?"
@@ -103,11 +99,9 @@ async def shopify_oauth_initiate(
 async def shopify_oauth_callback(
     code: str = Query(..., description="Authorization code from Shopify"),
     shop: str = Query(..., description="Shop domain"),
-    state: Optional[str] = Query(None, description="State parameter"),
-    host: Optional[str] = Query(None, description="Host parameter from Shopify"),
-    hmac_param: Optional[str] = Query(
-        None, alias="hmac", description="HMAC for verification"
-    ),
+    state: str | None = Query(None, description="State parameter"),
+    host: str | None = Query(None, description="Host parameter from Shopify"),
+    hmac_param: str | None = Query(None, alias="hmac", description="HMAC for verification"),
     background_tasks: BackgroundTasks = BackgroundTasks(),
 ):
     """
@@ -179,14 +173,14 @@ async def shopify_oauth_callback(
             # Update existing mapping with access token and metadata
             existing_metadata = existing_mapping.metadata or {}
             existing_metadata.update(metadata)
-            
+
             supabase_service.client.table("store_mappings").update(
                 {
                     "metadata": existing_metadata,
                     "is_active": True,
                 }
             ).eq("id", str(existing_mapping.id)).execute()
-            
+
             mapping_id = str(existing_mapping.id)
             logger.info(
                 "Updated Shopify store mapping with OAuth token",
@@ -215,16 +209,14 @@ async def shopify_oauth_callback(
                     mapping_id=mapping_id,
                 )
             except Exception as e:
-                logger.error(
-                    "Failed to auto-create store mapping", shop=shop, error=str(e)
-                )
+                logger.error("Failed to auto-create store mapping", shop=shop, error=str(e))
                 # Continue anyway - onboarding will handle it
 
         # Trigger initial product sync in background (non-blocking)
         if mapping_id:
             try:
                 from app.integrations.shopify.adapter import ShopifyIntegrationAdapter
-                
+
                 adapter = ShopifyIntegrationAdapter()
                 background_tasks.add_task(
                     adapter.sync_all_products_from_shopify,
@@ -274,13 +266,13 @@ async def shopify_oauth_callback(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Failed to exchange authorization code: {e.response.text}",
-        )
+        ) from e
     except Exception as e:
         logger.error("Error in OAuth callback", shop=shop, error=str(e))
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"OAuth callback failed: {str(e)}",
-        )
+        ) from e
 
 
 @router.get("/shopify/verify")
@@ -352,15 +344,10 @@ async def get_current_auth(shop: str = Query(..., description="Shop domain")):
     needs_onboarding = False
 
     if store_mapping:
-        if store_mapping.metadata and store_mapping.metadata.get(
-            "shopify_access_token"
-        ):
+        if store_mapping.metadata and store_mapping.metadata.get("shopify_access_token"):
             has_oauth_token = True
         # Check if Hipoink store code is set (indicates onboarding complete)
-        if (
-            not store_mapping.hipoink_store_code
-            or store_mapping.hipoink_store_code == ""
-        ):
+        if not store_mapping.hipoink_store_code or store_mapping.hipoink_store_code == "":
             needs_onboarding = True
     else:
         needs_onboarding = True
@@ -371,9 +358,7 @@ async def get_current_auth(shop: str = Query(..., description="Shop domain")):
         "needs_onboarding": needs_onboarding,
         "store_mapping": {
             "id": str(store_mapping.id) if store_mapping else None,
-            "hipoink_store_code": store_mapping.hipoink_store_code
-            if store_mapping
-            else None,
+            "hipoink_store_code": store_mapping.hipoink_store_code if store_mapping else None,
             "timezone": store_mapping.metadata.get("timezone")
             if store_mapping and store_mapping.metadata
             else None,

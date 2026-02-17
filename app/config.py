@@ -21,17 +21,13 @@ class Settings(BaseSettings):
     supabase_service_key: str = ""  # Required for production, optional for NCR testing
 
     # Shopify Configuration
-    shopify_webhook_secret: str = (
-        ""  # Required for webhook verification in production
-    )
+    shopify_webhook_secret: str = ""  # Required for webhook verification in production
     shopify_api_key: str = ""  # Shopify app API key (for OAuth)
     shopify_api_secret: str = ""  # Shopify app API secret (for OAuth)
     app_base_url: str = (
         "http://localhost:8000"  # Backend base URL; OAuth redirects (Square, Clover) use this
     )
-    frontend_url: str = (
-        "http://localhost:3000"  # Frontend app URL (must match App URL in Shopify)
-    )
+    frontend_url: str = "http://localhost:3000"  # Frontend app URL (must match App URL in Shopify)
     shopify_app_url: str = (
         ""  # Shopify app frontend URL (for embedded apps, must match App URL in Partner Dashboard)
     )
@@ -43,8 +39,12 @@ class Settings(BaseSettings):
     ncr_api_base_url: str = "https://api.ncr.com/catalog"  # NCR API base URL (production)
     ncr_shared_key: str = "42ca1d8c9fe34aa89b283b07e7694fcd"  # NCR shared key (bsp-shared-key)
     ncr_secret_key: str = "fc12af86bb4d4aa1a01e6178373f9b21"  # NCR secret key (bsp-secret-key)
-    ncr_organization: str = "test-drive-db9be7e5183a4ed183c99"  # NCR organization ID (bsp-organization)
-    ncr_enterprise_unit: str = "4e469b13321f41bc9f2d45078de86beb"  # NCR enterprise unit ID (bsp-site-id)
+    ncr_organization: str = (
+        "test-drive-db9be7e5183a4ed183c99"  # NCR organization ID (bsp-organization)
+    )
+    ncr_enterprise_unit: str = (
+        "4e469b13321f41bc9f2d45078de86beb"  # NCR enterprise unit ID (bsp-site-id)
+    )
     ncr_department_id: str = "DEFAULT"  # Default department ID
     ncr_category_id: str = "DEFAULT"  # Default category ID
     # Square Configuration
@@ -54,10 +54,14 @@ class Settings(BaseSettings):
     square_environment: str = "production"  # "sandbox" or "production"
 
     # Clover Configuration
-    clover_webhook_auth_code: str = ""  # X-Clover-Auth value from Dashboard (static auth code, not HMAC)
+    clover_webhook_auth_code: str = (
+        ""  # X-Clover-Auth value from Dashboard (static auth code, not HMAC)
+    )
     clover_environment: str = "sandbox"  # "sandbox" | "production" (authorize/token/refresh URLs)
     clover_app_id: str = ""  # OAuth App ID (Client ID); required for /auth/clover
-    clover_app_secret: str = ""  # OAuth App Secret (Client Secret); used only for token exchange, NOT for refresh
+    clover_app_secret: str = (
+        ""  # OAuth App Secret (Client Secret); used only for token exchange, NOT for refresh
+    )
     # Clover Polling (sync worker)
     clover_sync_interval_seconds: int = 300  # Poll every 5 minutes
     clover_sync_enabled: bool = True

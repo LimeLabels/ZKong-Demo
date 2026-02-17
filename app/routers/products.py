@@ -3,15 +3,14 @@ API router for product search and retrieval.
 Allows searching products from Shopify or the database.
 """
 
-from fastapi import APIRouter, HTTPException, status, Query, Depends
-from typing import List, Optional
-from pydantic import BaseModel
-import structlog
 import httpx
+import structlog
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from pydantic import BaseModel
 
-from app.services.supabase_service import SupabaseService
-from app.services.shopify_api_client import ShopifyAPIClient
 from app.routers.auth import verify_token
+from app.services.shopify_api_client import ShopifyAPIClient
+from app.services.supabase_service import SupabaseService
 
 logger = structlog.get_logger()
 
@@ -24,19 +23,21 @@ class ProductSearchResult(BaseModel):
 
     id: str
     title: str
-    barcode: Optional[str] = None
-    sku: Optional[str] = None
-    price: Optional[float] = None
-    image_url: Optional[str] = None
-    variant_id: Optional[str] = None
-    product_id: Optional[str] = None
+    barcode: str | None = None
+    sku: str | None = None
+    price: float | None = None
+    image_url: str | None = None
+    variant_id: str | None = None
+    product_id: str | None = None
 
 
-@router.get("/search", response_model=List[ProductSearchResult])
+@router.get("/search", response_model=list[ProductSearchResult])
 async def search_products(
     shop: str = Query(..., description="Shop domain or merchant ID"),
-    source_system: str = Query("shopify", description="Source system (shopify, square, ncr, clover)"),
-    q: Optional[str] = Query(None, description="Search query (barcode, SKU, or title)"),
+    source_system: str = Query(
+        "shopify", description="Source system (shopify, square, ncr, clover)"
+    ),
+    q: str | None = Query(None, description="Search query (barcode, SKU, or title)"),
     limit: int = Query(20, description="Maximum number of results"),
 ):
     """
@@ -50,23 +51,24 @@ async def search_products(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Store not found: {shop}",
             )
-        
+
         # Get products filtered by source_store_id (CRITICAL for multi-tenant)
         products = supabase_service.get_products_by_system(
             source_system=source_system,
             source_store_id=store_mapping.source_store_id,  # Multi-tenant filter
         )
-        
+
         # Apply search filter if provided
         if q:
             q_lower = q.lower()
             products = [
-                p for p in products 
-                if q_lower in (p.title or "").lower() 
+                p
+                for p in products
+                if q_lower in (p.title or "").lower()
                 or q_lower in (p.barcode or "").lower()
                 or q_lower in (p.sku or "").lower()
             ]
-        
+
         # Return results
         results = [
             ProductSearchResult(
@@ -174,12 +176,12 @@ async def search_products(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to search products: {str(e)}",
-        )
+        ) from e
 
 
-@router.get("/my-products", response_model=List[ProductSearchResult])
+@router.get("/my-products", response_model=list[ProductSearchResult])
 async def get_my_products(
-    q: Optional[str] = Query(None, description="Search query (barcode, SKU, or title)"),
+    q: str | None = Query(None, description="Search query (barcode, SKU, or title)"),
     limit: int = Query(20, description="Maximum number of results"),
     user_data: dict = Depends(verify_token),
 ):
@@ -188,7 +190,7 @@ async def get_my_products(
     Filters products by the user's connected store mapping.
     """
     user_id = user_data["user_id"]
-    
+
     try:
         # Get user's store mapping
         result = (
@@ -197,41 +199,38 @@ async def get_my_products(
             .eq("is_active", True)
             .execute()
         )
-        
+
         # Find store mapping for this user
         user_store_mapping = None
         for item in result.data:
             mapping = supabase_service.get_store_mapping_by_id(item["id"])
-            if (
-                mapping
-                and mapping.metadata
-                and mapping.metadata.get("user_id") == user_id
-            ):
+            if mapping and mapping.metadata and mapping.metadata.get("user_id") == user_id:
                 user_store_mapping = mapping
                 break
-        
+
         if not user_store_mapping:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="No store mapping found for this user. Please complete onboarding.",
             )
-        
+
         # Get products filtered by source_system and source_store_id
         products = supabase_service.get_products_by_system(
             source_system=user_store_mapping.source_system,
             source_store_id=user_store_mapping.source_store_id,  # CRITICAL filter
         )
-        
+
         # Apply search filter if provided
         if q:
             q_lower = q.lower()
             products = [
-                p for p in products 
-                if q_lower in (p.title or "").lower() 
+                p
+                for p in products
+                if q_lower in (p.title or "").lower()
                 or q_lower in (p.barcode or "").lower()
                 or q_lower in (p.sku or "").lower()
             ]
-        
+
         return [
             ProductSearchResult(
                 id=str(p.id) if p.id else "",
@@ -245,7 +244,7 @@ async def get_my_products(
             )
             for p in products[:limit]
         ]
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -253,4 +252,4 @@ async def get_my_products(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to get user products: {str(e)}",
-        )
+        ) from e
