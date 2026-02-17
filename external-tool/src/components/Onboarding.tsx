@@ -3,7 +3,7 @@
  * Allows users to enter their Hipoink store code and select POS system to find/create a store mapping.
  */
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import {
   Card,
   FormLayout,
@@ -16,13 +16,40 @@ import {
 } from '@shopify/polaris'
 import { apiClient } from '../services/api'
 
+const TIMEZONE_OPTIONS = [
+  { label: 'Central Time (America/Chicago)', value: 'America/Chicago' },
+  { label: 'Eastern Time (America/New_York)', value: 'America/New_York' },
+  { label: 'Mountain Time (America/Denver)', value: 'America/Denver' },
+  { label: 'Pacific Time (America/Los_Angeles)', value: 'America/Los_Angeles' },
+  { label: 'Alaska Time (America/Anchorage)', value: 'America/Anchorage' },
+  { label: 'Hawaii Time (Pacific/Honolulu)', value: 'Pacific/Honolulu' },
+  { label: 'UTC', value: 'UTC' },
+]
+
+function getDefaultTimezoneForPOS(): string {
+  try {
+    const browserTz = Intl.DateTimeFormat().resolvedOptions().timeZone
+    const inList = TIMEZONE_OPTIONS.some((o) => o.value === browserTz)
+    return inList ? browserTz : 'America/Chicago'
+  } catch {
+    return 'America/Chicago'
+  }
+}
+
 export function Onboarding() {
   const [hipoinkStoreCode, setHipoinkStoreCode] = useState('')
   const [posSystem, setPosSystem] = useState<string>('')
-  const [timezone, setTimezone] = useState<string>('America/Chicago') // Default to Central Time
+  const [timezone, setTimezone] = useState<string>('America/Chicago')
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [success, setSuccess] = useState(false)
+
+  // When user selects NCR or Clover, default timezone to browser's if it's in our list
+  useEffect(() => {
+    if (posSystem === 'ncr' || posSystem === 'clover') {
+      setTimezone(getDefaultTimezoneForPOS())
+    }
+  }, [posSystem])
 
   const posSystemOptions = [
     { label: 'Select POS System', value: '' },
@@ -66,22 +93,19 @@ export function Onboarding() {
         store_mapping_id: storeMappingId,
       })
 
-      // If NCR, update timezone in store mapping metadata
-      if (posSystem === 'ncr' && timezone) {
+      // NCR and Clover: update timezone in store mapping metadata (merge with existing so we never wipe tokens)
+      if ((posSystem === 'ncr' || posSystem === 'clover') && timezone) {
         try {
-          // Get current store mapping to merge metadata
-          const mappingResponse = await apiClient.get(`/api/store-mappings/${storeMappingId}`)
+          const mappingResponse = await apiClient.get('/api/store-mappings/' + storeMappingId)
           const currentMetadata = mappingResponse.data.metadata || {}
-          
-          // Update timezone in metadata
-          await apiClient.put(`/api/store-mappings/${storeMappingId}`, {
+          await apiClient.put('/api/store-mappings/' + storeMappingId, {
             source_system: posSystem,
             source_store_id: findResponse.data.source_store_id,
             hipoink_store_code: hipoinkStoreCode.trim(),
             is_active: true,
             metadata: {
               ...currentMetadata,
-              timezone: timezone,
+              timezone,
             },
           })
         } catch (err: any) {
@@ -155,18 +179,10 @@ export function Onboarding() {
             helpText="Select the point-of-sale system you're using"
           />
 
-          {posSystem === 'ncr' && (
+          {(posSystem === 'ncr' || posSystem === 'clover') && (
             <Select
               label="Timezone"
-              options={[
-                { label: 'Central Time (America/Chicago)', value: 'America/Chicago' },
-                { label: 'Eastern Time (America/New_York)', value: 'America/New_York' },
-                { label: 'Mountain Time (America/Denver)', value: 'America/Denver' },
-                { label: 'Pacific Time (America/Los_Angeles)', value: 'America/Los_Angeles' },
-                { label: 'Alaska Time (America/Anchorage)', value: 'America/Anchorage' },
-                { label: 'Hawaii Time (Pacific/Honolulu)', value: 'Pacific/Honolulu' },
-                { label: 'UTC', value: 'UTC' },
-              ]}
+              options={TIMEZONE_OPTIONS}
               value={timezone}
               onChange={setTimezone}
               disabled={submitting}
