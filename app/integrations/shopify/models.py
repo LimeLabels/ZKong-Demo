@@ -3,9 +3,9 @@ Pydantic models for Shopify webhook payloads.
 Handles products/create, products/update, products/delete, and inventory_levels/update events.
 """
 
-from pydantic import BaseModel, Field
-from typing import Optional, List
 from datetime import datetime
+
+from pydantic import BaseModel, Field
 
 
 class ShopifyImage(BaseModel):
@@ -16,11 +16,11 @@ class ShopifyImage(BaseModel):
     position: int
     created_at: datetime
     updated_at: datetime
-    alt: Optional[str] = None
+    alt: str | None = None
     width: int
     height: int
     src: str
-    variant_ids: List[int] = Field(default_factory=list)
+    variant_ids: list[int] = Field(default_factory=list)
 
 
 class ShopifyVariant(BaseModel):
@@ -30,10 +30,10 @@ class ShopifyVariant(BaseModel):
     product_id: int
     title: str
     price: str
-    sku: Optional[str] = None
+    sku: str | None = None
     position: int
-    compare_at_price: Optional[str] = None
-    barcode: Optional[str] = None
+    compare_at_price: str | None = None
+    barcode: str | None = None
     grams: int = 0
     weight: float = 0.0
     weight_unit: str = "kg"
@@ -49,69 +49,69 @@ class ShopifyProduct(BaseModel):
 
     id: int
     title: str
-    body_html: Optional[str] = None
-    vendor: Optional[str] = None
-    product_type: Optional[str] = None
+    body_html: str | None = None
+    vendor: str | None = None
+    product_type: str | None = None
     created_at: datetime
     handle: str
     updated_at: datetime
-    published_at: Optional[datetime] = None
-    template_suffix: Optional[str] = None
+    published_at: datetime | None = None
+    template_suffix: str | None = None
     status: str
     published_scope: str
     tags: str = ""
     admin_graphql_api_id: str
-    variants: List[ShopifyVariant] = Field(default_factory=list)
-    images: List[ShopifyImage] = Field(default_factory=list)
-    options: List[dict] = Field(default_factory=list)
+    variants: list[ShopifyVariant] = Field(default_factory=list)
+    images: list[ShopifyImage] = Field(default_factory=list)
+    options: list[dict] = Field(default_factory=list)
 
 
 class ShopifyWebhookBase(BaseModel):
     """Base model for Shopify webhooks."""
 
     id: int
-    email: Optional[str] = None
-    created_at: Optional[datetime] = None
-    updated_at: Optional[datetime] = None
-    number: Optional[int] = None
-    note: Optional[str] = None
-    token: Optional[str] = None
-    gateway: Optional[str] = None
-    test: Optional[bool] = None
-    total_price: Optional[str] = None
-    subtotal_price: Optional[str] = None
-    total_weight: Optional[int] = None
-    total_tax: Optional[str] = None
-    taxes_included: Optional[bool] = None
-    currency: Optional[str] = None
-    financial_status: Optional[str] = None
-    confirmed: Optional[bool] = None
-    total_discounts: Optional[str] = None
-    buyer_accepts_marketing: Optional[bool] = None
-    name: Optional[str] = None
-    referring_site: Optional[str] = None
-    landing_site: Optional[str] = None
-    cancelled_at: Optional[datetime] = None
-    cancel_reason: Optional[str] = None
-    total_line_items_price: Optional[str] = None
-    total_duties: Optional[str] = None
-    billing_address: Optional[dict] = None
-    shipping_address: Optional[dict] = None
-    customer: Optional[dict] = None
-    discount_codes: Optional[List[dict]] = None
-    note_attributes: Optional[List[dict]] = None
-    payment_gateway_names: Optional[List[str]] = None
-    processing_method: Optional[str] = None
-    checkout_id: Optional[int] = None
-    source_name: Optional[str] = None
-    fulfillment_status: Optional[str] = None
-    order_adjustments: Optional[List[dict]] = None
-    line_items: Optional[List[dict]] = None
-    shipping_lines: Optional[List[dict]] = None
-    tax_lines: Optional[List[dict]] = None
-    discount_applications: Optional[List[dict]] = None
-    fulfillment: Optional[List[dict]] = None
-    refunds: Optional[List[dict]] = None
+    email: str | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+    number: int | None = None
+    note: str | None = None
+    token: str | None = None
+    gateway: str | None = None
+    test: bool | None = None
+    total_price: str | None = None
+    subtotal_price: str | None = None
+    total_weight: int | None = None
+    total_tax: str | None = None
+    taxes_included: bool | None = None
+    currency: str | None = None
+    financial_status: str | None = None
+    confirmed: bool | None = None
+    total_discounts: str | None = None
+    buyer_accepts_marketing: bool | None = None
+    name: str | None = None
+    referring_site: str | None = None
+    landing_site: str | None = None
+    cancelled_at: datetime | None = None
+    cancel_reason: str | None = None
+    total_line_items_price: str | None = None
+    total_duties: str | None = None
+    billing_address: dict | None = None
+    shipping_address: dict | None = None
+    customer: dict | None = None
+    discount_codes: list[dict] | None = None
+    note_attributes: list[dict] | None = None
+    payment_gateway_names: list[str] | None = None
+    processing_method: str | None = None
+    checkout_id: int | None = None
+    source_name: str | None = None
+    fulfillment_status: str | None = None
+    order_adjustments: list[dict] | None = None
+    line_items: list[dict] | None = None
+    shipping_lines: list[dict] | None = None
+    tax_lines: list[dict] | None = None
+    discount_applications: list[dict] | None = None
+    fulfillment: list[dict] | None = None
+    refunds: list[dict] | None = None
 
 
 class ProductCreateWebhook(BaseModel):
@@ -119,21 +119,21 @@ class ProductCreateWebhook(BaseModel):
 
     id: int
     title: str
-    body_html: Optional[str] = None
-    vendor: Optional[str] = None
-    product_type: Optional[str] = None
+    body_html: str | None = None
+    vendor: str | None = None
+    product_type: str | None = None
     created_at: datetime
     handle: str
     updated_at: datetime
-    published_at: Optional[datetime] = None
-    template_suffix: Optional[str] = None
+    published_at: datetime | None = None
+    template_suffix: str | None = None
     status: str
     published_scope: str
     tags: str = ""
     admin_graphql_api_id: str
-    variants: List[ShopifyVariant] = Field(default_factory=list)
-    images: List[ShopifyImage] = Field(default_factory=list)
-    options: List[dict] = Field(default_factory=list)
+    variants: list[ShopifyVariant] = Field(default_factory=list)
+    images: list[ShopifyImage] = Field(default_factory=list)
+    options: list[dict] = Field(default_factory=list)
 
 
 class ProductUpdateWebhook(ProductCreateWebhook):
@@ -146,7 +146,7 @@ class ProductDeleteWebhook(BaseModel):
     """Webhook payload for products/delete event."""
 
     id: int
-    title: Optional[str] = None
+    title: str | None = None
 
 
 class InventoryLevel(BaseModel):
@@ -154,7 +154,7 @@ class InventoryLevel(BaseModel):
 
     inventory_item_id: int
     location_id: int
-    available: Optional[int] = None
+    available: int | None = None
     updated_at: datetime
     admin_graphql_api_id: str
 
@@ -164,6 +164,6 @@ class InventoryLevelsUpdateWebhook(BaseModel):
 
     inventory_item_id: int
     location_id: int
-    available: Optional[int] = None
+    available: int | None = None
     updated_at: datetime
     admin_graphql_api_id: str

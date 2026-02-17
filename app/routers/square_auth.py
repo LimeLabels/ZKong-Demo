@@ -3,21 +3,21 @@ Square OAuth authentication endpoints.
 Handles OAuth flow for Square POS integration.
 """
 
-from fastapi import APIRouter, HTTPException, status, Query, BackgroundTasks, Depends
-from fastapi.responses import RedirectResponse
-from typing import Optional, Dict
-import structlog
-import secrets
-import httpx
-import json
 import base64
+import json
+import secrets
 from datetime import datetime, timedelta
-from urllib.parse import urlencode, quote
+from urllib.parse import quote, urlencode
 from uuid import UUID
 
+import httpx
+import structlog
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
+from fastapi.responses import RedirectResponse
+
 from app.config import settings
-from app.services.supabase_service import SupabaseService
 from app.routers.auth import verify_token
+from app.services.supabase_service import SupabaseService
 
 logger = structlog.get_logger()
 
@@ -26,24 +26,20 @@ api_router = APIRouter(prefix="/api/auth/square", tags=["square-auth"])
 
 # Rate limiting for manual sync (in-memory cache)
 # Key: (merchant_id, user_id), Value: last_sync_timestamp
-_manual_sync_rate_limit: Dict[tuple, datetime] = {}
+_manual_sync_rate_limit: dict[tuple, datetime] = {}
 _rate_limit_window = timedelta(minutes=1)  # 1 sync per minute per merchant per user
 
 
 @router.get("/square")
 async def square_oauth_initiate(
-    hipoink_store_code: Optional[str] = Query(
+    hipoink_store_code: str | None = Query(
         None, description="Hipoink store code from onboarding form"
     ),
-    store_name: Optional[str] = Query(
-        None, description="Store name from onboarding form"
-    ),
-    timezone: Optional[str] = Query(
+    store_name: str | None = Query(None, description="Store name from onboarding form"),
+    timezone: str | None = Query(
         None, description="Timezone from onboarding form (e.g., America/New_York)"
     ),
-    state: Optional[str] = Query(
-        None, description="State parameter for CSRF protection (optional)"
-    ),
+    state: str | None = Query(None, description="State parameter for CSRF protection (optional)"),
 ):
     """
     Initiate Square OAuth flow.
@@ -66,11 +62,9 @@ async def square_oauth_initiate(
         "store_name": (store_name or "").strip(),
         "timezone": (timezone or "").strip(),
     }
-    
+
     # Encode state as base64 JSON for safe URL transmission
-    state_token = base64.urlsafe_b64encode(
-        json.dumps(state_data).encode()
-    ).decode()
+    state_token = base64.urlsafe_b64encode(json.dumps(state_data).encode()).decode()
 
     # Build authorization URL
     # Square OAuth scopes for catalog, inventory, and merchant profile
@@ -118,7 +112,7 @@ async def square_oauth_initiate(
 @router.get("/square/callback")
 async def square_oauth_callback(
     code: str = Query(..., description="Authorization code from Square"),
-    state: Optional[str] = Query(None, description="State parameter"),
+    state: str | None = Query(None, description="State parameter"),
     background_tasks: BackgroundTasks = BackgroundTasks(),
 ):
     """
@@ -134,14 +128,14 @@ async def square_oauth_callback(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Square API credentials not configured",
         )
-    
+
     logger.info("Square OAuth callback received")
-    
+
     # 1) Decode state to extract onboarding data
     hipoink_store_code = ""
     store_name = ""
     timezone = ""
-    
+
     if state:
         try:
             state_data = json.loads(base64.urlsafe_b64decode(state.encode()).decode())
@@ -156,18 +150,18 @@ async def square_oauth_callback(
             )
         except Exception as e:
             logger.warning("Failed to decode Square state", error=str(e))
-    
+
     try:
         # 2) Determine Square API base URL
         if settings.square_environment == "sandbox":
             base_api_url = "https://connect.squareupsandbox.com"
         else:
             base_api_url = "https://connect.squareup.com"
-        
+
         # 3) Exchange authorization code for access token
         redirect_uri = f"{settings.app_base_url}/auth/square/callback"
         token_url = f"{base_api_url}/oauth2/token"
-        
+
         async with httpx.AsyncClient() as client:
             response = await client.post(
                 token_url,
@@ -182,39 +176,39 @@ async def square_oauth_callback(
             )
             response.raise_for_status()
             token_data = response.json()
-        
+
         access_token = token_data.get("access_token")
         refresh_token = token_data.get("refresh_token")  # Also store refresh token
         merchant_id = token_data.get("merchant_id")
         expires_at = token_data.get("expires_at")
-        
+
         if not access_token:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="No access token in response",
             )
-        
+
         logger.info(
             "Square OAuth token received",
             merchant_id=merchant_id,
             expires_at=expires_at,
         )
-        
+
         # 4) Fetch merchant locations
         locations = await _fetch_square_locations(access_token, base_api_url)
-        
+
         if not locations:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="No locations found for this Square merchant",
             )
-        
+
         # Use first location as primary
         primary_location = locations[0]
         location_id = primary_location.get("id")
         location_name = primary_location.get("name", "Unknown")
         square_timezone = primary_location.get("timezone", "UTC")
-        
+
         logger.info(
             "Square location found",
             merchant_id=merchant_id,
@@ -222,10 +216,10 @@ async def square_oauth_callback(
             location_name=location_name,
             square_timezone=square_timezone,
         )
-        
+
         # 5) Determine final timezone (user selection wins, then Square's, then UTC)
         final_timezone = timezone or square_timezone or "UTC"
-        
+
         # 6) Build metadata
         metadata = {
             "square_access_token": access_token,
@@ -238,21 +232,21 @@ async def square_oauth_callback(
             "all_locations": locations,
             "timezone": final_timezone,
         }
-        
+
         # Add store_name to metadata if provided
         if store_name:
             metadata["store_name"] = store_name
-        
+
         # 7) Create or update store mapping
         supabase_service = SupabaseService()
         existing_mapping = supabase_service.get_store_mapping("square", merchant_id)
         mapping_id = None
-        
+
         if existing_mapping:
             # Update existing mapping
             existing_metadata = existing_mapping.metadata or {}
             existing_metadata.update(metadata)
-            
+
             supabase_service.client.table("store_mappings").update(
                 {
                     "metadata": existing_metadata,
@@ -260,7 +254,7 @@ async def square_oauth_callback(
                     "is_active": True,
                 }
             ).eq("id", str(existing_mapping.id)).execute()
-            
+
             mapping_id = str(existing_mapping.id)
             logger.info(
                 "Updated Square store mapping with OAuth token",
@@ -271,7 +265,7 @@ async def square_oauth_callback(
         else:
             # Create new mapping
             from app.models.database import StoreMapping
-            
+
             new_mapping = StoreMapping(
                 source_system="square",
                 source_store_id=merchant_id,
@@ -279,7 +273,7 @@ async def square_oauth_callback(
                 is_active=True,
                 metadata=metadata,
             )
-            
+
             created = supabase_service.create_store_mapping(new_mapping)
             mapping_id = str(created.id) if created.id else None
             logger.info(
@@ -288,7 +282,7 @@ async def square_oauth_callback(
                 mapping_id=mapping_id,
                 hipoink_store_code=hipoink_store_code,
             )
-        
+
         # 8) Trigger initial product sync in background (non-blocking)
         if mapping_id:
             try:
@@ -311,12 +305,12 @@ async def square_oauth_callback(
                     merchant_id=merchant_id,
                     error=str(e),
                 )
-        
+
         # 9) Redirect to frontend success page with URL-encoded parameters
         frontend_url = getattr(settings, "frontend_url", None) or "http://localhost:3000"
         if frontend_url.startswith("http://localhost:8000") or ":8000" in frontend_url:
             frontend_url = "http://localhost:3000"
-        
+
         # URL-encode parameters to handle spaces and special characters
         redirect_url = (
             f"{frontend_url}/onboarding/square/success"
@@ -324,10 +318,10 @@ async def square_oauth_callback(
             f"&hipoink_store_code={quote(hipoink_store_code or 'none', safe='')}"
             f"&location_name={quote(location_name, safe='')}"
         )
-        
+
         logger.info("Redirecting to success page", redirect_url=redirect_url)
         return RedirectResponse(url=redirect_url, status_code=302)
-        
+
     except httpx.HTTPStatusError as e:
         logger.error(
             "Failed to exchange Square OAuth code for token",
@@ -337,13 +331,13 @@ async def square_oauth_callback(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Failed to exchange authorization code: {e.response.text}",
-        )
+        ) from e
     except Exception as e:
         logger.error("Error in Square OAuth callback", error=str(e))
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"OAuth callback failed: {str(e)}",
-        )
+        ) from e
 
 
 async def trigger_initial_product_sync(
@@ -354,10 +348,10 @@ async def trigger_initial_product_sync(
 ):
     """
     Background task to sync all products from Square after OAuth completion.
-    
+
     This function runs asynchronously after the OAuth callback response is sent,
     ensuring the user sees the success page immediately while products sync in the background.
-    
+
     Args:
         merchant_id: Square merchant ID
         access_token: Square OAuth access token
@@ -365,7 +359,7 @@ async def trigger_initial_product_sync(
         base_url: Square API base URL (sandbox or production)
     """
     supabase_service = SupabaseService()
-    
+
     try:
         # Update metadata to indicate sync started
         store_mapping = supabase_service.get_store_mapping_by_id(store_mapping_id)
@@ -373,13 +367,13 @@ async def trigger_initial_product_sync(
             metadata = store_mapping.metadata or {}
             metadata["initial_sync_status"] = "in_progress"
             metadata["initial_sync_started_at"] = datetime.utcnow().isoformat()
-            
-            supabase_service.client.table("store_mappings").update(
-                {"metadata": metadata}
-            ).eq("id", str(store_mapping_id)).execute()
-        
+
+            supabase_service.client.table("store_mappings").update({"metadata": metadata}).eq(
+                "id", str(store_mapping_id)
+            ).execute()
+
         from app.integrations.square.adapter import SquareIntegrationAdapter
-        
+
         adapter = SquareIntegrationAdapter()
         result = await adapter.sync_all_products_from_square(
             merchant_id=merchant_id,
@@ -387,7 +381,7 @@ async def trigger_initial_product_sync(
             store_mapping_id=store_mapping_id,
             base_url=base_url,
         )
-        
+
         # Update metadata to indicate sync completed
         # Re-fetch store mapping to ensure we have latest data
         store_mapping = supabase_service.get_store_mapping_by_id(store_mapping_id)
@@ -402,11 +396,11 @@ async def trigger_initial_product_sync(
                 "queued_for_sync": result.get("queued_for_sync", 0),
                 "errors": result.get("errors", 0),
             }
-            
-            supabase_service.client.table("store_mappings").update(
-                {"metadata": metadata}
-            ).eq("id", str(store_mapping_id)).execute()
-        
+
+            supabase_service.client.table("store_mappings").update({"metadata": metadata}).eq(
+                "id", str(store_mapping_id)
+            ).execute()
+
         logger.info(
             "Initial product sync completed",
             merchant_id=merchant_id,
@@ -425,13 +419,13 @@ async def trigger_initial_product_sync(
                 metadata = store_mapping.metadata or {}
                 metadata["initial_sync_status"] = "failed"
                 metadata["initial_sync_error"] = str(e)
-                
-                supabase_service.client.table("store_mappings").update(
-                    {"metadata": metadata}
-                ).eq("id", str(store_mapping_id)).execute()
+
+                supabase_service.client.table("store_mappings").update({"metadata": metadata}).eq(
+                    "id", str(store_mapping_id)
+                ).execute()
         except Exception as update_error:
             logger.error("Failed to update sync status", error=str(update_error))
-        
+
         logger.error(
             "Initial product sync failed",
             merchant_id=merchant_id,
@@ -487,15 +481,10 @@ async def get_square_auth_status(
     needs_onboarding = False
 
     if store_mapping:
-        if store_mapping.metadata and store_mapping.metadata.get(
-            "square_access_token"
-        ):
+        if store_mapping.metadata and store_mapping.metadata.get("square_access_token"):
             has_oauth_token = True
         # Check if Hipoink store code is set (indicates onboarding complete)
-        if (
-            not store_mapping.hipoink_store_code
-            or store_mapping.hipoink_store_code == ""
-        ):
+        if not store_mapping.hipoink_store_code or store_mapping.hipoink_store_code == "":
             needs_onboarding = True
     else:
         needs_onboarding = True
@@ -506,9 +495,7 @@ async def get_square_auth_status(
         "needs_onboarding": needs_onboarding,
         "store_mapping": {
             "id": str(store_mapping.id) if store_mapping else None,
-            "hipoink_store_code": store_mapping.hipoink_store_code
-            if store_mapping
-            else None,
+            "hipoink_store_code": store_mapping.hipoink_store_code if store_mapping else None,
             "location_id": store_mapping.metadata.get("square_location_id")
             if store_mapping and store_mapping.metadata
             else None,
@@ -591,9 +578,7 @@ async def get_square_sync_status(
     try:
         pending_queue_items = supabase_service.get_pending_sync_queue_items(limit=1000)
         queued_count = sum(
-            1
-            for item in pending_queue_items
-            if str(item.store_mapping_id) == str(store_mapping.id)
+            1 for item in pending_queue_items if str(item.store_mapping_id) == str(store_mapping.id)
         )
     except Exception as e:
         logger.warning("Failed to get queue count", error=str(e))
@@ -645,37 +630,37 @@ async def manual_sync_square_products(
 ):
     """
     Manually trigger a full product sync from Square.
-    
+
     This endpoint allows authenticated users to manually sync products when:
     - Unit cost changes don't trigger webhooks
     - Products need to be refreshed
     - Initial sync needs to be re-run
-    
+
     **Rate Limited**: 1 sync per minute per merchant per user
-    
+
     **Authentication Required**: Bearer token in Authorization header
-    
+
     Args:
         merchant_id: Square merchant ID
         background_tasks: FastAPI background tasks for async processing
         user_data: Authenticated user data (from token)
-    
+
     Returns:
         Status response with sync job information
-    
+
     Raises:
         HTTPException: If rate limited, unauthorized, or sync fails
     """
     user_id = user_data.get("user_id")
-    
+
     # Rate limiting: Check if user has synced this merchant recently
     rate_limit_key = (merchant_id, user_id)
     now = datetime.utcnow()
-    
+
     if rate_limit_key in _manual_sync_rate_limit:
         last_sync = _manual_sync_rate_limit[rate_limit_key]
         time_since_last_sync = now - last_sync
-        
+
         if time_since_last_sync < _rate_limit_window:
             remaining_seconds = int((_rate_limit_window - time_since_last_sync).total_seconds())
             raise HTTPException(
@@ -683,48 +668,48 @@ async def manual_sync_square_products(
                 detail=f"Rate limit exceeded. Please wait {remaining_seconds} seconds before syncing again.",
                 headers={"Retry-After": str(remaining_seconds)},
             )
-    
+
     # Update rate limit cache
     _manual_sync_rate_limit[rate_limit_key] = now
-    
+
     # Clean up old entries (keep cache size manageable)
     if len(_manual_sync_rate_limit) > 1000:
         # Remove entries older than 1 hour
         _manual_sync_rate_limit.clear()  # Simple cleanup - in production, use a proper cache
-    
+
     supabase_service = SupabaseService()
-    
+
     # Get store mapping
     store_mapping = supabase_service.get_store_mapping("square", merchant_id)
-    
+
     if not store_mapping:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Store mapping not found for merchant_id: {merchant_id}",
         )
-    
+
     # Get access token
     from app.integrations.square.adapter import SquareIntegrationAdapter
-    
+
     adapter = SquareIntegrationAdapter()
-    
+
     try:
         # Ensure we have a valid access token
         access_token = await adapter._ensure_valid_token(store_mapping)
-        
+
         if not access_token:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="No valid access token found. Please reconnect your Square account.",
             )
-        
+
         # Determine base URL (sandbox or production)
         base_url = (
             "https://connect.squareupsandbox.com"
             if settings.square_environment == "sandbox"
             else "https://connect.squareup.com"
         )
-        
+
         # Trigger sync in background
         background_tasks.add_task(
             trigger_initial_product_sync,
@@ -733,14 +718,14 @@ async def manual_sync_square_products(
             store_mapping_id=store_mapping.id,
             base_url=base_url,
         )
-        
+
         logger.info(
             "Manual product sync triggered",
             merchant_id=merchant_id,
             store_mapping_id=str(store_mapping.id),
             user_id=user_id,
         )
-        
+
         return {
             "status": "success",
             "message": "Product sync started in background",
@@ -748,7 +733,7 @@ async def manual_sync_square_products(
             "store_mapping_id": str(store_mapping.id),
             "note": "Sync is running in the background. Check sync-status endpoint for progress.",
         }
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -760,4 +745,4 @@ async def manual_sync_square_products(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to trigger sync: {str(e)}",
-        )
+        ) from e

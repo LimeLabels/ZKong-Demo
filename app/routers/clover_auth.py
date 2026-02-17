@@ -7,8 +7,7 @@ import base64
 import json
 import secrets
 from datetime import datetime
-from typing import Optional, Union
-from urllib.parse import urlencode, quote
+from urllib.parse import quote, urlencode
 from uuid import UUID
 
 import httpx
@@ -51,18 +50,14 @@ def _get_token_url() -> str:
 
 @router.get("/clover")
 async def clover_oauth_initiate(
-    hipoink_store_code: Optional[str] = Query(
+    hipoink_store_code: str | None = Query(
         None, description="Hipoink store code from onboarding form"
     ),
-    store_name: Optional[str] = Query(
-        None, description="Store name from onboarding form"
-    ),
-    timezone: Optional[str] = Query(
+    store_name: str | None = Query(None, description="Store name from onboarding form"),
+    timezone: str | None = Query(
         None, description="Timezone from onboarding form (e.g., America/New_York)"
     ),
-    state: Optional[str] = Query(
-        None, description="State parameter for CSRF protection (optional)"
-    ),
+    state: str | None = Query(None, description="State parameter for CSRF protection (optional)"),
 ):
     """
     Initiate Clover OAuth flow.
@@ -87,9 +82,7 @@ async def clover_oauth_initiate(
         "store_name": (store_name or "").strip(),
         "timezone": (timezone or "").strip(),
     }
-    state_token = base64.urlsafe_b64encode(
-        json.dumps(state_data).encode()
-    ).decode()
+    state_token = base64.urlsafe_b64encode(json.dumps(state_data).encode()).decode()
 
     redirect_uri = f"{app_base}/auth/clover/callback"
     authorize_url = _get_authorize_url()
@@ -112,7 +105,7 @@ async def clover_oauth_initiate(
     return RedirectResponse(url=auth_url, status_code=302)
 
 
-def _decode_state(state: Optional[str]) -> tuple[str, str, str]:
+def _decode_state(state: str | None) -> tuple[str, str, str]:
     """
     Decode state query param to (hipoink_store_code, store_name, timezone).
     Returns ("", "", "") on failure.
@@ -134,9 +127,9 @@ def _decode_state(state: Optional[str]) -> tuple[str, str, str]:
 
 @router.get("/clover/callback")
 async def clover_oauth_callback(
-    code: Optional[str] = Query(None, description="Authorization code from Clover"),
-    merchant_id: Optional[str] = Query(None, description="Clover merchant ID"),
-    state: Optional[str] = Query(None, description="State parameter"),
+    code: str | None = Query(None, description="Authorization code from Clover"),
+    merchant_id: str | None = Query(None, description="Clover merchant ID"),
+    state: str | None = Query(None, description="State parameter"),
     background_tasks: BackgroundTasks = BackgroundTasks(),
 ):
     """
@@ -170,8 +163,7 @@ async def clover_oauth_callback(
         )
 
     token_url = _get_token_url()
-    app_base = (settings.app_base_url or "").strip().rstrip("/")
-    redirect_uri = f"{app_base}/auth/clover/callback"
+    (settings.app_base_url or "").strip().rstrip("/")
 
     try:
         async with httpx.AsyncClient() as client:
@@ -234,7 +226,7 @@ async def clover_oauth_callback(
 
     supabase_service = SupabaseService()
     existing = supabase_service.get_store_mapping("clover", merchant_id)
-    mapping_id: Optional[str] = None
+    mapping_id: str | None = None
 
     if existing:
         existing_metadata = existing.metadata or {}
@@ -295,7 +287,7 @@ async def clover_oauth_callback(
     return RedirectResponse(url=redirect_url, status_code=302)
 
 
-async def _trigger_clover_initial_sync(store_mapping_id: Union[UUID, str]) -> None:
+async def _trigger_clover_initial_sync(store_mapping_id: UUID | str) -> None:
     """
     Background task: run one polling sync for this Clover store so products appear quickly.
     Fetches mapping by id to avoid passing stale state.
@@ -306,7 +298,9 @@ async def _trigger_clover_initial_sync(store_mapping_id: Union[UUID, str]) -> No
     uid = store_mapping_id if isinstance(store_mapping_id, UUID) else UUID(str(store_mapping_id))
     store_mapping = supabase_service.get_store_mapping_by_id(uid)
     if not store_mapping:
-        logger.warning("Clover initial sync: store mapping not found", mapping_id=str(store_mapping_id))
+        logger.warning(
+            "Clover initial sync: store mapping not found", mapping_id=str(store_mapping_id)
+        )
         return
     try:
         adapter = CloverIntegrationAdapter()

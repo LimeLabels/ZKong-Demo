@@ -3,20 +3,21 @@ Supabase service layer for database operations.
 Handles CRUD operations for products, sync_queue, sync_log, and store_mappings.
 """
 
-from typing import List, Optional, Dict, Any, Tuple
-from uuid import UUID
 from datetime import datetime
-from supabase import create_client, Client
+from typing import Any
+from uuid import UUID
+
 import structlog
-import json
+from supabase import Client, create_client
+
 from app.config import settings
 from app.models.database import (
-    Product,
-    SyncQueueItem,
-    SyncLog,
-    StoreMapping,
     HipoinkProduct,
     PriceAdjustmentSchedule,
+    Product,
+    StoreMapping,
+    SyncLog,
+    SyncQueueItem,
 )
 
 logger = structlog.get_logger()
@@ -27,18 +28,16 @@ class SupabaseService:
 
     def __init__(self):
         """Initialize Supabase client."""
-        self.client: Client = create_client(
-            settings.supabase_url, settings.supabase_service_key
-        )
-    
-    def _serialize_datetimes(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        self.client: Client = create_client(settings.supabase_url, settings.supabase_service_key)
+
+    def _serialize_datetimes(self, data: dict[str, Any]) -> dict[str, Any]:
         """
         Recursively convert datetime objects to ISO format strings.
         Also converts UUID objects to strings.
-        
+
         Args:
             data: Dictionary that may contain datetime/UUID objects
-            
+
         Returns:
             Dictionary with datetime/UUID objects converted to strings
         """
@@ -55,9 +54,7 @@ class SupabaseService:
 
     # Store Mappings
 
-    def get_store_mapping(
-        self, source_system: str, source_store_id: str
-    ) -> Optional[StoreMapping]:
+    def get_store_mapping(self, source_system: str, source_store_id: str) -> StoreMapping | None:
         """
         Get store mapping by source system and store ID.
 
@@ -93,7 +90,7 @@ class SupabaseService:
             )
             return None
 
-    def get_store_mapping_by_id(self, mapping_id: UUID) -> Optional[StoreMapping]:
+    def get_store_mapping_by_id(self, mapping_id: UUID) -> StoreMapping | None:
         """Get store mapping by UUID."""
         try:
             result = (
@@ -131,7 +128,7 @@ class SupabaseService:
 
     def update_store_mapping_oauth_token(
         self, mapping_id: UUID, shop_domain: str, access_token: str
-    ) -> Optional[StoreMapping]:
+    ) -> StoreMapping | None:
         """
         Update store mapping with Shopify OAuth token.
 
@@ -170,8 +167,8 @@ class SupabaseService:
             return None
 
     def update_store_mapping_metadata(
-        self, mapping_id: UUID, metadata: Dict[str, Any]
-    ) -> Optional[StoreMapping]:
+        self, mapping_id: UUID, metadata: dict[str, Any]
+    ) -> StoreMapping | None:
         """
         Merge and persist store mapping metadata (e.g. clover_last_sync_time, clover_poll_count).
         Existing metadata is preserved; provided keys are merged/overwritten.
@@ -206,9 +203,7 @@ class SupabaseService:
             )
             return None
 
-    def get_store_mappings_by_source_system(
-        self, source_system: str
-    ) -> List[StoreMapping]:
+    def get_store_mappings_by_source_system(self, source_system: str) -> list[StoreMapping]:
         """
         Get all active store mappings for a source system.
 
@@ -238,7 +233,7 @@ class SupabaseService:
 
     def get_store_mapping_by_hipoink_code(
         self, source_system: str, hipoink_store_code: str
-    ) -> Optional[StoreMapping]:
+    ) -> StoreMapping | None:
         """
         Get store mapping by source system and Hipoink store code.
         Used for onboarding to find existing mappings (1:1 relationship).
@@ -273,9 +268,7 @@ class SupabaseService:
             )
             return None
 
-    def get_store_mapping_by_shop_domain(
-        self, shop_domain: str
-    ) -> Optional[StoreMapping]:
+    def get_store_mapping_by_shop_domain(self, shop_domain: str) -> StoreMapping | None:
         """
         Get store mapping by Shopify shop domain.
         Searches in metadata field.
@@ -300,10 +293,7 @@ class SupabaseService:
             # Filter in Python since Supabase JSON queries can be tricky
             for item in result.data:
                 mapping = StoreMapping(**item)
-                if (
-                    mapping.metadata
-                    and mapping.metadata.get("shopify_shop_domain") == shop_domain
-                ):
+                if mapping.metadata and mapping.metadata.get("shopify_shop_domain") == shop_domain:
                     return mapping
                 # Also check source_store_id as fallback
                 if mapping.source_store_id == shop_domain:
@@ -316,11 +306,11 @@ class SupabaseService:
 
     # Products
 
-    def create_or_update_product(self, product: Product) -> Tuple[Product, bool]:
+    def create_or_update_product(self, product: Product) -> tuple[Product, bool]:
         """
         Create or update product in database.
         Uses upsert based on source_system, source_id, and source_variant_id.
-        
+
         Note: This method will NOT re-activate products that are marked as deleted.
         If a product is deleted, it will remain deleted and not be updated.
 
@@ -336,11 +326,11 @@ class SupabaseService:
             # Check if product exists (including deleted ones to check status)
             # CRITICAL: Pass source_store_id for multi-tenant isolation
             existing = self.get_product_by_source(
-                product.source_system, 
-                product.source_id, 
+                product.source_system,
+                product.source_id,
                 product.source_variant_id,
                 source_store_id=product.source_store_id,  # Multi-tenant isolation
-                include_deleted=True
+                include_deleted=True,
             )
 
             if existing:
@@ -353,7 +343,7 @@ class SupabaseService:
                         source_id=product.source_id,
                     )
                     return existing, False  # Return existing, no change
-                
+
                 # CHECK IF ACTUALLY CHANGED
                 if not self._product_has_changed(existing, product):
                     logger.debug(
@@ -364,21 +354,19 @@ class SupabaseService:
                         source_variant_id=product.source_variant_id,
                     )
                     return existing, False  # Return existing, no change
-                
+
                 # Product has changed, update it
                 try:
                     # Try Pydantic v2 style first
                     update_data = product.model_dump(
-                        mode='json', exclude_none=True, exclude={"id", "created_at"}
+                        mode="json", exclude_none=True, exclude={"id", "created_at"}
                     )
                 except AttributeError:
                     # Fallback to Pydantic v1 with manual datetime serialization
-                    update_data = product.dict(
-                        exclude_none=True, exclude={"id", "created_at"}
-                    )
+                    update_data = product.dict(exclude_none=True, exclude={"id", "created_at"})
                     # Convert datetime objects to ISO format strings
                     update_data = self._serialize_datetimes(update_data)
-                
+
                 result = (
                     self.client.table("products")
                     .update(update_data)
@@ -398,20 +386,14 @@ class SupabaseService:
                 # Create new product
                 try:
                     # Try Pydantic v2 style first
-                    insert_data = product.model_dump(
-                        mode='json', exclude_none=True, exclude={"id"}
-                    )
+                    insert_data = product.model_dump(mode="json", exclude_none=True, exclude={"id"})
                 except AttributeError:
                     # Fallback to Pydantic v1 with manual datetime serialization
                     insert_data = product.dict(exclude_none=True, exclude={"id"})
                     # Convert datetime objects to ISO format strings
                     insert_data = self._serialize_datetimes(insert_data)
-                
-                result = (
-                    self.client.table("products")
-                    .insert(insert_data)
-                    .execute()
-                )
+
+                result = self.client.table("products").insert(insert_data).execute()
 
                 if result.data:
                     logger.debug(
@@ -428,20 +410,20 @@ class SupabaseService:
         self,
         source_system: str,
         source_id: str,
-        source_variant_id: Optional[str] = None,
-        source_store_id: Optional[str] = None,
+        source_variant_id: str | None = None,
+        source_store_id: str | None = None,
         include_deleted: bool = False,
-    ) -> Optional[Product]:
+    ) -> Product | None:
         """
         Get product by source system and IDs.
-        
+
         Args:
             source_system: Source system name (e.g., 'square')
             source_id: Source product ID
             source_variant_id: Optional variant ID
             source_store_id: Merchant/store ID to filter by (CRITICAL for multi-tenant safety)
             include_deleted: If True, include products with status 'deleted' (default: False)
-        
+
         Returns:
             Product object or None if not found
         """
@@ -457,7 +439,7 @@ class SupabaseService:
                 query = query.eq("source_variant_id", source_variant_id)
             else:
                 query = query.is_("source_variant_id", "null")
-            
+
             # CRITICAL: Filter by store for multi-tenant safety
             if source_store_id:
                 query = query.eq("source_store_id", source_store_id)
@@ -467,7 +449,7 @@ class SupabaseService:
                     source_system=source_system,
                     source_id=source_id,
                 )
-            
+
             # Optionally include deleted products
             if not include_deleted:
                 query = query.neq("status", "deleted")
@@ -490,7 +472,7 @@ class SupabaseService:
                 )
             return None
 
-    def get_product(self, product_id: UUID) -> Optional[Product]:
+    def get_product(self, product_id: UUID) -> Product | None:
         """Get product by UUID."""
         try:
             result = (
@@ -505,28 +487,26 @@ class SupabaseService:
                 return Product(**result.data)
             return None
         except Exception as e:
-            logger.error(
-                "Failed to get product", product_id=str(product_id), error=str(e)
-            )
+            logger.error("Failed to get product", product_id=str(product_id), error=str(e))
             return None
 
     def get_products_by_source_id(
-        self, 
-        source_system: str, 
-        source_id: str, 
-        source_store_id: Optional[str] = None,
-        exclude_deleted: bool = True
-    ) -> List[Product]:
+        self,
+        source_system: str,
+        source_id: str,
+        source_store_id: str | None = None,
+        exclude_deleted: bool = True,
+    ) -> list[Product]:
         """
         Get all products by source system and source ID.
         Used to find all variants of a product when deleting.
-        
+
         Args:
             source_system: Source system name (e.g., 'square')
             source_id: Source product ID
             source_store_id: Merchant/store ID to filter by (RECOMMENDED for multi-tenant safety)
             exclude_deleted: If True, exclude products with status 'deleted' (default: True)
-        
+
         Returns:
             List of Product objects (all variants)
         """
@@ -537,7 +517,7 @@ class SupabaseService:
                 .eq("source_system", source_system)
                 .eq("source_id", source_id)
             )
-            
+
             # Filter by store for multi-tenant safety
             if source_store_id:
                 query = query.eq("source_store_id", source_store_id)
@@ -547,11 +527,11 @@ class SupabaseService:
                     source_system=source_system,
                     source_id=source_id,
                 )
-            
+
             # Exclude deleted products by default to prevent re-queuing them for deletion
             if exclude_deleted:
                 query = query.neq("status", "deleted")
-            
+
             result = query.execute()
 
             if result.data:
@@ -568,29 +548,22 @@ class SupabaseService:
             return []
 
     def get_products_by_system(
-        self, 
-        source_system: str, 
-        source_store_id: Optional[str] = None,
-        exclude_deleted: bool = True
-    ) -> List[Product]:
+        self, source_system: str, source_store_id: str | None = None, exclude_deleted: bool = True
+    ) -> list[Product]:
         """
         Fetch products by source system, optionally filtered by store.
-        
+
         Args:
             source_system: Source system name (e.g., 'square', 'shopify')
             source_store_id: Merchant/store ID to filter by (STRONGLY RECOMMENDED for multi-tenant safety)
             exclude_deleted: If True, exclude products with status 'deleted' (default: True)
-        
+
         Returns:
             List of Product objects for that store
         """
         try:
-            query = (
-                self.client.table("products")
-                .select("*")
-                .eq("source_system", source_system)
-            )
-            
+            query = self.client.table("products").select("*").eq("source_system", source_system)
+
             # CRITICAL: Filter by store for multi-tenant isolation
             if source_store_id:
                 query = query.eq("source_store_id", source_store_id)
@@ -600,11 +573,11 @@ class SupabaseService:
                     source_system=source_system,
                     stack_info=True,  # Log stack trace to find caller
                 )
-            
+
             # Exclude deleted products by default to prevent re-processing them
             if exclude_deleted:
                 query = query.neq("status", "deleted")
-            
+
             result = query.execute()
 
             if result.data:
@@ -622,7 +595,7 @@ class SupabaseService:
     def update_product_status(self, product_id: Any, status: str) -> None:
         """
         Update the status of a product (e.g., marking it as 'deleted').
-        
+
         When marking as 'deleted', also clears SKU and barcode to allow reuse.
         This ensures deleted products don't block SKU/barcode reuse while preserving
         product history in the database.
@@ -633,7 +606,7 @@ class SupabaseService:
         """
         try:
             update_data = {"status": status}
-            
+
             # When soft-deleting, clear SKU and barcode so they can be reused
             # This prevents unique constraint violations when reusing SKUs/barcodes
             if status == "deleted":
@@ -643,10 +616,8 @@ class SupabaseService:
                     "Clearing SKU and barcode for deleted product",
                     product_id=str(product_id),
                 )
-            
-            self.client.table("products").update(update_data).eq(
-                "id", str(product_id)
-            ).execute()
+
+            self.client.table("products").update(update_data).eq("id", str(product_id)).execute()
             logger.debug("Updated product status", product_id=str(product_id), status=status)
         except Exception as e:
             logger.error(
@@ -660,30 +631,30 @@ class SupabaseService:
         """
         Check if product data has actually changed.
         Only compares fields that matter for Hipoink ESL sync.
-        
+
         Args:
             existing: Existing product from database
             new_product: New product data from webhook/API
-            
+
         Returns:
             True if product changed, False if identical
         """
         # Fields that matter for ESL display and sync
         sync_relevant_fields = [
-            'title',           # Product name
-            'barcode',         # Barcode for ESL
-            'sku',             # SKU for ESL
-            'price',           # Price (most common change)
-            'currency',        # Currency (if price changes, currency might too)
-            'image_url',       # Product image
-            'status',          # Validation status (pending -> validated)
-            'validation_errors'  # Validation state changes
+            "title",  # Product name
+            "barcode",  # Barcode for ESL
+            "sku",  # SKU for ESL
+            "price",  # Price (most common change)
+            "currency",  # Currency (if price changes, currency might too)
+            "image_url",  # Product image
+            "status",  # Validation status (pending -> validated)
+            "validation_errors",  # Validation state changes
         ]
-        
+
         for field in sync_relevant_fields:
             existing_val = getattr(existing, field, None)
             new_val = getattr(new_product, field, None)
-            
+
             # Handle None comparisons
             if existing_val is None and new_val is None:
                 continue
@@ -695,7 +666,7 @@ class SupabaseService:
                     new=new_val,
                 )
                 return True
-            
+
             # Compare values
             if existing_val != new_val:
                 logger.debug(
@@ -705,17 +676,17 @@ class SupabaseService:
                     new=new_val,
                 )
                 return True
-        
+
         # CRITICAL: Check normalized_data fields (f1-f4) for unit cost changes
         # Unit cost changes affect f1-f4 but may not change price
         existing_normalized = existing.normalized_data or {}
         new_normalized = new_product.normalized_data or {}
-        
+
         # Check f1-f4 fields (unit cost and quantity fields)
-        for field in ['f1', 'f2', 'f3', 'f4']:
+        for field in ["f1", "f2", "f3", "f4"]:
             existing_val = existing_normalized.get(field)
             new_val = new_normalized.get(field)
-            
+
             # Handle None comparisons
             if existing_val is None and new_val is None:
                 continue
@@ -728,7 +699,7 @@ class SupabaseService:
                     product_id=str(existing.id) if existing.id else None,
                 )
                 return True
-            
+
             # Compare values (as strings since they're stored as strings)
             if str(existing_val) != str(new_val):
                 logger.debug(
@@ -739,13 +710,13 @@ class SupabaseService:
                     product_id=str(existing.id) if existing.id else None,
                 )
                 return True
-        
+
         return False
 
     def delete_product(self, product_id: Any) -> bool:
         """
         Delete a product from the database.
-        
+
         This method handles cascading deletes by removing related records first:
         - sync_log entries (via sync_queue_id)
         - sync_queue items
@@ -760,7 +731,7 @@ class SupabaseService:
         """
         try:
             product_id_str = str(product_id)
-            
+
             # Step 1: Get all sync_queue items for this product to find sync_log entries
             try:
                 sync_queue_items = (
@@ -769,55 +740,82 @@ class SupabaseService:
                     .eq("product_id", product_id_str)
                     .execute()
                 )
-                
-                sync_queue_ids = [item["id"] for item in sync_queue_items.data] if sync_queue_items.data else []
-                
+
+                sync_queue_ids = (
+                    [item["id"] for item in sync_queue_items.data] if sync_queue_items.data else []
+                )
+
                 # Step 2: Delete sync_log entries for these sync_queue items
                 if sync_queue_ids:
                     try:
                         for queue_id in sync_queue_ids:
-                            self.client.table("sync_log").delete().eq("sync_queue_id", str(queue_id)).execute()
-                        logger.debug("Cleaned up sync_log entries", product_id=product_id_str, count=len(sync_queue_ids))
+                            self.client.table("sync_log").delete().eq(
+                                "sync_queue_id", str(queue_id)
+                            ).execute()
+                        logger.debug(
+                            "Cleaned up sync_log entries",
+                            product_id=product_id_str,
+                            count=len(sync_queue_ids),
+                        )
                     except Exception as e:
-                        logger.warning("Failed to clean up sync_log entries", product_id=product_id_str, error=str(e))
-                
+                        logger.warning(
+                            "Failed to clean up sync_log entries",
+                            product_id=product_id_str,
+                            error=str(e),
+                        )
+
                 # Step 3: Delete sync_queue items
                 if sync_queue_ids:
-                    self.client.table("sync_queue").delete().eq("product_id", product_id_str).execute()
-                    logger.debug("Cleaned up sync_queue items", product_id=product_id_str, count=len(sync_queue_ids))
+                    self.client.table("sync_queue").delete().eq(
+                        "product_id", product_id_str
+                    ).execute()
+                    logger.debug(
+                        "Cleaned up sync_queue items",
+                        product_id=product_id_str,
+                        count=len(sync_queue_ids),
+                    )
             except Exception as e:
-                logger.warning("Failed to clean up sync_queue/sync_log items", product_id=product_id_str, error=str(e))
-            
+                logger.warning(
+                    "Failed to clean up sync_queue/sync_log items",
+                    product_id=product_id_str,
+                    error=str(e),
+                )
+
             # Step 4: Delete hipoink_products mappings
             try:
-                self.client.table("hipoink_products").delete().eq("product_id", product_id_str).execute()
+                self.client.table("hipoink_products").delete().eq(
+                    "product_id", product_id_str
+                ).execute()
                 logger.debug("Cleaned up hipoink_products mappings", product_id=product_id_str)
             except Exception as e:
-                logger.warning("Failed to clean up hipoink_products mappings", product_id=product_id_str, error=str(e))
-            
+                logger.warning(
+                    "Failed to clean up hipoink_products mappings",
+                    product_id=product_id_str,
+                    error=str(e),
+                )
+
             # Step 5: Delete the product itself
-            result = (
-                self.client.table("products")
-                .delete()
-                .eq("id", product_id_str)
-                .execute()
-            )
-            
+            result = self.client.table("products").delete().eq("id", product_id_str).execute()
+
             # Check if any rows were actually deleted
-            deleted = result.data is not None and len(result.data) > 0 if isinstance(result.data, list) else result.data is not None
-            
+            deleted = (
+                result.data is not None and len(result.data) > 0
+                if isinstance(result.data, list)
+                else result.data is not None
+            )
+
             if deleted:
                 logger.info(
                     "Deleted product from database",
                     product_id=product_id_str,
-                    deleted_count=len(result.data) if isinstance(result.data, list) else 1
+                    deleted_count=len(result.data) if isinstance(result.data, list) else 1,
                 )
                 return True
             else:
                 # No rows deleted - product might not exist or already deleted
                 logger.warning(
                     "No product deleted - product may not exist or already deleted",
-                    product_id=product_id_str
+                    product_id=product_id_str,
                 )
                 return False
         except Exception as e:
@@ -830,8 +828,8 @@ class SupabaseService:
             return False
 
     def get_product_by_barcode(
-        self, barcode: str, store_mapping_id: Optional[UUID] = None
-    ) -> Optional[Product]:
+        self, barcode: str, store_mapping_id: UUID | None = None
+    ) -> Product | None:
         """
         Get product by barcode.
         Optionally filter by store_mapping_id if multiple stores have same barcode.
@@ -856,35 +854,33 @@ class SupabaseService:
                 return Product(**result.data[0])
             return None
         except Exception as e:
-            logger.error(
-                "Failed to get product by barcode", barcode=barcode, error=str(e)
-            )
+            logger.error("Failed to get product by barcode", barcode=barcode, error=str(e))
             return None
 
-    def get_product_by_source_variant_id(
-        self, source_variant_id: str
-    ) -> Optional[Product]:
+    def get_product_by_source_variant_id(self, source_variant_id: str) -> Product | None:
         """
         Get product by source_variant_id (e.g., Square variation ID).
-        
+
         Args:
             source_variant_id: The source system's variant ID
-            
+
         Returns:
             Product if found, None otherwise
         """
         try:
-            query = self.client.table("products").select("*").eq("source_variant_id", source_variant_id)
+            query = (
+                self.client.table("products").select("*").eq("source_variant_id", source_variant_id)
+            )
             result = query.limit(1).execute()
-            
+
             if result.data and len(result.data) > 0:
                 return Product(**result.data[0])
             return None
         except Exception as e:
             logger.error(
-                "Failed to get product by source_variant_id", 
-                source_variant_id=source_variant_id, 
-                error=str(e)
+                "Failed to get product by source_variant_id",
+                source_variant_id=source_variant_id,
+                error=str(e),
             )
             return None
 
@@ -892,7 +888,7 @@ class SupabaseService:
 
     def get_existing_pending_queue_item(
         self, product_id: UUID, store_mapping_id: UUID, operation: str
-    ) -> Optional[SyncQueueItem]:
+    ) -> SyncQueueItem | None:
         """
         Check if a pending queue item already exists for the same product, store, and operation.
 
@@ -928,7 +924,7 @@ class SupabaseService:
 
     def add_to_sync_queue(
         self, product_id: UUID, store_mapping_id: UUID, operation: str
-    ) -> Optional[SyncQueueItem]:
+    ) -> SyncQueueItem | None:
         """
         Add product to sync queue with deduplication.
 
@@ -946,9 +942,7 @@ class SupabaseService:
         """
         try:
             # Check for existing pending queue item
-            existing = self.get_existing_pending_queue_item(
-                product_id, store_mapping_id, operation
-            )
+            existing = self.get_existing_pending_queue_item(product_id, store_mapping_id, operation)
             if existing:
                 logger.debug(
                     "Skipping duplicate queue item",
@@ -980,7 +974,7 @@ class SupabaseService:
             logger.error("Failed to add to sync queue", error=str(e))
             raise
 
-    def get_pending_sync_queue_items(self, limit: int = 10) -> List[SyncQueueItem]:
+    def get_pending_sync_queue_items(self, limit: int = 10) -> list[SyncQueueItem]:
         """
         Get pending items from sync queue.
 
@@ -1009,13 +1003,13 @@ class SupabaseService:
         self,
         queue_item_id: UUID,
         status: str,
-        error_message: Optional[str] = None,
-        error_details: Optional[Dict[str, Any]] = None,
-        retry_count: Optional[int] = None,
-    ) -> Optional[SyncQueueItem]:
+        error_message: str | None = None,
+        error_details: dict[str, Any] | None = None,
+        retry_count: int | None = None,
+    ) -> SyncQueueItem | None:
         """Update sync queue item status."""
         try:
-            update_data: Dict[str, Any] = {"status": status}
+            update_data: dict[str, Any] = {"status": status}
 
             if error_message:
                 update_data["error_message"] = error_message
@@ -1068,9 +1062,7 @@ class SupabaseService:
 
     # Hipoink Products
 
-    def create_or_update_hipoink_product(
-        self, hipoink_product: HipoinkProduct
-    ) -> HipoinkProduct:
+    def create_or_update_hipoink_product(self, hipoink_product: HipoinkProduct) -> HipoinkProduct:
         """Create or update Hipoink product mapping."""
         try:
             # Check if mapping exists
@@ -1084,16 +1076,12 @@ class SupabaseService:
 
             if result.data and len(result.data) > 0:
                 # Update existing
-                update_data = hipoink_product.dict(
-                    exclude_none=True, exclude={"id", "created_at"}
-                )
+                update_data = hipoink_product.dict(exclude_none=True, exclude={"id", "created_at"})
                 # Convert UUIDs to strings
                 if update_data.get("product_id"):
                     update_data["product_id"] = str(update_data["product_id"])
                 if update_data.get("store_mapping_id"):
-                    update_data["store_mapping_id"] = str(
-                        update_data["store_mapping_id"]
-                    )
+                    update_data["store_mapping_id"] = str(update_data["store_mapping_id"])
 
                 result = (
                     self.client.table("hipoink_products")
@@ -1111,13 +1099,9 @@ class SupabaseService:
                 if insert_data.get("product_id"):
                     insert_data["product_id"] = str(insert_data["product_id"])
                 if insert_data.get("store_mapping_id"):
-                    insert_data["store_mapping_id"] = str(
-                        insert_data["store_mapping_id"]
-                    )
+                    insert_data["store_mapping_id"] = str(insert_data["store_mapping_id"])
 
-                result = (
-                    self.client.table("hipoink_products").insert(insert_data).execute()
-                )
+                result = self.client.table("hipoink_products").insert(insert_data).execute()
 
                 if result.data:
                     return HipoinkProduct(**result.data[0])
@@ -1129,7 +1113,7 @@ class SupabaseService:
 
     def get_hipoink_product_by_product_id(
         self, product_id: UUID, store_mapping_id: UUID
-    ) -> Optional[HipoinkProduct]:
+    ) -> HipoinkProduct | None:
         """Get Hipoink product mapping by product ID and store mapping."""
         try:
             result = (
@@ -1157,16 +1141,14 @@ class SupabaseService:
             logger.error("Failed to get Hipoink product", error=err_str)
             return None
 
-    def delete_hipoink_product_mapping(
-        self, product_id: str, store_mapping_id: str
-    ) -> bool:
+    def delete_hipoink_product_mapping(self, product_id: str, store_mapping_id: str) -> bool:
         """
         Delete a Hipoink product mapping record.
-        
+
         Args:
             product_id: The product UUID
             store_mapping_id: The store mapping UUID
-            
+
         Returns:
             True if deleted, False if not found
         """
@@ -1178,7 +1160,7 @@ class SupabaseService:
                 .eq("store_mapping_id", str(store_mapping_id))
                 .execute()
             )
-            
+
             deleted_count = len(response.data) if response.data else 0
             logger.info(
                 "Deleted Hipoink product mapping",
@@ -1187,7 +1169,7 @@ class SupabaseService:
                 deleted_count=deleted_count,
             )
             return deleted_count > 0
-            
+
         except Exception as e:
             logger.error(
                 "Failed to delete Hipoink product mapping",
@@ -1223,11 +1205,7 @@ class SupabaseService:
                     if isinstance(insert_data[field], datetime):
                         insert_data[field] = insert_data[field].isoformat()
 
-            result = (
-                self.client.table("price_adjustment_schedules")
-                .insert(insert_data)
-                .execute()
-            )
+            result = self.client.table("price_adjustment_schedules").insert(insert_data).execute()
 
             if result.data:
                 return PriceAdjustmentSchedule(**result.data[0])
@@ -1236,9 +1214,7 @@ class SupabaseService:
             logger.error("Failed to create price adjustment schedule", error=str(e))
             raise
 
-    def get_price_adjustment_schedule(
-        self, schedule_id: UUID
-    ) -> Optional[PriceAdjustmentSchedule]:
+    def get_price_adjustment_schedule(self, schedule_id: UUID) -> PriceAdjustmentSchedule | None:
         """Get price adjustment schedule by ID."""
         try:
             result = (
@@ -1260,7 +1236,7 @@ class SupabaseService:
 
     def get_active_price_adjustment_schedules(
         self, limit: int = 100
-    ) -> List[PriceAdjustmentSchedule]:
+    ) -> list[PriceAdjustmentSchedule]:
         """Get all active price adjustment schedules."""
         try:
             result = (
@@ -1274,14 +1250,12 @@ class SupabaseService:
 
             return [PriceAdjustmentSchedule(**item) for item in result.data]
         except Exception as e:
-            logger.error(
-                "Failed to get active price adjustment schedules", error=str(e)
-            )
+            logger.error("Failed to get active price adjustment schedules", error=str(e))
             return []
 
     def get_schedules_due_for_trigger(
         self, current_time: datetime
-    ) -> List[PriceAdjustmentSchedule]:
+    ) -> list[PriceAdjustmentSchedule]:
         """
         Get schedules that are due to be triggered.
         Returns schedules where next_trigger_at <= current_time and is_active=True.
@@ -1295,25 +1269,28 @@ class SupabaseService:
                 .order("next_trigger_at", desc=False)
                 .execute()
             )
-            
+
             schedules = [PriceAdjustmentSchedule(**item) for item in result.data]
-            
+
             if schedules:
                 logger.info(
                     "Found schedules due for trigger",
                     count=len(schedules),
                     schedule_ids=[str(s.id) for s in schedules],
-                    next_trigger_times=[s.next_trigger_at.isoformat() if s.next_trigger_at else None for s in schedules],
+                    next_trigger_times=[
+                        s.next_trigger_at.isoformat() if s.next_trigger_at else None
+                        for s in schedules
+                    ],
                 )
-            
+
             return schedules
         except Exception as e:
             logger.error("Failed to get schedules due for trigger", error=str(e))
             return []
 
     def update_price_adjustment_schedule(
-        self, schedule_id: UUID, update_data: Dict[str, Any]
-    ) -> Optional[PriceAdjustmentSchedule]:
+        self, schedule_id: UUID, update_data: dict[str, Any]
+    ) -> PriceAdjustmentSchedule | None:
         """Update a price adjustment schedule."""
         try:
             # Convert UUIDs to strings if present

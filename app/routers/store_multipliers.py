@@ -3,10 +3,11 @@ API router for store-wide price multipliers.
 Allows applying percentage multipliers to all products in a store.
 """
 
-from fastapi import APIRouter, HTTPException, status, Query
-from typing import List, Optional, Dict, Any
+from typing import Any
 from uuid import UUID
+
 import structlog
+from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
 from app.models.database import StoreMultiplier
@@ -27,12 +28,12 @@ class CreateStoreMultiplierRequest(BaseModel):
         ...,
         description="Percentage multiplier (e.g., 10.0 for 10% increase, -5.0 for 5% decrease)",
     )
-    name: Optional[str] = Field(None, description="Optional name/description")
-    product_selection: Optional[Dict[str, Any]] = Field(
+    name: str | None = Field(None, description="Optional name/description")
+    product_selection: dict[str, Any] | None = Field(
         None,
         description="Filter criteria for products (e.g., {'source_system': 'shopify'})",
     )
-    formula: Optional[str] = Field(
+    formula: str | None = Field(
         None,
         description="Custom formula for price modification (defaults to: price * (1 + multiplier_percentage / 100))",
     )
@@ -45,13 +46,13 @@ class StoreMultiplierResponse(BaseModel):
     id: UUID
     store_mapping_id: UUID
     multiplier_percentage: float
-    name: Optional[str] = None
-    product_selection: Optional[Dict[str, Any]] = None
-    formula: Optional[str] = None
+    name: str | None = None
+    product_selection: dict[str, Any] | None = None
+    formula: str | None = None
     is_active: bool
-    metadata: Optional[Dict[str, Any]] = None
-    created_at: Optional[str] = None
-    updated_at: Optional[str] = None
+    metadata: dict[str, Any] | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
 
 
 @router.post(
@@ -68,9 +69,7 @@ async def create_store_multiplier(request: CreateStoreMultiplierRequest):
     """
     try:
         # Validate store mapping exists
-        store_mapping = supabase_service.get_store_mapping_by_id(
-            request.store_mapping_id
-        )
+        store_mapping = supabase_service.get_store_mapping_by_id(request.store_mapping_id)
         if not store_mapping:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -121,15 +120,13 @@ async def create_store_multiplier(request: CreateStoreMultiplierRequest):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to create store multiplier: {str(e)}",
-        )
+        ) from e
 
 
-@router.get("/", response_model=List[StoreMultiplierResponse])
+@router.get("/", response_model=list[StoreMultiplierResponse])
 async def list_store_multipliers(
-    store_mapping_id: Optional[UUID] = Query(
-        None, description="Filter by store mapping ID"
-    ),
-    is_active: Optional[bool] = Query(None, description="Filter by active status"),
+    store_mapping_id: UUID | None = Query(None, description="Filter by store mapping ID"),
+    is_active: bool | None = Query(None, description="Filter by active status"),
 ):
     """List store multipliers, optionally filtered by store mapping and active status."""
     try:
@@ -158,7 +155,7 @@ async def list_store_multipliers(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to list store multipliers: {str(e)}",
-        )
+        ) from e
 
 
 @router.get("/{multiplier_id}", response_model=StoreMultiplierResponse)
@@ -186,9 +183,7 @@ async def get_store_multiplier(multiplier_id: UUID):
 
 
 @router.put("/{multiplier_id}", response_model=StoreMultiplierResponse)
-async def update_store_multiplier(
-    multiplier_id: UUID, request: CreateStoreMultiplierRequest
-):
+async def update_store_multiplier(multiplier_id: UUID, request: CreateStoreMultiplierRequest):
     """Update a store multiplier."""
     try:
         # Check if exists
@@ -200,9 +195,7 @@ async def update_store_multiplier(
             )
 
         # Validate store mapping exists
-        store_mapping = supabase_service.get_store_mapping_by_id(
-            request.store_mapping_id
-        )
+        store_mapping = supabase_service.get_store_mapping_by_id(request.store_mapping_id)
         if not store_mapping:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -215,7 +208,7 @@ async def update_store_multiplier(
             formula = "price * (1 + multiplier_percentage / 100)"
 
         # Prepare update data
-        update_data: Dict[str, Any] = {
+        update_data: dict[str, Any] = {
             "store_mapping_id": str(request.store_mapping_id),
             "multiplier_percentage": request.multiplier_percentage,
             "name": request.name,
@@ -254,7 +247,7 @@ async def update_store_multiplier(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to update store multiplier: {str(e)}",
-        )
+        ) from e
 
 
 @router.delete("/{multiplier_id}", status_code=status.HTTP_204_NO_CONTENT)

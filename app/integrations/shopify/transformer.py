@@ -4,14 +4,16 @@ Transforms Shopify product data into normalized format for Hipoink ESL API.
 Each Shopify variant becomes a separate Hipoink product.
 """
 
-from typing import List, Dict, Any, Optional, Tuple
+from typing import Any
+
+import structlog
+
+from app.integrations.base import NormalizedProduct
 from app.integrations.shopify.models import (
     ProductCreateWebhook,
     ProductUpdateWebhook,
     ShopifyVariant,
 )
-from app.integrations.base import NormalizedProduct
-import structlog
 
 logger = structlog.get_logger()
 
@@ -28,7 +30,7 @@ class ShopifyTransformer:
     @staticmethod
     def extract_variants_from_product(
         product: ProductCreateWebhook | ProductUpdateWebhook,
-    ) -> List[NormalizedProduct]:
+    ) -> list[NormalizedProduct]:
         """
         Extract and normalize variants from Shopify product.
         Each variant becomes a separate normalized product.
@@ -55,9 +57,7 @@ class ShopifyTransformer:
                 "sku": None,
                 "barcode": None,
             }
-            normalized_products.append(
-                ShopifyTransformer._normalize_variant(product, variant_data)
-            )
+            normalized_products.append(ShopifyTransformer._normalize_variant(product, variant_data))
             return normalized_products
 
         # Process each variant as a separate product
@@ -80,7 +80,7 @@ class ShopifyTransformer:
     @staticmethod
     def _normalize_variant(
         product: ProductCreateWebhook | ProductUpdateWebhook,
-        variant: ShopifyVariant | Dict[str, Any],
+        variant: ShopifyVariant | dict[str, Any],
     ) -> NormalizedProduct:
         """
         Normalize a single Shopify variant to Hipoink-compatible format.
@@ -127,9 +127,7 @@ class ShopifyTransformer:
 
         # Extract price (remove currency symbol if present, convert to float)
         try:
-            price_value = float(
-                str(variant_price).replace("$", "").replace(",", "").strip()
-            )
+            price_value = float(str(variant_price).replace("$", "").replace(",", "").strip())
         except (ValueError, AttributeError):
             logger.warning(
                 "Invalid price format, defaulting to 0.00",
@@ -157,7 +155,7 @@ class ShopifyTransformer:
     @staticmethod
     def validate_normalized_product(
         product: NormalizedProduct,
-    ) -> Tuple[bool, List[str]]:
+    ) -> tuple[bool, list[str]]:
         """
         Validate normalized product data before syncing to Hipoink.
 
@@ -189,7 +187,7 @@ class ShopifyTransformer:
         return len(errors) == 0, errors
 
     @staticmethod
-    def extract_store_domain_from_webhook(headers: Dict[str, str]) -> Optional[str]:
+    def extract_store_domain_from_webhook(headers: dict[str, str]) -> str | None:
         """
         Extract Shopify store domain from webhook headers.
 
@@ -200,14 +198,10 @@ class ShopifyTransformer:
             Store domain if found, None otherwise
         """
         # Shopify typically includes store domain in X-Shopify-Shop-Domain header
-        shop_domain = headers.get("X-Shopify-Shop-Domain") or headers.get(
-            "x-shopify-shop-domain"
-        )
+        shop_domain = headers.get("X-Shopify-Shop-Domain") or headers.get("x-shopify-shop-domain")
 
         if shop_domain:
             # Remove protocol if present
-            shop_domain = (
-                shop_domain.replace("https://", "").replace("http://", "").strip()
-            )
+            shop_domain = shop_domain.replace("https://", "").replace("http://", "").strip()
 
         return shop_domain

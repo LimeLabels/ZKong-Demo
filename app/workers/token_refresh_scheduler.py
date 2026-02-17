@@ -4,13 +4,13 @@ Runs daily to check and refresh expiring tokens.
 """
 
 import asyncio
-import structlog
-from typing import List
 
-from app.services.supabase_service import SupabaseService
-from app.integrations.square.token_refresh import SquareTokenRefreshService
+import structlog
+
 from app.integrations.clover.token_refresh import CloverTokenRefreshService
+from app.integrations.square.token_refresh import SquareTokenRefreshService
 from app.models.database import StoreMapping
+from app.services.supabase_service import SupabaseService
 
 logger = structlog.get_logger()
 
@@ -37,9 +37,7 @@ class SquareTokenRefreshScheduler:
             try:
                 await self.check_and_refresh_tokens()
             except Exception as e:
-                logger.error(
-                    "Error in token refresh scheduler loop", error=str(e)
-                )
+                logger.error("Error in token refresh scheduler loop", error=str(e))
 
             # Wait before next check (24 hours)
             await asyncio.sleep(self.check_interval_hours * 3600)
@@ -83,9 +81,7 @@ class SquareTokenRefreshScheduler:
                         store_mapping_id=str(store_mapping.id),
                         merchant_id=store_mapping.source_store_id,
                     )
-                    success, _ = await self.square_refresh.refresh_token_and_update(
-                        store_mapping
-                    )
+                    success, _ = await self.square_refresh.refresh_token_and_update(store_mapping)
                     if success:
                         refreshed_count += 1
                     else:
@@ -131,9 +127,7 @@ class SquareTokenRefreshScheduler:
                         store_mapping_id=str(store_mapping.id),
                         merchant_id=store_mapping.source_store_id,
                     )
-                    success, _ = await self.clover_refresh.refresh_token_and_update(
-                        store_mapping
-                    )
+                    success, _ = await self.clover_refresh.refresh_token_and_update(store_mapping)
                     if success:
                         refreshed_count += 1
                     else:
@@ -156,7 +150,7 @@ class SquareTokenRefreshScheduler:
             skipped=skipped_count,
         )
 
-    def _get_clover_store_mappings(self) -> List[StoreMapping]:
+    def _get_clover_store_mappings(self) -> list[StoreMapping]:
         """Get active Clover store mappings that have a refresh token."""
         try:
             response = (
@@ -190,7 +184,7 @@ class SquareTokenRefreshScheduler:
         exp = store_mapping.metadata.get("clover_access_token_expiration")
         return self.clover_refresh.is_token_expiring_soon(exp)
 
-    def _get_square_store_mappings(self) -> List[StoreMapping]:
+    def _get_square_store_mappings(self) -> list[StoreMapping]:
         """
         Get all active Square store mappings.
 
@@ -212,9 +206,8 @@ class SquareTokenRefreshScheduler:
                 try:
                     store_mapping = StoreMapping(**row)
                     # Only include mappings that have Square tokens
-                    if (
-                        store_mapping.metadata
-                        and store_mapping.metadata.get("square_refresh_token")
+                    if store_mapping.metadata and store_mapping.metadata.get(
+                        "square_refresh_token"
                     ):
                         store_mappings.append(store_mapping)
                 except Exception as e:
@@ -247,8 +240,6 @@ async def run_token_refresh_scheduler():
     try:
         await scheduler.start()
     except KeyboardInterrupt:
-        logger.info(
-            "Received interrupt signal, shutting down token refresh scheduler"
-        )
+        logger.info("Received interrupt signal, shutting down token refresh scheduler")
     finally:
         await scheduler.stop()

@@ -3,8 +3,9 @@ Utility module for calculating all price events from a price adjustment schedule
 This module calculates all future price change events that need to be pre-scheduled in NCR.
 """
 
-from typing import List, Dict, Any, Optional
-from datetime import datetime, timedelta, time
+from datetime import datetime, time, timedelta
+from typing import Any
+
 import pytz
 import structlog
 
@@ -16,7 +17,7 @@ logger = structlog.get_logger()
 class PriceEvent:
     """
     Represents a single price change event that needs to be scheduled.
-    
+
     Attributes:
         item_code: Product item code (barcode)
         price: Price to set
@@ -24,22 +25,22 @@ class PriceEvent:
         event_type: Type of event ('apply_promotion' or 'restore_original')
         schedule_id: ID of the schedule this event belongs to
     """
-    
+
     def __init__(
         self,
         item_code: str,
         price: float,
         effective_date: datetime,
         event_type: str,
-        schedule_id: Optional[str] = None,
+        schedule_id: str | None = None,
     ):
         self.item_code = item_code
         self.price = price
         self.effective_date = effective_date
         self.event_type = event_type
         self.schedule_id = schedule_id
-    
-    def to_dict(self) -> Dict[str, Any]:
+
+    def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for storage in metadata."""
         return {
             "item_code": self.item_code,
@@ -53,10 +54,10 @@ class PriceEvent:
 def calculate_all_price_events(
     schedule: PriceAdjustmentSchedule,
     store_timezone: pytz.BaseTzInfo,
-) -> List[PriceEvent]:
+) -> list[PriceEvent]:
     """
     Calculate all price change events for a schedule.
-    
+
     This function generates all price change events that need to be pre-scheduled
     in NCR using effectiveDate. It handles:
     - Daily repeats
@@ -64,16 +65,16 @@ def calculate_all_price_events(
     - No repeat (single occurrence)
     - Multiple time slots per day
     - Start and end of each time slot
-    
+
     Args:
         schedule: Price adjustment schedule
         store_timezone: Store's timezone for datetime calculations
-        
+
     Returns:
         List of PriceEvent objects representing all price changes
     """
-    events: List[PriceEvent] = []
-    
+    events: list[PriceEvent] = []
+
     # Get products from schedule
     products_data = schedule.products.get("products", [])
     if not products_data:
@@ -82,43 +83,43 @@ def calculate_all_price_events(
             schedule_id=str(schedule.id),
         )
         return events
-    
+
     # Ensure schedule dates are timezone-aware
     start_date = schedule.start_date
     if start_date.tzinfo is None:
         start_date = store_timezone.localize(start_date)
     else:
         start_date = start_date.astimezone(store_timezone)
-    
+
     end_date = schedule.end_date
     if end_date is not None:
         if end_date.tzinfo is None:
             end_date = store_timezone.localize(end_date)
         else:
             end_date = end_date.astimezone(store_timezone)
-    
+
     # For daily/weekly repeats, if end_date is same as start_date, treat as no end
     effective_end_date = end_date
     if schedule.repeat_type in ["daily", "weekly", "monthly"]:
         if end_date and abs((end_date - start_date).total_seconds()) < 60:
             effective_end_date = None
-    
+
     # Calculate dates to process
     dates_to_process = _calculate_dates_to_process(
         schedule, start_date, effective_end_date, store_timezone
     )
-    
+
     # Process each date
     for date_obj in dates_to_process:
         # Process each time slot for this date
         for time_slot in schedule.time_slots:
             start_time_str = time_slot["start_time"]
             end_time_str = time_slot["end_time"]
-            
+
             # Parse time strings (HH:MM format)
             start_hour, start_minute = map(int, start_time_str.split(":"))
             end_hour, end_minute = map(int, end_time_str.split(":"))
-            
+
             # Create datetime objects for start and end of slot
             slot_start = store_timezone.localize(
                 datetime.combine(
@@ -126,14 +127,14 @@ def calculate_all_price_events(
                     time(hour=start_hour, minute=start_minute, second=0, microsecond=0),
                 )
             )
-            
+
             slot_end = store_timezone.localize(
                 datetime.combine(
                     date_obj,
                     time(hour=end_hour, minute=end_minute, second=0, microsecond=0),
                 )
             )
-            
+
             # Skip if slot_end is before slot_start (shouldn't happen, but safety check)
             if slot_end <= slot_start:
                 logger.warning(
@@ -143,13 +144,13 @@ def calculate_all_price_events(
                     end_time=end_time_str,
                 )
                 continue
-            
+
             # Process each product
             for product_data in products_data:
                 item_code = product_data["pc"]
                 original_price = product_data.get("original_price")
                 promotional_price_str = product_data.get("pp", "0")
-                
+
                 # Calculate promotional price
                 if schedule.multiplier_percentage is not None:
                     # Use multiplier if provided
@@ -163,12 +164,12 @@ def calculate_all_price_events(
                 else:
                     # Use provided price
                     promotional_price = float(promotional_price_str)
-                
+
                 # Ensure we have original_price
                 if original_price is None:
                     # Try to get from provided price (assume it's the original)
                     original_price = float(promotional_price_str)
-                
+
                 # Event 1: Apply promotional price at start of slot
                 events.append(
                     PriceEvent(
@@ -179,7 +180,7 @@ def calculate_all_price_events(
                         schedule_id=str(schedule.id) if schedule.id else None,
                     )
                 )
-                
+
                 # Event 2: Restore original price at end of slot
                 events.append(
                     PriceEvent(
@@ -190,45 +191,45 @@ def calculate_all_price_events(
                         schedule_id=str(schedule.id) if schedule.id else None,
                     )
                 )
-    
+
     # Sort events by effective_date
     events.sort(key=lambda e: e.effective_date)
-    
+
     logger.info(
         "Calculated price events for schedule",
         schedule_id=str(schedule.id),
         event_count=len(events),
         date_range=f"{start_date.date()} to {effective_end_date.date() if effective_end_date else 'indefinite'}",
     )
-    
+
     return events
 
 
 def _calculate_dates_to_process(
     schedule: PriceAdjustmentSchedule,
     start_date: datetime,
-    end_date: Optional[datetime],
+    end_date: datetime | None,
     store_timezone: pytz.BaseTzInfo,
-) -> List[datetime.date]:
+) -> list[datetime.date]:
     """
     Calculate which dates need to be processed based on repeat type.
-    
+
     Args:
         schedule: Price adjustment schedule
         start_date: Start date (timezone-aware)
         end_date: End date (timezone-aware, or None)
         store_timezone: Store's timezone
-        
+
     Returns:
         List of date objects to process
     """
-    dates: List[datetime.date] = []
+    dates: list[datetime.date] = []
     current_date = start_date.date()
-    
+
     # Get current time in store timezone for filtering past dates
     now = datetime.now(store_timezone)
     current_time_date = now.date()
-    
+
     if schedule.repeat_type == "none":
         # No repeat - just the start date (or dates within start/end range)
         if end_date:
@@ -240,7 +241,7 @@ def _calculate_dates_to_process(
         else:
             # Just the start date
             dates.append(current_date)
-    
+
     elif schedule.repeat_type == "daily":
         # Daily repeat - process all dates from start to end (or up to a reasonable limit)
         if end_date:
@@ -256,7 +257,7 @@ def _calculate_dates_to_process(
             while date <= max_date:
                 dates.append(date)
                 date += timedelta(days=1)
-    
+
     elif schedule.repeat_type == "weekly":
         # Weekly repeat - process dates on trigger_days only
         if not schedule.trigger_days:
@@ -265,10 +266,10 @@ def _calculate_dates_to_process(
                 schedule_id=str(schedule.id),
             )
             return dates
-        
+
         # Convert trigger_days to weekday numbers (0=Monday, 6=Sunday)
         trigger_weekdays = [int(d) - 1 for d in schedule.trigger_days]  # Convert 1-7 to 0-6
-        
+
         if end_date:
             date = current_date
             while date <= end_date.date():
@@ -285,7 +286,7 @@ def _calculate_dates_to_process(
                 if weekday in trigger_weekdays:
                     dates.append(date)
                 date += timedelta(days=1)
-    
+
     elif schedule.repeat_type == "monthly":
         # Monthly repeat - process same day of month each month
         if end_date:
@@ -305,9 +306,8 @@ def _calculate_dates_to_process(
                     date = date.replace(year=date.year + 1, month=1)
                 else:
                     date = date.replace(month=date.month + 1)
-    
+
     # Filter out past dates (only keep future dates)
     dates = [d for d in dates if d >= current_time_date]
-    
-    return dates
 
+    return dates

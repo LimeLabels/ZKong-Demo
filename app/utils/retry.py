@@ -3,16 +3,18 @@ Retry utility functions with exponential backoff.
 Categorizes errors as transient (retryable) or permanent (non-retryable).
 """
 
-from typing import Callable, TypeVar
-from tenacity import (
-    retry,
-    stop_after_attempt,
-    wait_exponential,
-    retry_if_exception_type,
-    RetryCallState,
-)
+from collections.abc import Callable
+from typing import TypeVar
+
 import httpx
 import structlog
+from tenacity import (
+    RetryCallState,
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
 
 logger = structlog.get_logger()
 
@@ -42,9 +44,7 @@ def is_transient_error(exception: Exception) -> bool:
         True if error is transient (retryable), False otherwise
     """
     # Network/connection errors are transient
-    if isinstance(
-        exception, (httpx.ConnectError, httpx.TimeoutException, httpx.NetworkError)
-    ):
+    if isinstance(exception, (httpx.ConnectError, httpx.TimeoutException, httpx.NetworkError)):
         return True
 
     # HTTP 5xx errors are transient
@@ -101,9 +101,7 @@ def retry_with_backoff(
     def retry_decorator(func: Callable[..., T]) -> Callable[..., T]:
         @retry(
             stop=stop_after_attempt(max_attempts),
-            wait=wait_exponential(
-                multiplier=multiplier, min=initial_delay, max=max_delay
-            ),
+            wait=wait_exponential(multiplier=multiplier, min=initial_delay, max=max_delay),
             retry=retry_if_exception_type(TransientError),
             reraise=True,
             before_sleep=_log_retry_attempt,

@@ -2,8 +2,10 @@
 Structured logging configuration using structlog.
 """
 
-import structlog
 import logging
+
+import structlog
+
 from app.config import settings
 
 

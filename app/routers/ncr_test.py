@@ -3,15 +3,14 @@ NCR POS integration test router.
 Provides endpoints to test NCR API calls against a local demo store.
 """
 
+import structlog
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel
-from typing import Optional
-import structlog
 
 from app.config import settings
-from app.integrations.ncr.api_client import NCRAPIClient
-from app.integrations.ncr.adapter import NCRIntegrationAdapter
 from app.integrations.base import NormalizedProduct
+from app.integrations.ncr.adapter import NCRIntegrationAdapter
+from app.integrations.ncr.api_client import NCRAPIClient
 from app.services.supabase_service import SupabaseService
 
 logger = structlog.get_logger()
@@ -22,43 +21,51 @@ router = APIRouter(prefix="/api/ncr", tags=["NCR Integration"])
 
 class CreateProductRequest(BaseModel):
     """Request model for creating a product."""
+
     item_code: str
     title: str
-    price: Optional[float] = None
-    sku: Optional[str] = None
-    barcode: Optional[str] = None
-    department_id: Optional[str] = None
-    category_id: Optional[str] = None
-    store_mapping_id: Optional[str] = None  # Optional: if provided, will save to Supabase and queue for ESL
+    price: float | None = None
+    sku: str | None = None
+    barcode: str | None = None
+    department_id: str | None = None
+    category_id: str | None = None
+    store_mapping_id: str | None = (
+        None  # Optional: if provided, will save to Supabase and queue for ESL
+    )
 
 
 class CreateProductWithSyncRequest(BaseModel):
     """Request model for creating a product with Supabase/ESL sync."""
+
     item_code: str
     title: str
-    price: Optional[float] = None
-    sku: Optional[str] = None
-    barcode: Optional[str] = None
-    department_id: Optional[str] = None
-    category_id: Optional[str] = None
+    price: float | None = None
+    sku: str | None = None
+    barcode: str | None = None
+    department_id: str | None = None
+    category_id: str | None = None
     store_mapping_id: str  # Required for sync
 
 
 class UpdatePriceRequest(BaseModel):
     """Request model for updating a product price."""
+
     item_code: str
     price: float
     price_code: str = "REGULAR"
     currency: str = "USD"
-    store_mapping_id: Optional[str] = None  # Optional: if provided, will save to Supabase and queue for ESL
+    store_mapping_id: str | None = (
+        None  # Optional: if provided, will save to Supabase and queue for ESL
+    )
 
 
 class DeleteProductRequest(BaseModel):
     """Request model for deleting a product."""
+
     item_code: str
-    department_id: Optional[str] = None
-    category_id: Optional[str] = None
-    store_mapping_id: Optional[str] = None  # Optional: if provided, will sync to database and ESL
+    department_id: str | None = None
+    category_id: str | None = None
+    store_mapping_id: str | None = None  # Optional: if provided, will sync to database and ESL
 
 
 @router.get("/config")
@@ -79,11 +86,11 @@ async def get_ncr_config():
 async def test_create_product(request: CreateProductRequest):
     """
     Test creating a product in NCR.
-    
+
     If store_mapping_id is provided, the product will also be:
     - Normalized and saved to Supabase
     - Queued for ESL (Hipoink) sync
-    
+
     This endpoint calls the NCR API to create a product.
     """
     logger.info(
@@ -103,7 +110,7 @@ async def test_create_product(request: CreateProductRequest):
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail=f"Store mapping {request.store_mapping_id} not found",
                 )
-            
+
             # Create normalized product
             normalized_product = NormalizedProduct(
                 source_id=request.item_code,
@@ -113,7 +120,7 @@ async def test_create_product(request: CreateProductRequest):
                 price=request.price or 0.0,
                 currency="USD",
             )
-            
+
             # Use adapter to create product (includes NCR API + Supabase + ESL queue)
             adapter = NCRIntegrationAdapter()
             result = await adapter.create_product(
@@ -123,7 +130,7 @@ async def test_create_product(request: CreateProductRequest):
                     "metadata": store_mapping.metadata or {},
                 },
             )
-            
+
             logger.info("NCR create product with sync successful", result=result)
             return {
                 "status": "success",
@@ -137,8 +144,8 @@ async def test_create_product(request: CreateProductRequest):
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"Failed to create product: {str(e)}",
-            )
-    
+            ) from e
+
     # Otherwise, just create in NCR directly (no Supabase/ESL sync)
     api_client = NCRAPIClient(
         base_url=settings.ncr_api_base_url,
@@ -172,7 +179,7 @@ async def test_create_product(request: CreateProductRequest):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to create product: {str(e)}",
-        )
+        ) from e
     finally:
         await api_client.close()
 
@@ -181,11 +188,11 @@ async def test_create_product(request: CreateProductRequest):
 async def test_update_price(request: UpdatePriceRequest):
     """
     Test updating a product price in NCR.
-    
+
     If store_mapping_id is provided, the price update will also:
     - Update the product in Supabase database
     - Queue for ESL (Hipoink) sync
-    
+
     This endpoint calls the NCR API to update a product's price.
     """
     logger.info(
@@ -205,7 +212,7 @@ async def test_update_price(request: UpdatePriceRequest):
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail=f"Store mapping {request.store_mapping_id} not found",
                 )
-            
+
             # Use adapter to update price (includes NCR API + Supabase + ESL queue)
             adapter = NCRIntegrationAdapter()
             result = await adapter.update_price(
@@ -216,7 +223,7 @@ async def test_update_price(request: UpdatePriceRequest):
                     "metadata": store_mapping.metadata or {},
                 },
             )
-            
+
             logger.info("NCR update price with sync successful", result=result)
             return {
                 "status": "success",
@@ -230,8 +237,8 @@ async def test_update_price(request: UpdatePriceRequest):
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"Failed to update price: {str(e)}",
-            )
-    
+            ) from e
+
     # Otherwise, just update price in NCR directly (no Supabase/ESL sync)
     if not settings.ncr_enterprise_unit:
         raise HTTPException(
@@ -268,7 +275,7 @@ async def test_update_price(request: UpdatePriceRequest):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to update price: {str(e)}",
-        )
+        ) from e
     finally:
         await api_client.close()
 
@@ -277,11 +284,11 @@ async def test_update_price(request: UpdatePriceRequest):
 async def test_delete_product(request: DeleteProductRequest):
     """
     Test deleting a product in NCR (sets status to INACTIVE).
-    
+
     If store_mapping_id is provided, the deletion will also:
     - Queue product deletion in Supabase database
     - Queue for ESL (Hipoink) sync
-    
+
     This endpoint calls the NCR API to mark a product as INACTIVE.
     """
     logger.info(
@@ -300,7 +307,7 @@ async def test_delete_product(request: DeleteProductRequest):
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail=f"Store mapping {request.store_mapping_id} not found",
                 )
-            
+
             # Use adapter to delete product (includes NCR API + Supabase + ESL queue)
             adapter = NCRIntegrationAdapter()
             result = await adapter.delete_product(
@@ -310,7 +317,7 @@ async def test_delete_product(request: DeleteProductRequest):
                     "metadata": store_mapping.metadata or {},
                 },
             )
-            
+
             logger.info("NCR delete product with sync successful", result=result)
             return {
                 "status": "success",
@@ -324,8 +331,8 @@ async def test_delete_product(request: DeleteProductRequest):
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"Failed to delete product: {str(e)}",
-            )
-    
+            ) from e
+
     # Otherwise, just delete in NCR directly (no Supabase/ESL sync)
     api_client = NCRAPIClient(
         base_url=settings.ncr_api_base_url,
@@ -355,7 +362,7 @@ async def test_delete_product(request: DeleteProductRequest):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to delete product: {str(e)}",
-        )
+        ) from e
     finally:
         await api_client.close()
 
@@ -364,7 +371,7 @@ async def test_delete_product(request: DeleteProductRequest):
 async def test_ncr_health():
     """
     Test connectivity to the NCR API.
-    
+
     Makes a simple GET request to check if the NCR API is reachable.
     """
     import httpx
@@ -375,7 +382,7 @@ async def test_ncr_health():
         async with httpx.AsyncClient(timeout=10.0) as client:
             # Try to hit the base URL or a health endpoint
             response = await client.get(settings.ncr_api_base_url)
-            
+
             return {
                 "status": "success",
                 "message": "NCR API is reachable",
@@ -398,4 +405,3 @@ async def test_ncr_health():
             "message": f"Health check failed: {str(e)}",
             "base_url": settings.ncr_api_base_url,
         }
-

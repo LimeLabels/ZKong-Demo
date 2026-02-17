@@ -2,27 +2,30 @@
 Pydantic models for NCR PRO catalog API requests and responses.
 """
 
-from pydantic import BaseModel, Field
-from typing import Optional, List, Dict, Any
 from datetime import datetime
+from typing import Any
+
+from pydantic import BaseModel, Field
 
 
 class LocalizedTextData(BaseModel):
     """Localized text data."""
+
     locale: str
     value: str
 
 
 class MultiLanguageTextData(BaseModel):
     """Multi-language text data."""
-    values: List[LocalizedTextData]
-    
+
+    values: list[LocalizedTextData]
+
     @classmethod
     def from_single_text(cls, text: str, locale: str = "en-US") -> "MultiLanguageTextData":
         """Create MultiLanguageTextData from a single text string."""
         return cls(values=[LocalizedTextData(locale=locale, value=text)])
-    
-    def get_text(self, locale: str = "en-US") -> Optional[str]:
+
+    def get_text(self, locale: str = "en-US") -> str | None:
         """Get text for a specific locale."""
         for val in self.values:
             if val.locale == locale:
@@ -33,29 +36,34 @@ class MultiLanguageTextData(BaseModel):
 
 class NodeIdData(BaseModel):
     """Category node identifier."""
+
     nodeId: str
 
 
 class ItemIdData(BaseModel):
     """Item identifier."""
+
     itemCode: str
 
 
 class ItemPriceIdData(BaseModel):
     """Item price identifier."""
+
     itemCode: str
     priceCode: str
-    enterpriseUnitId: Optional[str] = None
+    enterpriseUnitId: str | None = None
 
 
 class SourceSystemData(BaseModel):
     """Source system information."""
-    sourceSystemId: Optional[str] = None
-    sourceSystemName: Optional[str] = None
+
+    sourceSystemId: str | None = None
+    sourceSystemName: str | None = None
 
 
 class ItemWriteData(BaseModel):
     """Data model for creating/updating an item."""
+
     version: int = Field(default_factory=lambda: int(datetime.now().timestamp() * 1000))
     itemId: ItemIdData
     departmentId: str
@@ -63,28 +71,30 @@ class ItemWriteData(BaseModel):
     nonMerchandise: bool = False
     shortDescription: MultiLanguageTextData
     status: str = "ACTIVE"  # ACTIVE, INACTIVE, DISCONTINUED, SEASONAL, TO_DISCONTINUE, UNAUTHORIZED
-    
+
     # Optional fields
-    longDescription: Optional[MultiLanguageTextData] = None
-    sku: Optional[str] = None
-    posNumber: Optional[str] = None
-    referenceId: Optional[str] = None
-    familyCode: Optional[str] = None
-    manufacturerCode: Optional[str] = None
-    sourceSystem: Optional[SourceSystemData] = None
-    packageIdentifiers: Optional[List[Dict[str, Any]]] = None
-    
+    longDescription: MultiLanguageTextData | None = None
+    sku: str | None = None
+    posNumber: str | None = None
+    referenceId: str | None = None
+    familyCode: str | None = None
+    manufacturerCode: str | None = None
+    sourceSystem: SourceSystemData | None = None
+    packageIdentifiers: list[dict[str, Any]] | None = None
+
     class Config:
         populate_by_name = True
 
 
 class SaveMultipleItemsRequest(BaseModel):
     """Request model for batch item creation/update."""
-    items: List[ItemWriteData]
+
+    items: list[ItemWriteData]
 
 
 class ItemPriceWriteData(BaseModel):
     """Data model for creating/updating an item price."""
+
     version: int = Field(default_factory=lambda: int(datetime.now().timestamp() * 1000))
     priceId: ItemPriceIdData
     price: float
@@ -92,15 +102,15 @@ class ItemPriceWriteData(BaseModel):
     effectiveDate: str = Field(default_factory=lambda: datetime.now().isoformat())
     promotionPriceType: str = "NON_CARD_PRICE"  # NON_CARD_PRICE or CARD_PRICE
     status: str = "ACTIVE"  # ACTIVE, INACTIVE, DISCONTINUED, etc.
-    
+
     # Optional fields
-    endDate: Optional[str] = None
-    basePrice: Optional[bool] = None
-    itemPriceType: Optional[str] = None
-    sourceSystem: Optional[SourceSystemData] = None
+    endDate: str | None = None
+    basePrice: bool | None = None
+    itemPriceType: str | None = None
+    sourceSystem: SourceSystemData | None = None
 
 
 class SaveMultipleItemPricesRequest(BaseModel):
     """Request model for batch price creation/update."""
-    itemPrices: List[ItemPriceWriteData]
 
+    itemPrices: list[ItemPriceWriteData]
