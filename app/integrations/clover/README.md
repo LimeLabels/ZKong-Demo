@@ -1,240 +1,321 @@
 ## Clover Integration
 
-### Overview
+### What Is This?
 
-The Clover integration connects Clover inventory signals (webhooks and polling) to the
-Hipoink ESL middleware. It is responsible for:
+The Clover integration connects **Clover point-of-sale (POS) systems** to the Hipoink ESL
+(Electronic Shelf Label) middleware. Whenever products are created, updated, or deleted in
+Clover, those changes are automatically reflected on your electronic shelf labels — no
+manual work required.
 
-- Verifying Clover webhooks using a static `X-Clover-Auth` code (no body HMAC).
-- Handling Clover webhook notifications for item create/update/delete.
-- Polling the Clover API for incremental changes and ghost‑item cleanup.
-- Updating Supabase `products` and `sync_queue` in a multi‑tenant‑safe way.
-- Updating prices in Clover BOS when time‑based pricing is applied.
+Think of it as a live bridge: anything that changes in Clover’s inventory flows
+automatically to your physical store shelf labels.
 
-All Clover-specific logic is encapsulated in `CloverIntegrationAdapter` and
-`CloverAPIClient`, plus supporting token‑refresh and encryption utilities.
+---
 
-### Data flow
+### What Does It Do?
 
-There are three primary data paths for Clover:
+| Capability | Description |
+| --- | --- |
+| **Webhook handling** | Receives near real-time inventory events from Clover when items change |
+| **Incremental polling** | Periodically checks Clover for any changes it may have missed |
+| **Full sync** | Can pull all products from Clover from scratch when needed |
+| **Price updates** | Applies time-based price changes back into Clover’s Back Office System (BOS) |
+| **Ghost item cleanup** | Detects and removes products that no longer exist in Clover |
+| **Multi-tenant support** | Safely handles multiple merchants/stores without data leaking between them |
 
-1. **Webhook‑driven inventory events (near‑real time).**
-2. **Polling‑based incremental sync (regular worker job).**
-3. **Initial full sync and BOS price updates (via API calls).**
+All of this is implemented strictly through the `products` / `sync_queue` /
+`sync_worker` pipeline. Routers and adapters **never** call the Hipoink ESL API directly.
 
-#### Webhook‑driven events
+---
 
-1. **Webhook ingress**
-   - Clover sends webhook POST requests to:
-     - `POST /webhooks/clover/{event_type}` (generic webhooks router).
+### How Data Flows
 
-2. **Verification phase**
-   - Clover performs a one‑time verification POST that contains only
-     `{"verificationCode": "..."}` and no `merchants` field.
-   - `CloverIntegrationAdapter.handle_webhook(...)` detects this case and responds
-     with `{"verificationCode": ...}` so the Clover Dashboard can validate the URL.
-   - For real events, the router:
-     - Reads `X-Clover-Auth` and passes it as `signature` into
-       `verify_signature(payload, signature, headers)`.
-     - The adapter compares `signature` against `settings.clover_webhook_auth_code`
-       using `secrets.compare_digest`.
+There are three main ways data moves from Clover into the system:
 
-3. **Adapter dispatch and validation**
-   - The generic webhooks router resolves the adapter:
-     - `integration_registry.get_adapter("clover") → CloverIntegrationAdapter`.
-   - `get_supported_events()` currently returns `["inventory"]`.
-   - `handle_webhook(event_type, request, headers, payload)`:
-     - Validates payload structure using `CloverWebhookPayload`.
-     - Iterates over all merchants in the payload.
+#### 1. Webhook-Driven (Real-Time)
 
-4. **Per‑merchant processing**
-   - For each `merchant_id`:
-     - Resolves `StoreMapping` via `SupabaseService.get_store_mapping("clover", merchant_id)`.
-     - Decrypts OAuth tokens using `decrypt_tokens_from_storage(metadata)`.
-     - Ensures a valid access token is present.
-     - For each update record:
-       - If `type == "DELETE"`:
-         - Looks up products in Supabase with `source_system="clover"`,
-           `source_id` matching the item ID, and `source_store_id=merchant_id`.
-         - Queues delete operations in `sync_queue` for ESL removal.
-       - For create/update:
-         - Calls `CloverAPIClient.get_item(merchant_id, item_id)` to fetch full item data.
-         - Uses `CloverTransformer.transform_item(...)` to obtain a `NormalizedProduct`.
-         - Validates with `validate_normalized_product`.
-         - Upserts a `Product` row with:
-           - `source_system="clover"`
-           - `source_id` and `source_variant_id` from the normalized product
-           - `source_store_id` = `merchant_id`
-         - If valid, and either changed or not yet synced to Hipoink, enqueues
-           `sync_queue` entries with `operation="create"` or `operation="update"`.
+This is the fastest path — changes in Clover appear on shelf labels within seconds.
 
-5. **Slack alerting**
-   - Errors per merchant are captured and, where possible, sent to Slack via
-     `slack_service.send_webhook_error_alert(integration="clover", ...)`.
+```text
+Clover detects item change
+        ↓
+Sends webhook POST to: /webhooks/clover/{event_type}
+        ↓
+System verifies the request is genuinely from Clover
+(checks X-Clover-Auth header against stored auth code)
+        ↓
+Fetches full item details from Clover API
+        ↓
+Normalizes and saves product to Supabase (products table)
+        ↓
+Queues item in sync_queue for ESL sync
+        ↓
+sync_worker updates the physical shelf label via Hipoink API
+```
 
-#### Polling‑based incremental sync (worker)
+**Supported webhook events today:** `inventory` (item create, update, delete).
 
-The Clover sync worker uses a polling strategy to ensure eventual consistency and to
-clean up “ghost” items (present in our DB but removed in Clover).
+> Engineering detail: Clover uses a static auth code rather than a body HMAC signature.
+> The `X-Clover-Auth` header is compared to `settings.clover_webhook_auth_code` using
+> `secrets.compare_digest` for constant-time comparison.
 
-- `CloverIntegrationAdapter.sync_products_via_polling(store_mapping, skip_token_refresh=False)`:
-  - Reads sync state from `store_mapping.metadata`:
-    - `clover_last_sync_time` (milliseconds).
-    - `clover_poll_count`.
-  - Determines an access token:
-    - If `skip_token_refresh` is `False`, uses `_ensure_valid_token(store_mapping)` which
-      decrypts metadata, checks expiry via `CloverTokenRefreshService` and refreshes if
-      necessary.
-    - Otherwise, uses the current decrypted token “as is” (used right after OAuth to
-      avoid race conditions with the worker).
-  - Uses `CloverAPIClient.list_items_modified_since(merchant_id, modified_since)` to fetch
-    items changed since `clover_last_sync_time`, with pagination and a short delay between
-    pages to avoid rate limits.
-  - For each item:
-    - If `deleted` or `hidden` → `_handle_item_deletion(...)` and queue delete operations.
-    - Else:
-      - Normalizes to `NormalizedProduct`, validates, and upserts `Product` in Supabase.
-      - If valid:
-        - Checks for existing Hipoink product.
-        - Enqueues `sync_queue` operations (`create` or `update`) where appropriate.
-  - Periodically performs ghost‑item cleanup:
-    - Every N polls (default every 10) or after a configurable number of hours:
-      - Calls `CloverAPIClient.list_all_item_ids(merchant_id)` to get all active IDs.
-      - Compares against our `products` for `source_system="clover"` and same `source_store_id`.
-      - Any IDs only present in our DB are treated as ghosts:
-        - `_mark_product_deleted(...)` sets product status to `"deleted"` and queues ESL deletions.
-  - Updates sync metadata via `SupabaseService.update_store_mapping_metadata(...)` for:
-    - `clover_last_sync_time`
-    - `clover_poll_count`
-    - Optionally `clover_last_cleanup_time`.
+---
 
-#### Initial full sync and price updates
+#### 2. Polling-Based Incremental Sync (Regular Worker)
 
-- `sync_all_products_from_clover(merchant_id, access_token, store_mapping_id, base_url=None)`:
-  - Fetches all items using `CloverAPIClient.list_items(...)` with `limit/offset` pagination
-    and small delays between pages to respect rate limits.
-  - For each item:
-    - Normalizes and validates.
-    - Upserts `Product` with `source_system="clover"` and `source_store_id=merchant_id`.
-    - If valid:
-      - Checks for existing Hipoink mapping.
-      - Enqueues `sync_queue` entries for `create` or `update`.
-  - Returns counts for total items, created, updated, queued, and errors.
+Webhooks can occasionally be missed or delayed. The polling worker acts as a safety net,
+running regularly to catch anything that slipped through and to drive ghost-item cleanup.
 
-- `update_item_price(store_mapping, item_id, price_dollars, existing_product=None)`:
-  - Ensures a valid, decrypted access token via `_ensure_valid_token(...)`.
-  - Converts dollars to integer cents with `round(...)`.
-  - Uses `CloverAPIClient.update_item(merchant_id, item_id, price_cents)`:
-    - Sends `POST /v3/merchants/{mId}/items/{itemId}` with `{ "price": price_cents }`.
-  - If `existing_product` is provided:
-    - Updates its price in Supabase via `create_or_update_product` so
-      the local DB mirrors BOS state.
+```text
+Clover sync worker runs on a schedule
+        ↓
+Reads last sync timestamp from store mapping metadata (clover_last_sync_time)
+        ↓
+Fetches all items modified since that timestamp (list_items_modified_since)
+        ↓
+For each item:
+  - If deleted/hidden → mark as deleted, queue ESL removal
+  - If new/updated   → normalize, upsert in Supabase, queue ESL sync
+        ↓
+Updates clover_last_sync_time and clover_poll_count in store metadata
+        ↓
+Every N polls (default 10) or after N hours → ghost-item cleanup
+```
 
-### Key components
+**Ghost item cleanup** compares:
 
-- `adapter.py`
-  - `CloverIntegrationAdapter(BaseIntegrationAdapter)`:
-    - `get_name()` → `"clover"`.
-    - `verify_signature(payload, signature, headers)`:
-      - Constant‑time compare between `signature` and `settings.clover_webhook_auth_code`.
-      - No body HMAC; Clover uses a static auth code.
-    - `extract_store_id(headers, payload)`:
-      - Reads the first merchant ID from `payload["merchants"]`, if present.
-    - `transform_product(raw_data)`:
-      - Uses `CloverTransformer.transform_item(...)` to produce one `NormalizedProduct`.
-    - `transform_inventory(...)`:
-      - Currently not implemented (returns `None`).
-    - `validate_normalized_product(product)`:
-      - Delegates to `CloverTransformer.validate_normalized_product`.
-    - `get_supported_events()`:
-      - Currently `["inventory"]`.
-    - `_ensure_valid_token(store_mapping)`:
-      - Decrypts stored tokens, checks expiry using `CloverTokenRefreshService`, and refreshes if
-        expiring soon, preferring the refreshed mapping’s tokens.
-    - `update_item_price(...)`:
-      - Calls `CloverAPIClient.update_item(...)` and updates local DB price if successful.
-    - `sync_products_via_polling(...)`:
-      - Implements incremental polling and ghost‑item cleanup logic as described above.
-    - `_handle_item_deletion(...)`, `_mark_product_deleted(...)`, `_cleanup_ghost_items(...)`:
-      - Mark products deleted and enqueue ESL delete operations.
-    - `handle_webhook(...)`:
-      - Handles verification requests and normal webhook payloads per merchant as
-        described in the data flow.
-    - `sync_all_products_from_clover(...)`:
-      - Initial/full sync via `CloverAPIClient.list_items(...)`.
+- All active items in Clover (via `list_all_item_ids`)
+- Against all active `products` for that Clover merchant in Supabase.
 
-- `api_client.py`
-  - `CloverAPIClient`:
-    - Uses `httpx.AsyncClient` with a configurable base URL determined by
-      `settings.clover_environment` (sandbox vs production) unless overridden.
-    - Authenticates using bearer tokens (OAuth access tokens) provided by the adapter.
-    - `list_items(merchant_id)`:
-      - Limit/offset pagination with small delays between requests.
-    - `get_item(merchant_id, item_id)`:
-      - Fetches a specific item by ID.
-    - `update_item(...)`:
-      - Sends a POST request to update an item’s price and potentially other fields.
-    - `list_items_modified_since(...)`:
-      - Fetches items changed since a given timestamp for incremental polling.
-    - `list_all_item_ids(merchant_id)`:
-      - Returns only IDs for ghost‑item detection.
-    - Raises `CloverAPIError` with status and body on HTTP failures.
+Any product in Supabase that no longer exists in Clover is marked deleted and queued for
+ESL removal. This guarantees eventual consistency even if some events were missed.
 
-### Webhook and auth endpoints
+---
 
-- **Webhooks**
-  - `POST /webhooks/clover/{event_type:path}` (generic webhooks router).
-  - The router:
-    - Passes raw body and `X-Clover-Auth` to the adapter for verification.
-    - Allows the verification POST (with only `verificationCode`) through without
-      requiring `X-Clover-Auth`, as required by Clover’s setup flow.
+#### 3. Initial Full Sync (First-Time Setup)
 
-- **OAuth and tokens**
-  - Clover OAuth flows and token storage are handled in `app/routers/clover_auth.py`
-    and related services.
-  - Access tokens are encrypted in store mapping metadata; `decrypt_tokens_from_storage`
-    is used by the adapter before calling `CloverAPIClient`.
+When a new Clover store is connected for the first time, a full sync pulls every product
+from Clover into the system.
 
-### Extending the Clover integration
+```text
+Full sync triggered (e.g. onboarding or admin action)
+        ↓
+Fetches ALL items from Clover with limit/offset pagination
+(small delays between pages to respect rate limits)
+        ↓
+For each item:
+  - Normalize → validate → upsert in Supabase (products)
+  - If valid and changed → queue in sync_queue
+        ↓
+Returns summary: total, created, updated, queued, errors
+```
 
-When adding new Clover behavior:
+Pagination for Clover uses:
 
-- **Support additional webhook types**
-  - Add entries to `get_supported_events()` and extend `handle_webhook(...)` accordingly.
-  - Update or extend `CloverWebhookPayload` to validate new payload shapes.
+- `limit` (page size, default 100)
+- `offset` (0, 100, 200, …)
+- `PAGINATION_DELAY_SECONDS` (small sleep between pages)
 
-- **Extend product mapping**
-  - Update `CloverTransformer` to include additional fields (e.g. categories, tags)
-    in `NormalizedProduct`.
-  - Ensure validation remains strict enough to avoid sending incomplete data to ESL.
+This keeps API calls small and rate-limit friendly even for large catalogs.
 
-- **Inventory and pricing**
-  - Inventory is currently not fully modeled; if you introduce inventory‑driven behavior,
-    keep mapping and business logic in the adapter and transformer, and continue to use
-    `sync_queue` to communicate with the Hipoink sync worker.
+---
 
-- **Multi‑tenant safety**
-  - Always filter Supabase queries by `source_store_id = merchant_id` to avoid
-    cross‑merchant leakage.
-  - Avoid sharing Clover tokens across merchants; all access tokens come from the
-    specific store mapping for the merchant.
+### Authentication & Security
 
-### Gotchas and troubleshooting
+#### Webhook Verification
 
-- **Missing or invalid `X-Clover-Auth`**
-  - If webhooks are rejected with `401`:
-    - Confirm `settings.clover_webhook_auth_code` matches the value configured in
-      the Clover Dashboard.
-    - Ensure the value is not accidentally encrypted; the adapter expects plaintext.
+Clover uses a **static auth code** for webhook verification.
 
-- **Encrypted access tokens**
-  - If the worker logs indicate tokens starting with a ciphertext prefix (for example
-    `"gAAAAA"`), it is likely that `CLOVER_TOKEN_ENCRYPTION_KEY` or related configuration
-    is missing. The adapter explicitly logs this case and refuses to make API calls.
+The system:
 
-- **Ghost items not cleaned up**
-  - Ghost cleanup runs periodically based on `clover_poll_count` and
-    `clover_last_cleanup_time`. If you never see ghost cleanup messages:
-    - Confirm the Clover sync worker is running.
-    - Check store mapping metadata to ensure `clover_poll_count` is incrementing.
+1. Reads the `X-Clover-Auth` header from every incoming webhook.
+2. Compares it against `settings.clover_webhook_auth_code` using constant-time comparison.
+3. Rejects any mismatch with `401 Unauthorized`.
+
+#### One-Time URL Verification
+
+When first registering a webhook URL in the Clover Dashboard, Clover sends a POST that
+contains only:
+
+```json
+{ "verificationCode": "..." }
+```
+
+`CloverIntegrationAdapter.handle_webhook(...)` detects this case and simply echoes back
+the verification code so Clover can validate the URL. No authentication is required for
+this one-time verification request.
+
+#### OAuth Access Tokens
+
+Clover uses OAuth for API access (for item APIs and BOS price updates). This system:
+
+- Stores tokens in `store_mappings.metadata` (per merchant).
+- **Encrypts** tokens at rest using Fernet (`token_encryption.py`).
+- **Refreshes** tokens proactively using `CloverTokenRefreshService` (token refresh worker).
+- Always resolves tokens per store mapping — never shares tokens across merchants.
+
+If a token appears to be encrypted ciphertext (e.g. starts with `"gAAAAA"`), but no
+decryption key is configured, the adapter logs a clear error and refuses to call the API
+with that value.
+
+---
+
+### Key Components
+
+#### `adapter.py` — `CloverIntegrationAdapter`
+
+The main orchestration layer. It owns the Clover ↔ Supabase ↔ sync_queue pipeline.
+
+Key responsibilities:
+
+- `get_name()` → `"clover"`.
+- `verify_signature(payload, signature, headers)`:
+  - Compares `signature` (from `X-Clover-Auth`) against `settings.clover_webhook_auth_code`.
+- `extract_store_id(headers, payload)`:
+  - Reads the first merchant ID from `payload["merchants"]`, if present.
+  - That merchant ID becomes `store_mappings.source_store_id`.
+- `transform_product(raw_data)`:
+  - Uses `CloverTransformer.transform_item(...)` to produce a `NormalizedProduct`.
+- `transform_inventory(...)`:
+  - Currently a placeholder (`return None`) — inventory is not modeled as a separate
+    object yet.
+- `validate_normalized_product(product)`:
+  - Delegates to `CloverTransformer.validate_normalized_product`.
+- `get_supported_events()`:
+  - Currently returns `["inventory"]`.
+- `_ensure_valid_token(store_mapping)`:
+  - Decrypts tokens using `decrypt_tokens_from_storage`.
+  - Uses `CloverTokenRefreshService` to refresh tokens when they are close to expiring.
+- `sync_products_via_polling(...)`:
+  - Incremental polling + ghost-item cleanup as described above.
+- `sync_all_products_from_clover(...)`:
+  - Full initial sync via `CloverAPIClient.list_items(...)`.
+- `update_item_price(...)`:
+  - Validates the token is decrypted/plaintext.
+  - Calls `CloverAPIClient.update_item(...)` to update BOS prices.
+  - Keeps local `products` table in sync with the BOS price.
+
+#### `api_client.py` — `CloverAPIClient`
+
+Handles all direct HTTP communication with the Clover REST API.
+
+Key behaviors:
+
+- Uses `httpx.AsyncClient` with configurable base URL based on `settings.clover_environment`
+  (`sandbox` vs `production`).
+- Authenticates with **Bearer tokens**:
+
+  ```http
+  Authorization: Bearer <access_token>
+  Content-Type: application/json
+  ```
+
+- Supports:
+  - `get_item(merchant_id, item_id)`
+  - `list_items(merchant_id)` (full catalog, paginated)
+  - `list_items_modified_since(merchant_id, modified_since)` (incremental polling)
+  - `list_all_item_ids(merchant_id)` (for ghost cleanup)
+  - `update_item(merchant_id, item_id, price_cents)` (BOS price updates)
+
+#### `token_encryption.py`
+
+Implements Fernet-based encryption for Clover tokens:
+
+- `encrypt_tokens_for_storage(metadata)`:
+  - Encrypts `clover_access_token` and `clover_refresh_token` before writing them to
+    `store_mappings.metadata`.
+- `decrypt_tokens_from_storage(metadata)`:
+  - Decrypts those fields when loading metadata for API calls.
+
+Fernet gives you authenticated encryption (AES + HMAC) with a simple API and a single
+44-character base64 key (`CLOVER_TOKEN_ENCRYPTION_KEY`).
+
+#### `clover_sync_worker.py` — `CloverSyncWorker`
+
+Background worker responsible for periodic polling:
+
+- Runs every `clover_sync_interval_seconds` (default 300 seconds / 5 minutes).
+- For each active Clover store mapping:
+  - Validates there is a token in metadata.
+  - Calls `adapter.sync_products_via_polling(mapping)`.
+  - Logs counts of processed, deleted, and errored items.
+
+---
+
+### Webhook & Diagnostic Endpoints
+
+Key endpoints:
+
+| Method | Endpoint | Description |
+| --- | --- | --- |
+| `POST` | `/webhooks/clover/{event_type}` | Main Clover webhook handler (inventory events + verification POST) |
+| `GET`  | `/external/clover/diagnose/{store_mapping_id}` | Manual diagnostic endpoint for Clover BOS / sync issues |
+
+---
+
+### Price Updates (Time-Based Pricing)
+
+When a time-based pricing event fires for a Clover store, the system ultimately calls
+`CloverIntegrationAdapter.update_item_price(...)`:
+
+1. Ensures a valid, decrypted OAuth token for the store (via `_ensure_valid_token`).
+2. Converts the price from dollars to **integer cents**:
+
+   ```python
+   price_cents = round(price_dollars * 100)
+   ```
+
+3. Calls `CloverAPIClient.update_item(...)` with the new price.
+4. Updates the product price in Supabase so the local DB stays aligned with Clover BOS.
+5. Queues appropriate operations in `sync_queue` so ESL labels update.
+
+---
+
+### Multi-Tenant Safety
+
+The Clover integration is designed to safely handle multiple merchants:
+
+- Every Supabase query for Clover is filtered by `source_store_id = merchant_id`.
+- OAuth tokens are always read from the specific `StoreMapping` for that merchant.
+- Tokens are never reused or shared across merchants.
+- Ghost cleanup runs per-store, comparing that store’s Supabase products to its Clover
+  items only.
+
+---
+
+### Troubleshooting
+
+| Problem | What To Check |
+| --- | --- |
+| Webhooks rejected with 401 | Confirm `CLOVER_WEBHOOK_AUTH_CODE` matches the value configured in the Clover Dashboard. This must be **plaintext**, not encrypted. |
+| Tokens starting with `"gAAAAA"` in logs | Indicates Clover tokens are encrypted but `CLOVER_TOKEN_ENCRYPTION_KEY` is missing or invalid. Configure the correct Fernet key in environment. |
+| Ghost items not being cleaned up | Confirm the Clover sync worker is running and that `clover_poll_count` is incrementing in store metadata. Also check `clover_last_cleanup_time`. |
+| Products not appearing after webhook | Ensure a `StoreMapping` exists for the Clover `merchant_id`, and the webhook URL and `X-Clover-Auth` are correctly configured in the Clover Dashboard. |
+
+---
+
+### Extending This Integration
+
+#### Adding new webhook event types
+
+1. Add the event type to `CloverIntegrationAdapter.get_supported_events()`.
+2. Extend `handle_webhook(...)` with a new handler branch for that event type.
+3. Update or extend `CloverWebhookPayload` to validate the new payload shape.
+4. Keep Supabase access behind `SupabaseService` and always filter by `source_store_id`.
+
+#### Adding new product fields
+
+1. Update `CloverTransformer` to map additional fields into `NormalizedProduct`.
+2. Keep validation strict enough to prevent sending incomplete/bad data to ESL.
+
+#### Inventory and pricing
+
+- Inventory is currently not fully modeled (see `transform_inventory`).
+- If you add inventory-driven behavior, keep mapping in the transformer/adapter and
+  continue to use `sync_queue` to talk to the ESL sync worker.
+
+#### Multi-tenant isolation
+
+- Always filter Supabase queries by `source_store_id = merchant_id`.
+- Do not share Clover credentials or tokens between merchants.
 
