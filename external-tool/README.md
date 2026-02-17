@@ -2,6 +2,13 @@
 
 A React-based UI for managing time-based pricing schedules and testing webhook endpoints for NCR and Square integrations.
 
+This tool sits on top of the core middleware described in the root `README.md`:
+
+- It provides a UI over `price_adjustments`, `store_mappings`, and related tables.
+- It interacts only with the FastAPI backend (not directly with Hipoink or Supabase).
+- It is the primary operational interface for configuring and monitoring
+  time-based pricing behavior documented in `docs/TIME_BASED_PRICING.md`.
+
 ## Features
 
 - **Dashboard**: Overview of schedules, webhook health, and quick actions
@@ -76,6 +83,12 @@ For webhook testing, you can set an authorization token:
 - `POST /external/ncr/trigger-price-update` - Trigger NCR price update
 - `POST /external/square/trigger-price-update` - Trigger Square price update
 - `POST /external/trigger-schedule/{schedule_id}` - Manually trigger a schedule
+
+For details on how these endpoints feed into workers and integrations, see:
+
+- `app/workers/README.md` – workers and schedule processing.
+- `app/integrations/ncr/README.md` – NCR price handling.
+- `app/integrations/square/README.md` – Square price handling.
 
 ## Tech Stack
 
