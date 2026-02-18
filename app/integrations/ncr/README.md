@@ -1,268 +1,338 @@
 ## NCR Integration
 
-### Overview
+### What Is This?
 
-The NCR integration connects the middleware to the **NCR PRO Catalog API** using
-HMAC‑SHA512 authenticated REST calls. NCR does **not** provide webhooks in this
-integration; all communication is API‑driven.
+The NCR integration connects the middleware to the **NCR PRO Catalog API** — a retail
+catalog and pricing system used in enterprise point-of-sale environments. Unlike some
+other integrations, NCR does **not** send webhooks in this system. All communication is
+API-driven: the middleware **polls NCR** to discover products created directly in NCR POS, and also **pushes** data to NCR when creating/updating products or prices.
 
-The integration is responsible for:
+The integration handles:
+- **Polling NCR** to discover products created directly in NCR POS and sync them to ESL labels (primary sync mechanism)
+- Creating, updating, and logically deleting products in NCR
+- Managing prices (including future-dated scheduled prices)
+- Keeping Supabase and ESL labels in sync with NCR's catalog
 
-- Creating, updating, and logically deleting catalog items in NCR.
-- Managing and scheduling prices in NCR via `item-prices` endpoints.
-- Normalizing NCR catalog responses into the internal product model.
-- Writing records into Supabase (`products`, `sync_queue`) for ESL sync.
+---
 
-All NCR‑specific behavior is implemented in `NCRIntegrationAdapter` and
-`NCRAPIClient`. There are **no NCR webhooks**; router‑level webhook handling
-for NCR is not used.
+### What Does It Do?
 
-### Data flow
+| Capability | Description |
+| --- | --- |
+| **Product discovery (polling)** |  **Primary sync mechanism** — Polls NCR API to discover products created directly in NCR POS and syncs them to ESL labels |
+| **Create products** | Creates new catalog items in NCR and saves them to Supabase |
+| **Update prices** | Updates item prices in NCR and propagates changes to ESL labels |
+| **Delete products** | Logically deletes (marks INACTIVE) items in NCR and queues ESL removal |
+| **Pre-schedule prices** | Sends future-dated price changes to NCR ahead of time for time-based pricing |
+| **Multi-tenant support** | Each store has its own NCR credentials stored in its store mapping |
 
-Because NCR is API‑only (in this integration), the primary data paths are:
+> **No webhooks.** NCR does not send real-time notifications in this integration. All
+> operations are explicit API calls; any `/webhooks/ncr/...` traffic is misconfigured.
 
-1. **Create product in NCR and sync into Supabase.**
-2. **Update price in NCR and reflect it in Supabase / ESL.**
-3. **Logically delete product in NCR and queue deletion for ESL.**
-4. **Pre‑schedule future prices in NCR based on local price adjustment schedules.**
+---
 
-Store‑specific NCR configuration (keys, organization, enterprise unit, defaults) is
-stored in `store_mappings.metadata` and passed into adapter methods as
-`store_mapping_config`.
+### How Data Flows
 
-#### Product creation
+#### 1. Creating a Product
 
-1. **Input**
-   - A `NormalizedProduct` representing the item to be created.
-   - A `store_mapping_config` dictionary containing NCR configuration, including:
-     - `metadata.ncr_base_url`
-     - `metadata.ncr_shared_key`
-     - `metadata.ncr_secret_key`
-     - `metadata.ncr_organization`
-     - `metadata.ncr_enterprise_unit`
-     - `metadata.department_id`
-     - `metadata.category_id`
-     - (and optionally `source_store_id`).
+```text
+NormalizedProduct received
+        ↓
+NCRIntegrationAdapter.create_product() called
+        ↓
+Determines item code (barcode → SKU → source_id, in priority order)
+        ↓
+Calls NCRAPIClient.create_product()
+Sends HMAC-signed PUT /items/{itemCode} to NCR
+(optionally creates an initial item-prices record if price provided)
+        ↓
+Validates and upserts Product in Supabase
+(source_system="ncr", source_id=item_code, source_store_id=enterprise_unit_id)
+        ↓
+If product is valid and changed:
+  → Enqueues sync_queue entry (operation="create")
+  → sync_worker picks it up and creates the ESL label
+```
 
-2. **API call**
-   - `NCRIntegrationAdapter.create_product(normalized_product, store_mapping_config)`:
-     - Instantiates `NCRAPIClient` with configuration from `metadata`.
-     - Chooses an `actual_item_code` for NCR:
-       - Prefer `normalized_product.barcode`.
-       - Else `normalized_product.sku`.
-       - Else `normalized_product.source_id`.
-     - Calls `NCRAPIClient.create_product(...)` which:
-       - Constructs an `ItemWriteData` with:
-         - `itemId.itemCode`
-         - `departmentId`
-         - `merchandiseCategory`
-         - `shortDescription` as `MultiLanguageTextData`.
-         - `status` (e.g. `ACTIVE`).
-         - `sku` and optional barcode mapping (via `packageIdentifiers`).
-       - Sends a HMAC‑signed `PUT /items/{itemCode}` request.
-       - Optionally creates an initial `item-prices` record if a price is provided.
+---
 
-3. **Normalization and persistence**
-   - The adapter validates the `NormalizedProduct` using `validate_normalized_product`.
-   - It constructs a `Product` row with:
-     - `source_system="ncr"`.
-     - `source_id=actual_item_code` (NCR item code).
-     - `source_store_id` from:
-       - `store_mapping_config["source_store_id"]`, or
-       - `metadata.ncr_enterprise_unit` / `metadata.enterprise_unit_id`.
-     - `raw_data` = NCR API response.
-     - `normalized_data` = `normalized_product.to_dict()`.
-   - The product is upserted via `SupabaseService.create_or_update_product(...)`.
+#### 2. Updating a Price
 
-4. **Queueing for ESL sync**
-   - If the product is valid and changed, and `store_mapping_config["id"]` is set:
-     - The adapter enqueues:
-       - `SupabaseService.add_to_sync_queue(product_id, store_mapping_id, operation="create")`.
-   - This allows the generic `SyncWorker` to create/refresh corresponding ESL products.
+```text
+Price update triggered (e.g. by time-based pricing)
+        ↓
+NCRIntegrationAdapter.update_price(item_code, price, store_mapping_config)
+        ↓
+NCRAPIClient.update_price() called
+Sends HMAC-signed PUT /item-prices to NCR
+(price expressed in correct currency and effective immediately or at a given time)
+        ↓
+Looks up existing Product in Supabase
+Updates both product.price AND normalized_data["price"]
+(sync worker uses normalized_data first)
+        ↓
+Enqueues sync_queue update → ESL label reflects new price
+```
 
-#### Price updates
+---
 
-1. **Input**
-   - `item_code` of the NCR product.
-   - New `price` (float).
-   - `store_mapping_config` with NCR credentials and enterprise unit.
+#### 3. Deleting a Product
 
-2. **API call**
-   - `NCRIntegrationAdapter.update_price(item_code, price, store_mapping_config)`:
-     - Configures `NCRAPIClient` with `ncr_base_url`, `shared_key`, `secret_key`,
-       `organization`, `enterprise_unit`.
-     - Calls `NCRAPIClient.update_price(...)`, which:
-       - Builds a `SaveMultipleItemPricesRequest` containing a single `ItemPriceWriteData`.
-       - `ItemPriceIdData` is set with:
-         - `itemCode=item_code`.
-         - `priceCode` (commonly equal to `item_code` for base prices).
-         - `enterpriseUnitId`.
-       - Sets effective date (current UTC if not provided), currency, status, and base price flags.
-       - Sends a HMAC‑signed `PUT /item-prices` request.
+NCR uses **logical (soft) deletes** — items are not physically removed, they are marked
+`INACTIVE`.
 
-3. **Database and ESL sync**
-   - If a `store_mapping_id` is present:
-     - The adapter looks up the existing `Product` via `get_product_by_source("ncr", item_code, source_store_id)`.
-     - If found:
-       - Updates `price` on the `Product`.
-       - Ensures `normalized_data["price"]` is also updated (the sync worker uses normalized data first).
-       - Upserts the product.
-       - Enqueues an `update` operation in `sync_queue` to propagate price changes to ESL.
+```text
+Delete triggered
+        ↓
+NCRIntegrationAdapter.delete_product(item_code, store_mapping_config)
+        ↓
+Sends HMAC-signed PUT /items/{itemCode} with status="INACTIVE" to NCR
+        ↓
+Looks up Product in Supabase by source_id
+(falls back to barcode/SKU search if needed)
+        ↓
+Enqueues sync_queue entries with operation="delete"
+        ↓
+sync_worker removes or deactivates the corresponding ESL label
+```
 
-#### Product delete (logical)
+---
 
-1. **Input**
-   - `item_code` of the NCR product.
-   - `store_mapping_config` with NCR credentials and enterprise unit.
+#### 4. Pre-Scheduling Prices (Time-Based Pricing)
 
-2. **API call**
-   - `NCRIntegrationAdapter.delete_product(item_code, store_mapping_config)`:
-     - Initializes `NCRAPIClient`.
-     - Calls `NCRAPIClient.delete_product(...)`:
-       - Builds a minimal `ItemWriteData` with:
-         - `status="INACTIVE"`.
-         - Required fields such as `departmentId`, `merchandiseCategory`, `shortDescription`.
-       - Sends `PUT /items/{itemCode}` to mark the product inactive (soft delete).
+NCR natively supports **future-dated price changes** using `effectiveDate` in the
+`item-prices` API. This lets you send all upcoming price events to NCR in advance instead
+of pushing changes at the exact moment.
 
-3. **Database and ESL sync**
-   - If `store_mapping_id` is present:
-     - Finds products with `source_system="ncr"` and `source_id=item_code` using
-       `get_products_by_source_id("ncr", item_code, source_store_id)`.
-     - If none are found, performs a secondary search across NCR products by barcode or SKU.
-     - For each product, enqueues `sync_queue` entries with `operation="delete"` so
-       the ESL worker can remove or deactivate the associated ESL records.
+```text
+Time-based pricing schedule created or updated
+        ↓
+NCRIntegrationAdapter.pre_schedule_prices(schedule, store_mapping_config)
+        ↓
+Derives store timezone from StoreMapping metadata (defaults to UTC)
+        ↓
+calculate_all_price_events() generates every discrete price event
+(start times, end times, each window for the full schedule)
+        ↓
+Each event converted to:
+  { item_code, price, effective_date (UTC ISO 8601), currency }
+        ↓
+NCRAPIClient.pre_schedule_prices() batches events (e.g. 50 at a time)
+Sends HMAC-signed PUT /item-prices calls for each batch
+        ↓
+Returns: count of scheduled vs failed events, per-item results
+```
 
-#### Pre‑scheduling prices
+NCR then applies those prices at the correct times without the middleware needing to
+trigger each change in real time.
 
-For time‑based pricing, NCR supports pre‑scheduling price changes using `effectiveDate`
-in the `item-prices` API.
+When NCR applies a scheduled price change, the NCR sync worker detects the price difference on its next poll, updates the Product price in Supabase, and enqueues a `sync_queue` entry with `operation="update"`. The SyncWorker then pushes the new price to the ESL shelf labels — meaning both the NCR BOS and the physical shelf labels always reflect the same price at the right time.
 
-- `NCRIntegrationAdapter.pre_schedule_prices(schedule, store_mapping_config)`:
-  - Uses `calculate_all_price_events(schedule, store_timezone)` to derive all discrete
-    price events for the schedule (start/end times, individual price windows).
-  - Derives `store_timezone` from the `StoreMapping` metadata if available; falls back
-    to UTC.
-  - Converts each event into a record with:
-    - `item_code`
-    - `price`
-    - `effective_date` (UTC ISO 8601 with milliseconds and `Z`)
-    - `currency` (default `"USD"`).
-  - Calls `NCRAPIClient.pre_schedule_prices(price_events)` which:
-    - Batches events (e.g. 50 at a time).
-    - Builds a `SaveMultipleItemPricesRequest` with multiple `ItemPriceWriteData` entries.
-    - Sends HMAC‑signed `PUT /item-prices` calls for each batch.
-    - Returns counts of scheduled vs failed events and per‑item results.
+---
 
-### Key components
+#### 5. Product Discovery via Polling (NCR → ESL)
 
-- `adapter.py`
-  - `NCRIntegrationAdapter(BaseIntegrationAdapter)`:
-    - `get_name()` → `"ncr"`.
-    - `verify_signature(payload, signature, headers)`:
-      - Returns `True`. NCR does not use webhooks; HMAC‑SHA512 is handled at the API
-        client level instead.
-    - `extract_store_id(headers, payload)`:
-      - Returns `None`; store identification is done via `store_mappings` and
-        `enterprise_unit` metadata, not webhook headers.
-    - `transform_product(raw_data)`:
-      - Converts NCR catalog records into `NormalizedProduct`, extracting:
-        - `itemCode` (or `itemId.itemCode`) as `source_id`.
-        - `shortDescription` (multi‑language) as title.
-        - `sku` and barcodes (from `packageIdentifiers`).
-    - `transform_inventory(raw_data)`:
-      - Currently returns `None`; inventory is not modeled in this adapter.
-    - `get_supported_events()`:
-      - Returns an empty list; there are no NCR webhooks.
-    - `handle_webhook(...)`:
-      - Raises `HTTPException(501)` with a clear message that NCR does not
-        support webhooks; clients should use API operations.
-    - `create_product(...)`, `update_price(...)`, `delete_product(...)`:
-      - High‑level operations described in the data flow section, each:
-        - Calls `NCRAPIClient` with HMAC‑signed requests.
-        - Normalizes and persists results in Supabase.
-        - Enqueues `sync_queue` operations for ESL.
-    - `pre_schedule_prices(...)`:
-      - Bridges between local price adjustment schedules and NCR’s pre‑scheduled
-        price capability.
+> ⚠️ **Temporarily disabled** — The NCR sync worker is currently commented out in `app/workers/__main__.py` while NCR API rate limits are being validated for production load. Re-enabling it is the intended production state — see instructions below.
 
-- `api_client.py`
-  - `NCRAPIClient`:
-    - Responsible for generating correct HMAC‑SHA512 signatures for NCR API.
-    - `_generate_signature(...)`:
-      - Builds nonce from date.
-      - Concatenates method, URI (including query), content type, content MD5,
-        and organization.
-      - HMAC‑SHA512 with `secret_key + nonce`, base64‑encodes the result.
-    - `_get_request_headers(method, url, body)`:
-      - Sets NCR‑required headers:
-        - `Content-Type`, `Accept`.
-        - `nep-organization`, `nep-enterprise-unit` where configured.
-        - `Date`, `Content-MD5`.
-        - `Authorization: AccessKey {shared_key}:{signature}`.
-    - `create_product(...)`:
-      - HMAC‑signed `PUT /items/{itemCode}` with `ItemWriteData`.
-      - Optionally chains to `update_price(...)` for initial pricing.
-    - `update_price(...)`:
-      - HMAC‑signed `PUT /item-prices` with `SaveMultipleItemPricesRequest`.
-    - `list_items(...)`:
-      - HMAC‑signed `GET /items` with pagination and optional `itemCodePattern`.
-    - `delete_product(...)`:
-      - HMAC‑signed `PUT /items/{itemCode}` with `status="INACTIVE"`.
-    - `get_item_price(...)` and `get_item_prices_batch(...)`:
-      - Read current prices for one or more items.
-    - `pre_schedule_prices(price_events)`:
-      - Batches and sends `PUT /item-prices` calls for multiple effective‑dated price
-        records.
+This is the **primary mechanism** for syncing products from NCR to ESL labels when products are created or updated directly in NCR POS. Since NCR doesn't send webhooks, the system polls NCR on a regular schedule to discover changes.
+
+```text
+NCRSyncWorker runs every 60 seconds
+        ↓
+Fetches all active NCR store mappings from Supabase
+        ↓
+For each store mapping:
+  Builds NCRAPIClient using credentials from store metadata
+  Calls GET /items with pagination (200 items per page)
+        ↓
+Fetches ALL items from NCR catalog
+        ↓
+For each NCR item:
+  Compares with existing Product rows in Supabase
+  Fetches current effective price from NCR (respects scheduled prices)
+        ↓
+If new product:
+  Transforms to NormalizedProduct
+  Creates Product row in Supabase
+  Enqueues sync_queue entry (operation="create")
+        ↓
+If existing product changed:
+  (title, barcode, SKU, or price difference > $0.01)
+  Updates Product row in Supabase
+  Enqueues sync_queue entry (operation="update")
+        ↓
+SyncWorker picks up queue entries → pushes to ESL labels
+```
+
+**Key behaviors:**
+
+- **Price change detection**: The poller detects both manual price changes and scheduled prices that became active (by comparing current NCR price with stored price)
+- **Full catalog scan**: Every poll fetches the entire catalog, ensuring nothing is missed
+- **Multi-tenant isolation**: All queries filter by `source_store_id` to prevent cross-store data leaks
+- **Pagination**: Uses NCR's pagination API (`pageNumber`/`pageSize`) to handle large catalogs efficiently
+
+**How to re-enable:**
+
+1. Uncomment `run_ncr_sync_worker()` in `app/workers/__main__.py`
+2. Verify NCR API rate limits can handle polling every 60 seconds
+3. Confirm Supabase and ESL capacity for the resulting sync volume
+
+For more details on the worker implementation, see `app/workers/README.md`.
+
+---
+
+### Authentication — HMAC-SHA512
+
+NCR uses **HMAC-SHA512** for all API authentication. Every request is signed; there are
+no OAuth tokens to manage.
+
+The signature flow (implemented in `NCRAPIClient._generate_signature`) is:
+
+1. Build a **nonce** from the current date.
+2. Concatenate:
+   - HTTP method
+   - Full URI (including query)
+   - `Content-Type`
+   - `Content-MD5`
+   - `nep-organization`
+3. Compute HMAC-SHA512 using `secret_key + nonce`.
+4. Base64-encode the result.
+5. Send header:
+
+   ```http
+   Authorization: AccessKey {shared_key}:{signature}
+   ```
+
+Per-store NCR configuration is stored in `store_mappings.metadata`:
+
+| Field | Description |
+| --- | --- |
+| `ncr_base_url` | NCR API base URL |
+| `ncr_shared_key` | Public key for the Authorization header |
+| `ncr_secret_key` | Private key used for HMAC signing |
+| `ncr_organization` | NCR organization identifier |
+| `ncr_enterprise_unit` | Enterprise unit / store identifier |
+| `department_id` | Default department for new items |
+| `category_id` | Default merchandise category for new items |
+
+All of these are resolved per `StoreMapping`; there is no global/shared NCR credential.
+
+---
+
+### Key Components
+
+#### `adapter.py` — `NCRIntegrationAdapter`
+
+High-level orchestration for NCR:
+
+- `get_name()` → `"ncr"`.
+- `transform_product(raw_data)`:
+  - Converts NCR catalog records into `NormalizedProduct`, extracting:
+    - `itemCode` as `source_id`.
+    - Descriptions, SKU, barcodes.
+- `create_product(...)`:
+  - Builds `ItemWriteData` and calls `NCRAPIClient.create_product(...)`.
+  - Upserts `Product` into Supabase and enqueues `sync_queue` entries when needed.
+- `update_price(...)`:
+  - Calls `NCRAPIClient.update_price(...)`.
+  - Updates both `product.price` and `normalized_data["price"]` and enqueues updates.
+- `delete_product(...)`:
+  - Soft-deletes item in NCR by setting `status="INACTIVE"`.
+  - Queues ESL deletions based on Supabase products matching `source_id`.
+- `pre_schedule_prices(...)`:
+  - Bridges `price_adjustments` schedules into NCR `item-prices` with future
+    `effectiveDate`s.
+
+NCR has **no webhooks** in this integration:
+
+- `get_supported_events()` returns `[]`.
+- `handle_webhook(...)` always responds with `501 Not Implemented` indicating that NCR
+  should use API endpoints instead.
+
+#### `api_client.py` — `NCRAPIClient`
+
+Handles all direct HTTP calls to NCR, including signing and header construction:
+
+- `_generate_signature(...)`:
+  - Builds the HMAC-SHA512 signature as described above.
+- `_get_request_headers(method, url, body)`:
+  - Sets:
+    - `Content-Type`, `Accept`
+    - `nep-organization`, `nep-enterprise-unit`
+    - `Date`, `Content-MD5`
+    - `Authorization: AccessKey {shared_key}:{signature}`
+
+Key public methods:
+
+- `create_product(...)`:
+  - HMAC-signed `PUT /items/{itemCode}` with `ItemWriteData`.
+  - Optionally chains to `update_price(...)` for initial price.
+- `update_price(...)`:
+  - HMAC-signed `PUT /item-prices` with `SaveMultipleItemPricesRequest`.
+- `delete_product(...)`:
+  - HMAC-signed `PUT /items/{itemCode}` with `status="INACTIVE"`.
+- `list_items(...)`:
+  - Signed `GET /items` with pagination and optional filters.
+- `get_item_price(...)` / `get_item_prices_batch(...)`:
+  - Read current prices for one or more items.
+- `pre_schedule_prices(price_events)`:
+  - Batches and sends `PUT /item-prices` calls for future-dated prices.
+
+---
 
 ### Webhooks
 
 NCR does **not** use webhooks in this integration:
 
-- `NCRIntegrationAdapter.get_supported_events()` returns `[]`.
-- `handle_webhook(...)` always returns a `501 Not Implemented` error indicating that
-  NCR does not provide webhooks and that API endpoints must be used instead.
+- `NCRIntegrationAdapter.get_supported_events()` returns an empty list.
+- `handle_webhook(...)` always returns a `501 Not Implemented` response explaining that
+  NCR does not provide webhooks and API operations must be used instead.
 
-If you see requests hitting any hypothetical `/webhooks/ncr/...` endpoints, they are
-likely misconfigured; all NCR operations should use the documented API routes instead.
+Any traffic to `/webhooks/ncr/...` is a configuration error.
 
-### Extending the NCR integration
+---
 
-When extending NCR behavior:
+### Multi-Tenant Safety
 
-- **Additional catalog fields**
-  - Update `NCRTransformer` and `NormalizedProduct` attributes as needed.
-  - Keep mapping logic in the transformer and orchestration in the adapter.
+Each store has its own NCR credentials:
 
-- **Inventory support**
-  - If inventory endpoints are introduced, add mapping logic to `transform_inventory`
-    and keep business rules in the adapter.
+- `ncr_shared_key`, `ncr_secret_key`, `ncr_organization`, and `ncr_enterprise_unit` live
+  in that store’s `store_mappings.metadata`.
+- All Supabase queries go through `SupabaseService` and filter by `source_store_id`.
+- There are no shared or global NCR tokens/keys beyond what NCR itself requires.
 
-- **New operations**
-  - Implement new high‑level methods on `NCRIntegrationAdapter` for new NCR API
-    capabilities (e.g. promotions), and wrap corresponding methods on `NCRAPIClient`.
-  - Keep all NCR authentication inside `NCRAPIClient` so HMAC logic remains in one place.
+---
 
-- **Multi‑tenant isolation**
-  - Always resolve enterprise unit and NCR credentials from per‑store `store_mappings`.
-  - Never reuse shared keys or secrets across tenants beyond what NCR itself requires.
+### Troubleshooting
 
-### Gotchas and troubleshooting
+| Problem | What To Check |
+| --- | --- |
+| Signature / auth errors | Verify `ncr_shared_key`, `ncr_secret_key`, `ncr_organization`, and `ncr_enterprise_unit` in store metadata. Ensure system clocks are reasonably synchronized (signatures depend on time). |
+| Wrong or inconsistent item codes | The adapter may derive `item_code` from barcode → SKU → `source_id`. Be consistent in how you identify items to avoid ambiguity when updating or deleting. |
+| ESL prices not matching NCR | Confirm `update_price(...)` is being called, and that `sync_queue` has `update` entries. Ensure the sync worker is running for that `store_mapping_id`. If using the poller, verify it's enabled and running — it detects price changes automatically. |
+| Pre-scheduled prices not applying | Check timezones in `store_mappings.metadata`. All `effectiveDate` values are converted to UTC; a wrong timezone can shift prices by hours. |
+| Products created in NCR not appearing on ESL | The NCR sync worker must be enabled and running. Check `app/workers/__main__.py` — `run_ncr_sync_worker()` should be uncommented. Verify the worker logs show successful polling cycles. |
 
-- **Signature or authentication errors**
-  - Verify `ncr_shared_key`, `ncr_secret_key`, `ncr_organization`, and
-    `ncr_enterprise_unit` are correctly set in `store_mappings.metadata`.
-  - Ensure system clocks are reasonably synchronized; HMAC signatures include a
-    timestamp/nounce that depends on the current time.
+---
 
-- **Unexpected product identifiers**
-  - The adapter may derive `item_code` from barcode or SKU if the caller does not
-    provide an explicit item code. Be consistent in how you identify items to avoid
-    ambiguity when performing updates or deletes later.
+### Extending This Integration
 
-- **Price discrepancies**
-  - `update_price(...)` updates both the remote NCR price and the local product’s
-    `price` and `normalized_data["price"]`. If ESL prices do not match NCR:
-    - Verify the `sync_queue` has `update` entries for the relevant products.
-    - Confirm the `SyncWorker` is running and successfully processing NCR products
-      for the corresponding `store_mapping_id`.
+#### Adding new catalog fields
+
+1. Update `NCRTransformer` and `NormalizedProduct` to include the new fields.
+2. Keep mapping logic in the transformer and orchestration logic in the adapter.
+
+#### Adding new NCR API operations
+
+1. Add a new method to `NCRAPIClient` (all HMAC logic stays inside this client).
+2. Add a high-level method to `NCRIntegrationAdapter` that:
+   - Accepts normalized data,
+   - Calls `NCRAPIClient`,
+   - Updates Supabase via `SupabaseService`,
+   - Enqueues `sync_queue` entries as needed.
+
+#### Multi-tenant isolation
+
+- Always resolve NCR configuration from the current store’s `StoreMapping`.
+- Never hardcode or reuse credentials across tenants.
 

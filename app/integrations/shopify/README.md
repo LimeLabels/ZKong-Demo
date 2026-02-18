@@ -1,184 +1,237 @@
 ## Shopify Integration
 
-### Overview
+### What Is This?
 
-The Shopify integration connects Shopify product webhooks to the Hipoink ESL middleware.
-It is responsible for:
+The Shopify integration connects **Shopify stores** to the Hipoink ESL (Electronic Shelf
+Label) middleware. It listens for real-time product and inventory changes from Shopify via
+webhooks, normalizes the data, and automatically updates your physical shelf labels.
 
-- Receiving product and inventory webhooks from Shopify.
-- Normalizing Shopify data into the internal product model.
-- Writing records into Supabase (`products`, `sync_queue`) for downstream syncing to Hipoink.
-- Enforcing multi‑tenant isolation by `source_store_id` (Shopify shop domain).
+Whenever a product is created, updated, or deleted in Shopify — including inventory
+changes — that change flows through this integration and reaches your ESL labels without
+manual work.
 
-All business logic for Shopify lives behind the `ShopifyIntegrationAdapter` and operates
-through Supabase and the background workers. Routers do not talk to Hipoink directly.
+---
 
-### Data flow
+### What Does It Do?
 
-High‑level flow for Shopify product events:
+| Capability | Description |
+| --- | --- |
+| **Webhook handling** | Receives real-time product and inventory events from Shopify |
+| **Product sync** | Creates, updates, and deletes products in Supabase and queues them for ESL sync |
+| **Multi-variant support** | Handles Shopify’s variant model — each variant becomes its own `NormalizedProduct` |
+| **Inventory tracking** | Receives inventory level updates (currently an extension point) |
+| **Signature verification** | Validates every webhook is genuinely from Shopify using HMAC SHA256 |
+| **Multi-tenant support** | Safely handles multiple stores using the shop domain as the tenant identifier |
 
-1. **Webhook ingress**
-   - Shopify sends webhooks to:
-     - `POST /webhooks/shopify/products/create`
-     - `POST /webhooks/shopify/products/update`
-     - `POST /webhooks/shopify/products/delete`
-     - `POST /webhooks/shopify/inventory_levels/update`
-   - These legacy routes call the generic handler:
-     - `POST /webhooks/shopify/{event_type}` (via the consolidated `webhooks.py`).
+All Shopify flows still use the central `products → sync_queue → sync_worker` pipeline;
+no code here talks to Hipoink directly.
 
-2. **Signature verification**
-   - `X-Shopify-Hmac-Sha256` is extracted in `app/routers/webhooks.py`.
-   - `ShopifyIntegrationAdapter.verify_signature(...)` computes an HMAC SHA256 using
-     `settings.shopify_webhook_secret` and validates the header.
-   - Requests with invalid or missing signatures are rejected with `401`.
+---
 
-3. **Adapter dispatch**
-   - The generic webhook router resolves the adapter by name:
-     - `integration_registry.get_adapter("shopify") → ShopifyIntegrationAdapter`.
-   - It checks `ShopifyIntegrationAdapter.get_supported_events()` for the `event_type`.
-   - It parses the JSON body, passes `payload` and `headers` into:
-     - `ShopifyIntegrationAdapter.handle_webhook(event_type, request, headers, payload)`.
+### How Data Flows
 
-4. **Transformation and validation**
-   - Product payloads (`products/create`, `products/update`, `products/delete`) are validated
-     using Pydantic models in `app/integrations/shopify/models.py`:
-     - `ProductCreateWebhook`
-     - `ProductUpdateWebhook`
-     - `ProductDeleteWebhook`
-   - Variants are extracted via `ShopifyTransformer.extract_variants_from_product(...)` as
-     `NormalizedProduct` instances, one per variant.
+#### Webhook-Driven Product Updates
 
-5. **Supabase persistence**
-   - For each normalized variant, a `Product` row is created/updated through
-     `SupabaseService.create_or_update_product(...)` with:
-     - `source_system="shopify"`
-     - `source_id` = Shopify product ID
-     - `source_variant_id` = variant ID
-     - `source_store_id` = Shopify shop domain (multi‑tenant isolation)
-     - `status` and `validation_errors` populated from `validate_normalized_product`.
+The Shopify integration is entirely webhook-driven.
 
-6. **Queueing for Hipoink sync**
-   - For valid products, the adapter enqueues work via:
-     - `SupabaseService.add_to_sync_queue(product_id, store_mapping_id, operation)`
-   - Operations used:
-     - `"create"` for new variants.
-     - `"update"` for updates.
-     - `"delete"` for deletions.
-   - The background `SyncWorker` picks up these `sync_queue` entries and performs Hipoink API calls.
+```text
+Product created/updated/deleted in Shopify
+        ↓
+Shopify sends webhook POST to one of:
+  /webhooks/shopify/products/create
+  /webhooks/shopify/products/update
+  /webhooks/shopify/products/delete
+  /webhooks/shopify/inventory_levels/update
+        ↓
+System verifies HMAC SHA256 signature
+(X-Shopify-Hmac-Sha256 header, signed with shopify_webhook_secret)
+        ↓
+Adapter resolves integration from registry and checks event is supported
+        ↓
+Payload parsed and validated with Pydantic models 
+        ↓
+ShopifyTransformer extracts all variants from the product 
+(one NormalizedProduct per variant)
+        ↓
+Each variant validated and upserted in Supabase
+(source_system="shopify", source_store_id=shop_domain)
+        ↓
+Valid products enqueued in sync_queue
+        ↓
+sync_worker picks up queued items and syncs to Hipoink ESL
+```
 
-7. **Audit and logging**
-   - All operations are logged using `structlog` with product identifiers and
-     store context, enabling traceability across webhooks, Supabase and sync worker.
+**Supported webhook events (core ones):**
 
-### Key components
+| Event | Shopify Trigger | Operation Queued |
+| --- | --- | --- |
+| `products/create` | New product added in Shopify | `create` |
+| `products/update` | Product or variant edited in Shopify | `update` |
+| `products/delete` | Product deleted in Shopify | `delete` |
+| `inventory_levels/update` | Inventory quantity changed | Logged (extension point) |
 
-- `adapter.py`
-  - `ShopifyIntegrationAdapter(BaseIntegrationAdapter)`:
-    - `get_name()` → `"shopify"`.
-    - `verify_signature(payload, signature, headers)`:
-      - HMAC SHA256 using `settings.shopify_webhook_secret`.
-      - Compares computed HMAC against `X-Shopify-Hmac-Sha256` using `hmac.compare_digest`.
-    - `extract_store_id(headers, payload)`:
-      - Uses `ShopifyTransformer` to extract the shop domain from webhook headers.
-    - `transform_product(raw_data)`:
-      - Parses `ProductCreateWebhook`.
-      - Returns a list of `NormalizedProduct` objects (one per variant). 
-    - `transform_inventory(raw_data)`:
-      - Parses `InventoryLevelsUpdateWebhook` and exposes a `NormalizedInventory` representation. 
-    - `get_supported_events()`:
-      - `["products/create", "products/update", "products/delete", "inventory_levels/update"]`.
-    - `handle_webhook(event_type, request, headers, payload)`:
-      - Routes to `_handle_product_create`, `_handle_product_update`,
-        `_handle_product_delete`, `_handle_inventory_update`.
-    - `_handle_product_create(...)`:
-      - Validates payload (`ProductCreateWebhook`).
-      - Resolves store mapping via `SupabaseService.get_store_mapping("shopify", store_domain)`.
-      - Normalizes variants and creates/updates `Product` rows.
-      - Enqueues valid products into `sync_queue` with `operation="create"`.
-    - `_handle_product_update(...)`: 
-      - Mirrors create path but uses `operation="update"`.
-    - `_handle_product_delete(...)`:
-      - Validates payload (`ProductDeleteWebhook`).
-      - Looks up all `Product` rows for the Shopify product ID and store.
-      - Enqueues deletions into `sync_queue` with `operation="delete"`.
-    - `_handle_inventory_update(...)`:
-      - Validates and logs inventory updates. Currently does not update pricing/stock;
-        this is an extension point. 
+---
 
-- `models.py`
-  - Pydantic models describing Shopify webhook payloads:
-    - `ShopifyImage`: product image structure.
-    - `ShopifyVariant`: variant fields (price, barcode, SKU, inventory, etc.).
-    - `ShopifyProduct`: full product model.
-    - `ProductCreateWebhook`, `ProductUpdateWebhook`, `ProductDeleteWebhook`:
-      webhook payloads.
-    - `InventoryLevelsUpdateWebhook`: payload for inventory updates.
+### How Variants Are Handled
 
-- `transformer.py` (not shown here, but used extensively):
-  - Responsible for converting `ShopifyProduct`/variants into `NormalizedProduct`.
-  - Performs validation (`validate_normalized_product`) used by the adapter.
+Shopify products can have multiple variants (e.g. a t-shirt with sizes S, M, L). This
+integration treats **each variant as its own product** in Supabase:
 
-### Webhook and auth endpoints
+```text
+Shopify Product (1 product)
+  ├── Variant: Small  → NormalizedProduct (source_variant_id = variant_id_1)
+  ├── Variant: Medium → NormalizedProduct (source_variant_id = variant_id_2)
+  └── Variant: Large  → NormalizedProduct (source_variant_id = variant_id_3)
+```
 
-- **Webhooks**
-  - Legacy Shopify‑specific endpoints:
-    - `POST /webhooks/shopify/products/create`
-    - `POST /webhooks/shopify/products/update`
-    - `POST /webhooks/shopify/products/delete`
-    - `POST /webhooks/shopify/inventory_levels/update`
-  - Generic handler:
-    - `POST /webhooks/shopify/{event_type:path}`
-  - All are defined in `app/routers/webhooks.py` and ultimately dispatched through
-    `ShopifyIntegrationAdapter`.
+Each variant gets its own row in the `products` table and its own entry in `sync_queue`,
+allowing each ESL label to show the correct variant price independently.
 
-- **OAuth and onboarding**
-  - Shopify OAuth and API authentication are handled in `app/routers/shopify_auth.py`
-    and the related service layer. This integration README focuses on webhook
-    processing and product sync; refer to `shopify_auth` and the root `README.md`
-    for full OAuth details.
+---
 
-### Extending the Shopify integration
+### Authentication & Security
 
-When adding new Shopify behavior, follow these guidelines:
+#### Webhook Signature Verification
 
-- **New webhook events**
-  - Add the event to `get_supported_events()`.
-  - Extend `handle_webhook(...)` with a new branch and implement a dedicated handler:
-    - Validate using a new Pydantic model in `models.py`.
-    - Translate into one or more `NormalizedProduct` or other normalized entities.
-    - Use `SupabaseService` to persist and enqueue changes for `sync_worker`.
+Shopify signs every webhook using **HMAC SHA256** over the raw request body.
 
-- **New product fields or validation rules**
-  - Add fields to `ShopifyVariant` / `ShopifyProduct` models where appropriate.
-  - Update `ShopifyTransformer` and its validation methods.
-  - Keep all multi‑tenant constraints (`source_store_id`, `store_mapping_id`) intact.
+The system:
 
-- **Do not**
-  - Do not call Hipoink directly from the adapter or routers.
-  - Do not bypass `SupabaseService` with raw SQL.
-  - Do not reuse global/shared API keys across merchants; always resolve per-store
-    configuration via store mappings.
+1. Extracts `X-Shopify-Hmac-Sha256` from the request headers.
+2. Computes HMAC SHA256 over the raw body using `settings.shopify_webhook_secret`.
+3. Compares using constant-time `hmac.compare_digest`.
+4. Rejects any mismatch with `401 Unauthorized`.
 
-### Gotchas and troubleshooting
+> Any reverse proxy or middleware must preserve headers and the raw body exactly, or
+> signature verification will fail.
 
-- **Signature mismatches**
-  - Confirm `settings.shopify_webhook_secret` matches the secret configured in the
-    Shopify admin for each webhook.
-  - Ensure the deployed base URL and the Shopify webhook URLs are correct; any proxy
-    or middleware must preserve the raw body and headers.
+#### Store Identification (Multi-Tenancy)
 
-- **Missing store mappings**
-  - If a webhook arrives for a shop that is not onboarded, the adapter will
-    return `404` with a message instructing the user to create a store mapping
-    via `/api/store-mappings/`.
+Each Shopify store is identified by its **shop domain** (e.g. `mystore.myshopify.com`).
 
-- **Multi‑tenant isolation**
-  - All queries filter by `source_store_id` = shop domain; be careful to preserve
-    this when adding new helper methods or Supabase queries.
+- The shop domain is extracted from webhook headers (and/or payload).
+- That domain is stored as `store_mappings.source_store_id`.
+- Every Supabase query for Shopify filters by `source_system="shopify"` and that 
+  `source_store_id`.
 
-- **Inventory webhooks**
-  - Currently treated as informational and only logged. If you need inventory‑driven
-    price or availability updates, extend `_handle_inventory_update(...)` to update
-    `Product` records and enqueue sync work in a way that is consistent with the
-    existing pipeline.
+This guarantees data isolation between stores.
+
+---
+
+### Key Components
+
+#### `adapter.py` — `ShopifyIntegrationAdapter`
+
+Orchestrates webhook handling and product sync:
+
+- `get_name()` → `"shopify"`.
+- `verify_signature(...)`:
+  - Validates HMAC signatures using the shop’s webhook secret.
+- `extract_store_id(...)`:
+  - Extracts shop domain from headers to determine `source_store_id`.
+- `transform_product(...)`:
+  - Converts a full Shopify product (with all variants) into a list of
+    `NormalizedProduct` instances (one per variant).
+- `transform_inventory(...)`:
+  - Parses inventory-level updates into `NormalizedInventory` (currently an extension point).
+- `_handle_product_create(...)`, `_handle_product_update(...)`, `_handle_product_delete(...)`:
+  - Validate, normalize, upsert into Supabase, and enqueue appropriate `sync_queue`
+    operations (`create`, `update`, `delete`).
+- `_handle_inventory_update(...)`:
+  - Validates and logs inventory events; can be extended to drive ESL updates.
+
+#### `models.py`
+
+Pydantic models that define and validate Shopify webhook payloads:
+
+- `ShopifyProduct`, `ShopifyVariant`, `ShopifyImage`, etc.
+- `ProductCreateWebhook`, `ProductUpdateWebhook`, `ProductDeleteWebhook`,
+  `InventoryLevelsUpdateWebhook`.
+
+These ensure incoming payloads are well-formed before the adapter processes them.
+
+#### `ShopifyTransformer`
+
+Central place for mapping raw Shopify data into `NormalizedProduct`:
+
+- Extracts titles, barcodes, SKUs, pricing, images, and other fields.
+- Enforces internal validation via `validate_normalized_product`.
+
+---
+
+### Webhook Endpoints
+
+Core endpoints:
+
+| Method | Endpoint | Description |
+| --- | --- | --- |
+| `POST` | `/webhooks/shopify/products/create` | Product created in Shopify |
+| `POST` | `/webhooks/shopify/products/update` | Product updated in Shopify |
+| `POST` | `/webhooks/shopify/products/delete` | Product deleted in Shopify |
+| `POST` | `/webhooks/shopify/inventory_levels/update` | Inventory level changed |
+| `POST` | `/webhooks/shopify/{event_type}` | Generic consolidated handler (routes above traffic through) |
+
+All of these are ultimately routed through the generic webhooks router, which resolves
+the `ShopifyIntegrationAdapter` from `integration_registry`.
+
+---
+
+### Product Data in Supabase
+
+Each row created by this integration in `products` has:
+
+| Field | Value |
+| --- | --- |
+| `source_system` | `"shopify"` |
+| `source_id` | Shopify product ID |
+| `source_variant_id` | Shopify variant ID |
+| `source_store_id` | Shop domain (e.g. `mystore.myshopify.com`) |
+| `status` | `"validated"` or `"pending"` based on validation result |
+| `validation_errors` | Any validation issues found |
+
+This keeps multi-variant and multi-tenant state clearly separated.
+
+---
+
+### Multi-Tenant Safety
+
+The Shopify integration is multi-tenant by design:
+
+- Every store has its own `StoreMapping` row keyed by `source_system="shopify"` and
+  `source_store_id=<shop_domain>`.
+- All Supabase queries for Shopify products include `source_store_id` filters.
+- If a webhook arrives for a shop with no mapping, the system can respond with a clear
+  error and/or log the mismatch for onboarding.
+
+---
+
+### Troubleshooting
+
+| Problem | What To Check |
+| --- | --- |
+| Webhooks rejected with 401 | Ensure `settings.shopify_webhook_secret` matches the secret in Shopify Admin. Confirm proxies aren’t modifying headers/body. |
+| `404` — store mapping not found | The shop sending the webhook has not been onboarded. Create a mapping via `/api/store-mappings/`. |
+| Products not appearing on ESL | Check `sync_queue` for operations for the relevant `store_mapping_id`. Confirm the sync worker is running. |
+| Specific variant missing | Review transformer validation; some variants may be filtered out due to validation errors. Check logs around that product ID. |
+
+---
+
+### Extending This Integration
+
+#### Adding new webhook events
+
+1. Add the event type to `ShopifyIntegrationAdapter.get_supported_events()`.
+2. Extend `handle_webhook(...)` with a handler for the new event.
+3. Add a new Pydantic model in `models.py` for the payload shape.
+4. Use `ShopifyTransformer` to normalize new data fields.
+5. Persist via `SupabaseService` and enqueue `sync_queue` operations as needed.
+
+#### Extending inventory handling
+
+`_handle_inventory_update(...)` currently logs inventory events. To activate
+inventory-driven ESL updates:
+
+1. Update the handler to modify the corresponding `Product` rows’ inventory fields.
+2. Decide how inventory affects ESL labels (e.g. hide tags for out-of-stock items).
+3. Enqueue `sync_queue` updates consistent with the existing product sync pipeline.
 

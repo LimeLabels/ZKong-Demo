@@ -22,6 +22,7 @@ from app.integrations.base import (
 )
 from app.integrations.clover.api_client import CloverAPIClient, CloverAPIError
 from app.integrations.clover.models import CloverWebhookPayload
+from app.integrations.clover.token_encryption import decrypt_tokens_from_storage
 from app.integrations.clover.token_refresh import (
     ON_DEMAND_REFRESH_THRESHOLD_SECONDS,
     CloverTokenRefreshService,
@@ -116,8 +117,9 @@ class CloverIntegrationAdapter(BaseIntegrationAdapter):
         """
         if not store_mapping.metadata:
             return None
-        access_token = store_mapping.metadata.get("clover_access_token")
-        expiration = store_mapping.metadata.get("clover_access_token_expiration")
+        meta = decrypt_tokens_from_storage(store_mapping.metadata)
+        access_token = meta.get("clover_access_token")
+        expiration = meta.get("clover_access_token_expiration")
         if not access_token:
             return None
 
@@ -133,7 +135,8 @@ class CloverIntegrationAdapter(BaseIntegrationAdapter):
             if success and updated_mapping and updated_mapping.metadata:
                 # FIX 4: Use the updated_mapping returned from refresh (it has fresh tokens)
                 # Don't fall back to old store_mapping object
-                new_access_token = updated_mapping.metadata.get("clover_access_token")
+                new_meta = decrypt_tokens_from_storage(updated_mapping.metadata)
+                new_access_token = new_meta.get("clover_access_token")
                 if new_access_token:
                     return new_access_token
                 logger.warning(
@@ -169,14 +172,47 @@ class CloverIntegrationAdapter(BaseIntegrationAdapter):
         """
         access_token = await self._ensure_valid_token(store_mapping)
         if not access_token:
+            logger.warning(
+                "No valid Clover access token; cannot update item price (check encryption key / token in store mapping)",
+                store_mapping_id=str(store_mapping.id),
+                merchant_id=store_mapping.source_store_id,
+            )
             raise ValueError("No valid Clover access token; cannot update item price")
         merchant_id = store_mapping.source_store_id
         price_cents = round(price_dollars * 100)
         if price_cents < 0:
             raise ValueError(f"Invalid price_dollars={price_dollars} (cents={price_cents})")
 
+        # Safety check: Ensure token is not encrypted ciphertext
+        if access_token and access_token.startswith("gAAAAA"):
+            logger.error(
+                "Clover access token appears to be encrypted ciphertext! "
+                "Missing CLOVER_TOKEN_ENCRYPTION_KEY in environment? "
+                "Cannot use this token for API calls.",
+                merchant_id=merchant_id,
+                store_mapping_id=str(store_mapping.id),
+            )
+            raise ValueError(
+                "Clover access token is encrypted ciphertext (missing decryption key?)"
+            )
+
+        # Token comes from _ensure_valid_token -> decrypt_tokens_from_storage(metadata)["clover_access_token"].
+        # It must be plaintext OAuth access token for Clover BOS POST; if worker runs old code without decrypt, ciphertext would be sent and Clover would reject.
+        logger.debug(
+            "Clover BOS price update: using OAuth access token from store mapping (decrypted if encryption enabled)",
+            store_mapping_id=str(store_mapping.id),
+            merchant_id=merchant_id,
+            token_prefix=access_token[:4] if access_token else "None",
+        )
         client = CloverAPIClient(access_token=access_token)
         try:
+            logger.info(
+                "Attempting Clover API update_item",
+                merchant_id=merchant_id,
+                item_id=item_id,
+                price_cents=price_cents,
+                price_dollars=price_dollars,
+            )
             await client.update_item(
                 merchant_id=merchant_id,
                 item_id=item_id,
@@ -246,7 +282,9 @@ class CloverIntegrationAdapter(BaseIntegrationAdapter):
         if skip_token_refresh:
             # Token was just issued (e.g. OAuth callback); use it as-is to avoid
             # racing with the worker's refresh in another process.
-            access_token = (store_mapping.metadata or {}).get("clover_access_token")
+            access_token = decrypt_tokens_from_storage(store_mapping.metadata or {}).get(
+                "clover_access_token"
+            )
         else:
             access_token = await self._ensure_valid_token(store_mapping)
 
@@ -409,9 +447,14 @@ class CloverIntegrationAdapter(BaseIntegrationAdapter):
         Handle Clover webhook: verification POST first, then validate payload,
         then process all merchants (collect errors, always return 200).
         """
-        # a) Verification POST: dashboard sends only verificationCode
+        # a) Verification POST: dashboard sends only verificationCode (webhook URL setup)
         if "verificationCode" in payload and "merchants" not in payload:
-            return {"verificationCode": payload["verificationCode"]}
+            verification_code = payload.get("verificationCode", "")
+            logger.info(
+                "Clover webhook URL verification (setup): returning verificationCode for dashboard",
+                verification_code=verification_code,
+            )
+            return {"verificationCode": verification_code}
 
         # b) Payload validation
         try:
@@ -437,7 +480,8 @@ class CloverIntegrationAdapter(BaseIntegrationAdapter):
                     errors.append({"merchant_id": merchant_id, "message": "No store mapping found"})
                     continue
                 metadata = store_mapping.metadata or {}
-                access_token = metadata.get("clover_access_token")
+                decrypted = decrypt_tokens_from_storage(metadata)
+                access_token = decrypted.get("clover_access_token")
                 if not access_token:
                     errors.append({"merchant_id": merchant_id, "message": "No access token"})
                     continue

@@ -16,40 +16,97 @@ The system follows a hybrid approach:
 
 ## Features
 
-- ✅ Shopify webhook processing (products/create, products/update, products/delete, inventory/update)
+### Multi-Platform Integrations
+- ✅ **Shopify** - Full webhook processing (products/create, products/update, products/delete, inventory/update)
+- ✅ **Square POS** - OAuth onboarding, catalog sync, inventory webhooks
+- ✅ **Clover POS** - OAuth onboarding, polling sync, webhook support
+- ✅ **NCR POS** - Catalog management, price updates
+
+### Core Functionality
 - ✅ Hipoink ESL API integration
-- ✅ Automatic variant extraction (each Shopify variant → separate Hipoink product)
-- ✅ Data validation and normalization
+- ✅ Automatic variant extraction (each variant → separate ESL product)
+- ✅ Data validation and normalization across all platforms
 - ✅ Retry logic with exponential backoff
 - ✅ Comprehensive audit logging
 - ✅ Queue-based async processing
-- ✅ Configurable store mappings (Shopify → Hipoink)
+- ✅ Configurable store mappings (multi-tenant support)
+
+### Advanced Features
+- ✅ **Time-based pricing** - Schedule price changes by time of day
+- ✅ **OAuth flows** - Secure merchant onboarding for Square, Clover, Shopify
+- ✅ **Token management** - Automatic refresh for Square and Clover tokens
+- ✅ **Multiple frontends** - Embedded Shopify app + standalone dashboard + OAuth onboarding pages
+- ✅ **Slack notifications** - Error alerts for webhook failures
 
 ## Project Structure
 
 ```
-hipoink-demo/
+ZKong-Demo/
 ├── app/
 │   ├── __init__.py
-│   ├── main.py                 # FastAPI application entry point
-│   ├── config.py               # Configuration management
+│   ├── main.py                      # FastAPI application entry point
+│   ├── config.py                    # Configuration management
+│   ├── integrations/                # Multi-platform integration adapters
+│   │   ├── base.py                  # Base integration interface
+│   │   ├── registry.py              # Auto-discovery integration registry
+│   │   ├── shopify/                 # Shopify integration
+│   │   │   ├── adapter.py           # Shopify integration adapter
+│   │   │   ├── models.py            # Shopify webhook models
+│   │   │   └── transformer.py       # Data transformation
+│   │   ├── square/                  # Square POS integration
+│   │   │   ├── adapter.py           # Square integration adapter
+│   │   │   ├── api_client.py        # Square API client
+│   │   │   └── models.py            # Square data models
+│   │   ├── clover/                  # Clover POS integration
+│   │   │   ├── adapter.py           # Clover integration adapter
+│   │   │   ├── api_client.py        # Clover API client
+│   │   │   └── token_encryption.py  # Token security
+│   │   └── ncr/                     # NCR POS integration
+│   │       ├── adapter.py           # NCR integration adapter
+│   │       ├── api_client.py        # NCR API client
+│   │       └── models.py            # NCR data models
 │   ├── models/
-│   │   ├── shopify.py          # Shopify webhook models
-│   │   ├── hipoink.py          # Hipoink API models
-│   │   └── database.py        # Supabase table models
+│   │   ├── hipoink.py               # Hipoink ESL API models
+│   │   └── database.py              # Supabase table models
 │   ├── services/
-│   │   ├── shopify_service.py  # Shopify data transformation
-│   │   ├── hipoink_client.py   # Hipoink ESL API client
-│   │   └── supabase_service.py # Supabase operations
+│   │   ├── hipoink_client.py        # Hipoink ESL API client
+│   │   ├── supabase_service.py      # Supabase operations
+│   │   └── slack_service.py         # Slack notifications
 │   ├── routers/
-│   │   └── webhooks.py         # Shopify webhook endpoints
+│   │   ├── webhooks.py              # Consolidated webhook router
+│   │   ├── shopify_auth.py          # Shopify OAuth endpoints
+│   │   ├── square_auth.py           # Square OAuth endpoints
+│   │   ├── clover_auth.py           # Clover OAuth endpoints
+│   │   ├── store_mappings.py        # Store mapping CRUD
+│   │   ├── products.py              # Product search endpoints
+│   │   ├── price_adjustments.py     # Time-based pricing schedules
+│   │   ├── external_webhooks.py     # External trigger endpoints
+│   │   └── auth.py                  # User authentication
 │   ├── workers/
-│   │   └── sync_worker.py      # Background sync worker
+│   │   ├── __main__.py              # Worker entry point
+│   │   ├── sync_worker.py           # ESL sync worker
+│   │   ├── price_scheduler.py       # Time-based price updates
+│   │   ├── token_refresh_scheduler.py # OAuth token refresh
+│   │   └── clover_sync_worker.py    # Clover polling sync
 │   └── utils/
-│       ├── logger.py           # Logging configuration
-│       └── retry.py            # Retry logic utilities
-├── migrations/
-│   └── 001_remove_zkong_add_hipoink.sql  # Database migration
+│       ├── logger.py                # Logging configuration
+│       └── retry.py                 # Retry logic utilities
+├── frontend/                        # Next.js onboarding app
+│   └── pages/
+│       └── onboarding/
+│           ├── square.tsx           # Square OAuth onboarding
+│           └── clover.tsx           # Clover OAuth onboarding
+├── shopify-app/                     # Embedded Shopify pricing app
+│   └── src/
+│       ├── App.tsx                  # Main app component
+│       └── components/              # Pricing strategy UI
+├── external-tool/                   # Standalone pricing dashboard
+│   └── src/
+│       ├── App.tsx                  # Dashboard app
+│       └── components/              # Dashboard components
+├── docs/                            # Additional documentation
+│   ├── USER_FLOW.md                 # Complete user flow guide
+│   └── TIME_BASED_PRICING.md        # Time-based pricing docs
 ├── .env.example
 ├── requirements.txt
 └── README.md
@@ -128,7 +185,7 @@ POST /api/store-mappings/
 
 ### 5. Hipoink ESL Server Configuration
 
-1. Deploy Hipoink ESL server (see `readme copy.md` for setup instructions)
+1. Deploy Hipoink ESL server (refer to Hipoink's official documentation for setup instructions)
 2. Obtain your Hipoink admin credentials
 3. Get your store code from the Hipoink dashboard
 4. Configure API secret if required (default sign: `80805d794841f1b4`)
@@ -278,7 +335,7 @@ Product fields mapped:
 The system is designed to support multiple integrations:
 
 1. Add new integration type in `store_mappings.source_system`
-2. Create transformer service (similar to `shopify_service.py`)
+2. Create integration adapter (see `app/integrations/shopify/adapter.py` as reference)
 3. Add webhook router for new integration
 4. Configure store mappings via API
 

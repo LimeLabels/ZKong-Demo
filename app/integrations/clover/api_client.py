@@ -56,6 +56,7 @@ class CloverAPIClient:
         self._client: httpx.AsyncClient | None = None
 
     def _headers(self) -> dict[str, str]:
+        # access_token must be the plaintext Clover OAuth access token (adapter passes decrypted token from decrypt_tokens_from_storage).
         return {
             "Authorization": f"Bearer {self.access_token}",
             "Content-Type": "application/json",
@@ -131,11 +132,7 @@ class CloverAPIClient:
 
         return all_items
 
-    async def get_item(
-        self,
-        merchant_id: str,
-        item_id: str,
-    ) -> dict[str, Any] | None:
+    async def get_item(self, merchant_id: str, item_id: str) -> dict[str, Any] | None:
         """
         Fetch a single item by ID.
 
@@ -222,12 +219,31 @@ class CloverAPIClient:
         client = await self._get_client()
         url = f"{self.base_url}/v3/merchants/{merchant_id}/items/{raw_id}"
         body: dict[str, Any] = {"price": price_cents, **kwargs}
+
+        logger.info(
+            "Sending Clover API request",
+            method="POST",
+            url=url,
+            body=body,
+            merchant_id=merchant_id,
+            item_id=raw_id,
+        )
+
         try:
             response = await client.post(
                 url,
                 headers=self._headers(),
                 json=body,
             )
+
+            logger.info(
+                "Received Clover API response",
+                status_code=response.status_code,
+                merchant_id=merchant_id,
+                item_id=raw_id,
+                response_text=response.text[:500] if response.text else "",
+            )
+
         except httpx.RequestError as e:
             logger.error(
                 "Clover API update_item request failed",
@@ -334,7 +350,7 @@ class CloverAPIClient:
         Returns:
             List of Clover item IDs (without I: prefix).
         """
-        all_ids: list[str] = []
+        ids: list[str] = []
         offset = 0
         client = await self._get_client()
 

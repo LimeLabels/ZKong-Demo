@@ -59,7 +59,7 @@ class PriceScheduler:
             client_id=getattr(settings, "hipoink_client_id", "default")
         )
         self.running = False
-        self.check_interval_seconds = 60  # Check every minute
+        self.check_interval_seconds = 15  # Check every 15 seconds for faster trigger response
 
     async def start(self):
         """Start the price scheduler loop."""
@@ -173,6 +173,55 @@ class PriceScheduler:
             )
 
             if not in_time_slot:
+                # SAFETY NET: Check if we missed a restore.
+                # If the schedule was triggered today (promo applied) and we're now past
+                # the slot end time, we need to restore original prices.
+                if schedule.last_triggered_at and schedule.time_slots:
+                    # Work entirely in store timezone to avoid UTC/store offset bugs
+                    last_trigger_local = schedule.last_triggered_at.astimezone(store_timezone)
+                    current_time_local = current_time  # already in store_timezone
+
+                    if last_trigger_local.date() == current_time_local.date():
+                        last_slot = schedule.time_slots[-1]
+                        last_end_time = datetime.strptime(last_slot["end_time"], "%H:%M").time()
+                        current_time_only = current_time_local.time()
+
+                        if current_time_only > last_end_time:
+                            # We're past the slot end — prices should have been restored.
+                            # Check if last trigger was near a start time (i.e. promo was applied).
+                            for slot in schedule.time_slots:
+                                start_time = datetime.strptime(slot["start_time"], "%H:%M").time()
+                                last_trigger_time = last_trigger_local.time()
+                                start_diff = abs(
+                                    (
+                                        datetime.combine(
+                                            current_time_local.date(), last_trigger_time
+                                        )
+                                        - datetime.combine(current_time_local.date(), start_time)
+                                    ).total_seconds()
+                                )
+                                # Within 5 minutes of start → treat as promo-applied state
+                                if start_diff <= 300:
+                                    logger.warning(
+                                        "=== MISSED RESTORE DETECTED — Restoring now ===",
+                                        schedule_id=str(schedule.id),
+                                        last_triggered_at=schedule.last_triggered_at.isoformat(),
+                                        current_time=current_time_local.isoformat(),
+                                    )
+                                    products_data = schedule.products.get("products", [])
+                                    if products_data:
+                                        await self._restore_original_prices(
+                                            schedule, store_mapping, products_data
+                                        )
+                                        # Prevent repeated failsafe triggers on daily schedules:
+                                        # mark last_triggered_at as handled at current_time_utc.
+                                        self._update_schedule_next_trigger(
+                                            schedule,
+                                            schedule.next_trigger_at,
+                                            last_triggered_at=current_time_utc,
+                                        )
+                                    break
+
                 # Not in a time slot - calculate next trigger and skip
                 logger.info(
                     "Schedule not in time slot, calculating next trigger",
@@ -232,6 +281,12 @@ class PriceScheduler:
                     )
             else:
                 # Restore original prices (end of time slot)
+                logger.info(
+                    "=== END OF TIME SLOT — RESTORING PRICES ===",
+                    schedule_id=str(schedule.id),
+                    is_start=is_start,
+                    source_system=store_mapping.source_system,
+                )
                 await self._restore_original_prices(schedule, store_mapping, products_data)
                 # After restoring, next trigger is tomorrow's start time (for daily repeat)
                 # or calculate normally for other repeat types
@@ -294,7 +349,7 @@ class PriceScheduler:
             )
             time_diff_start = abs((current_time - start_datetime).total_seconds())
 
-            # Check if we're at the end time (within 2 minutes)
+            # Check if we're at the end time (within tolerance window)
             end_datetime = store_timezone.localize(datetime.combine(current_time.date(), end_time))
             time_diff_end = abs((current_time - end_datetime).total_seconds())
 
@@ -310,7 +365,9 @@ class PriceScheduler:
                 logger.info("At start of time slot", slot=slot, time_diff=time_diff_start)
                 return (True, True)
 
-            if time_diff_end <= 120:  # Within 2 minutes of end
+            if (
+                time_diff_end <= 300
+            ):  # Within 5 minutes of end (more tolerant so we don't miss restore)
                 logger.info("At end of time slot", slot=slot, time_diff=time_diff_end)
                 return (True, False)
 
@@ -910,8 +967,14 @@ class PriceScheduler:
                     store_mapping,
                 )
 
-            # Update Clover prices if store mapping is for Clover
+            # Update Clover (BOS) prices if store mapping is for Clover
             if store_mapping.source_system == "clover":
+                logger.info(
+                    "Updating Clover BOS prices for schedule (time-based pricing)",
+                    schedule_id=str(schedule.id),
+                    store_mapping_id=str(store_mapping.id),
+                    product_count=len(updated_products_data),
+                )
                 await self._update_clover_prices(
                     updated_products_data,
                     store_mapping,
@@ -932,6 +995,12 @@ class PriceScheduler:
         products_data: list,
     ):
         """Restore original prices to products - preserves all existing product data."""
+        logger.info(
+            "=== RESTORE ORIGINAL PRICES CALLED ===",
+            schedule_id=str(schedule.id),
+            source_system=store_mapping.source_system,
+            products_count=len(products_data),
+        )
         logger.info(
             "Restoring original prices",
             schedule_id=str(schedule.id),
@@ -1095,12 +1164,23 @@ class PriceScheduler:
                     use_original=True,
                 )
 
-            # Update Clover prices if store mapping is for Clover (restore original prices)
+            # Update Clover (BOS) prices if store mapping is for Clover (restore original prices)
             if store_mapping.source_system == "clover":
+                logger.info(
+                    "=== CLOVER BOS RESTORE STARTING ===",
+                    schedule_id=str(schedule.id),
+                    store_mapping_id=str(store_mapping.id),
+                    product_count=len(products_data),
+                )
                 await self._update_clover_prices(
                     products_data,
                     store_mapping,
                     use_original=True,
+                )
+                logger.info(
+                    "=== CLOVER BOS RESTORE FINISHED ===",
+                    schedule_id=str(schedule.id),
+                    store_mapping_id=str(store_mapping.id),
                 )
 
         except Exception as e:
@@ -1437,6 +1517,28 @@ class PriceScheduler:
             )
             return
 
+        # Validate that we at least have some token configured in metadata.
+        # Actual decryption/plaintext handling is done inside the adapter via
+        # decrypt_tokens_from_storage / _ensure_valid_token.
+        access_token_raw = (store_mapping.metadata or {}).get("clover_access_token")
+
+        if not access_token_raw:
+            logger.error(
+                "=== CLOVER BOS UPDATE ABORTED: No clover_access_token in store mapping metadata ===",
+                store_mapping_id=str(store_mapping.id),
+                merchant_id=store_mapping.source_store_id,
+                has_metadata=bool(store_mapping.metadata),
+            )
+            return
+
+        logger.info(
+            "=== CLOVER BOS UPDATE STARTING ===",
+            store_mapping_id=str(store_mapping.id),
+            merchant_id=store_mapping.source_store_id,
+            product_count=len(products_data),
+            use_original=use_original,
+            token_prefix=str(access_token_raw)[:8],
+        )
         try:
             clover_adapter = CloverIntegrationAdapter()
             updates = 0
@@ -1454,9 +1556,7 @@ class PriceScheduler:
 
                 try:
                     if use_original:
-                        price_dollars = float(
-                            product_data.get("original_price") or 0
-                        )
+                        price_dollars = float(product_data.get("original_price") or 0)
                     else:
                         price_dollars = float(product_data.get("pp") or 0)
 
@@ -1470,15 +1570,39 @@ class PriceScheduler:
                         failed += 1
                         continue
 
+                    # Try to find product by source ID (assuming pc is item ID)
                     products_by_source = self.supabase_service.get_products_by_source_id(
                         "clover",
                         item_id,
                         source_store_id=store_mapping.source_store_id,
                     )
-                    existing_product = (
-                        products_by_source[0] if products_by_source else None
-                    )
+                    existing_product = products_by_source[0] if products_by_source else None
 
+                    # If not found by ID, try to find by barcode (assuming pc is barcode)
+                    if not existing_product:
+                        possible_product = self.supabase_service.get_product_by_barcode(item_id)
+                        if (
+                            possible_product
+                            and possible_product.source_system == "clover"
+                            and possible_product.source_store_id == store_mapping.source_store_id
+                        ):
+                            existing_product = possible_product
+                            if existing_product.source_id:
+                                logger.info(
+                                    "Resolved Clover item ID from barcode",
+                                    barcode=item_id,
+                                    resolved_item_id=existing_product.source_id,
+                                    store_mapping_id=str(store_mapping.id),
+                                )
+                                # Update item_id to the actual Clover source_id
+                                item_id = existing_product.source_id
+
+                    logger.info(
+                        "Calling Clover adapter.update_item_price",
+                        item_id=item_id,
+                        price_dollars=price_dollars,
+                        merchant_id=store_mapping.source_store_id,
+                    )
                     await clover_adapter.update_item_price(
                         store_mapping=store_mapping,
                         item_id=item_id,
@@ -1486,37 +1610,38 @@ class PriceScheduler:
                         existing_product=existing_product,
                     )
                     updates += 1
+                    logger.info(
+                        "=== CLOVER BOS ITEM PRICE UPDATED SUCCESSFULLY ===",
+                        item_id=item_id,
+                        price_dollars=price_dollars,
+                    )
                 except Exception as e:
                     logger.error(
-                        "Failed to update Clover price",
+                        "=== CLOVER BOS ITEM PRICE UPDATE FAILED ===",
                         item_id=item_id,
                         store_mapping_id=str(store_mapping.id),
                         error=str(e),
+                        error_type=type(e).__name__,
                     )
                     failed += 1
                     continue
 
                 await asyncio.sleep(0.1)
 
-            if updates:
-                logger.info(
-                    "Updated Clover prices",
-                    succeeded=updates,
-                    failed=failed,
-                    store_mapping_id=str(store_mapping.id),
-                )
-            if failed:
-                logger.warning(
-                    "Some Clover price updates failed",
-                    failed=failed,
-                    store_mapping_id=str(store_mapping.id),
-                )
+            logger.info(
+                "=== CLOVER BOS UPDATE FINISHED ===",
+                succeeded=updates,
+                failed=failed,
+                total=len(products_data),
+                store_mapping_id=str(store_mapping.id),
+            )
 
         except Exception as e:
             logger.error(
-                "Failed to update Clover prices (non-critical)",
+                "=== CLOVER BOS UPDATE CRASHED ===",
                 store_mapping_id=str(store_mapping.id),
                 error=str(e),
+                error_type=type(e).__name__,
             )
 
 

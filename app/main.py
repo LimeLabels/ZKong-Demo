@@ -7,23 +7,17 @@ import structlog
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-import app.integrations.shopify.adapter  # noqa: F401
-
-# Explicitly import adapters to ensure they're loaded and registered
-import app.integrations.square.adapter  # noqa: F401
 from app.integrations.registry import integration_registry
 from app.routers import (
     auth,
     clover_auth,
     external_webhooks,
-    ncr_test,
     price_adjustments,
     products,
     shopify_auth,
     square_auth,
     store_mappings,
     webhooks,
-    webhooks_new,
 )
 from app.utils.logger import configure_logging
 
@@ -48,8 +42,7 @@ app.add_middleware(
 )
 
 # Include routers
-app.include_router(webhooks.router)  # Legacy routes for backward compatibility
-app.include_router(webhooks_new.router)  # New generic integration router
+app.include_router(webhooks.router)  # Consolidated webhook router (legacy + generic)
 app.include_router(store_mappings.router)
 app.include_router(shopify_auth.router)  # Shopify OAuth endpoints
 app.include_router(shopify_auth.api_router)  # Shopify API auth endpoints
@@ -58,7 +51,6 @@ app.include_router(square_auth.api_router)  # Square API auth endpoints
 app.include_router(clover_auth.router)  # Clover OAuth endpoints
 app.include_router(price_adjustments.router)  # Time-based price adjustment schedules
 app.include_router(products.router)  # Product search endpoints
-app.include_router(ncr_test.router)  # NCR integration test endpoints
 app.include_router(external_webhooks.router)  # External webhooks for NCR and Square
 app.include_router(auth.router)  # Authentication endpoints
 

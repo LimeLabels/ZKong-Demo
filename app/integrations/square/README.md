@@ -1,196 +1,289 @@
 ## Square Integration
 
-### Overview
+### What Is This?
 
-The Square integration connects Square Catalog, Inventory, and Order webhooks and APIs
-to the Hipoink ESL middleware. It is responsible for:
+The Square integration connects **Square point-of-sale systems** to the Hipoink ESL
+(Electronic Shelf Label) middleware. It listens for real-time catalog and inventory
+changes from Square via webhooks, and also supports full catalog syncs on demand.
 
-- Verifying Square webhook signatures using HMAC SHA256 over `(notification_url + body)`.
-- Normalizing Square catalog objects into the internal product model.
-- Keeping products in Supabase in sync with Square Catalog (both via webhooks and full sync).
-- Managing Square OAuth tokens (including proactive refresh).
-- Enqueuing products into the `sync_queue` so workers can sync to Hipoink.
+Whenever a product is created or updated in Square, the change flows automatically
+through the system and updates the physical shelf labels in your store.
 
-All Square logic is encapsulated in `SquareIntegrationAdapter` and associated services.
-Routers and controllers do not talk to Square directly.
+---
 
-### Data flow
+### What Does It Do?
 
-There are two primary data paths: **webhook‑driven updates** and **API‑driven full/initial sync**.
+| Capability | Description |
+| --- | --- |
+| **Webhook handling** | Receives real-time catalog, inventory, and order events from Square |
+| **Full catalog sync** | Pulls all products from Square for initial setup or reconciliation |
+| **Price updates** | Updates catalog variation prices directly in Square |
+| **Delete reconciliation** | Detects and queues removal of products no longer present in Square |
+| **OAuth token management** | Manages and proactively refreshes Square access tokens |
+| **Multi-tenant support** | Safely handles multiple merchants without data leaking between them |
 
-#### Webhook‑driven updates
+All Square flows still go through Supabase (`products`, `sync_queue`) and the background
+sync workers; routers and adapters never talk to Hipoink directly.
 
-1. **Webhook ingress**
-   - Square sends webhooks (e.g. `catalog.version.updated`, `inventory.count.updated`,
-     `order.created`, `order.updated`) to:
-     - `POST /webhooks/square/{event_type}` (generic webhooks router).
+---
 
-2. **Signature verification**
-   - `x-square-hmacsha256-signature` is extracted in `app/routers/webhooks.py`.
-   - The router enforces that the header is present for Square and rejects requests if missing.
-   - `SquareIntegrationAdapter.verify_signature(payload, signature, headers, request_url)`:
-     - Computes HMAC SHA256 over `notification_url + payload` using `settings.square_webhook_secret`.
-     - Uses the actual request URL (forcing HTTPS if Railway terminates SSL).
-     - Compares using `hmac.compare_digest`.
+### How Data Flows
 
-3. **Adapter dispatch**
-   - `integration_registry.get_adapter("square") → SquareIntegrationAdapter`.
-   - `get_supported_events()` includes:
-     - `"catalog.version.updated"`
-     - `"inventory.count.updated"`
-     - `"order.created"`
-     - `"order.updated"`
-   - The generic webhook router calls:
-     - `SquareIntegrationAdapter.handle_webhook(event_type, request, headers, payload)`.
+#### 1. Webhook-Driven Updates (Real-Time)
 
-4. **Event handling**
-   - `catalog.version.updated`:
-     - Validates payload (`CatalogVersionUpdatedWebhook`).
-     - Extracts `merchant_id` (location identifier) via `extract_store_id`.
-     - Looks up a `StoreMapping` for `"square"` + `merchant_id`.
-     - Ensures a valid OAuth access token via `_ensure_valid_token` and
-       `SquareTokenRefreshService`.
-     - Uses a **hybrid strategy**:
-       - Optimized path: if the webhook includes a `catalog_object` (item or variation),
-         fetches only that object from the Square Catalog API and updates just that item.
-       - Fallback path: if optimization fails or object cannot be retrieved, performs a
-         full catalog sync (see below) and reconciles deletes.
-     - For each normalized variation:
-       - Creates/updates `Product` with `source_system="square"` and `source_store_id=merchant_id`.
-       - For changed and valid products, enqueues `sync_queue` entries for ESL updates.
-       - Detects and logs unit‑cost changes by comparing `normalized_data` (`f2`, `f4`).
-   - `inventory.count.updated`:
-     - Validates with `InventoryCountUpdatedWebhook`.
-     - Logs the event; currently does not alter products or queue items.
-   - `order.created` / `order.updated`:
-     - Logs high‑level order details (merchant, event_id, order_id).
-     - Parses order payload for potential future use (e.g. popularity metrics).
-     - Acknowledges the event so Square will not retry.
+This is the primary path for keeping shelf labels in sync with Square.
 
-5. **Supabase persistence and queueing**
-   - `SupabaseService.create_or_update_product(...)` is used to upsert products.
-   - `SupabaseService.add_to_sync_queue(...)` is used to enqueue create/update/delete
-     operations for Hipoink sync when products are valid and changed.
-   - Deletions are handled via `_handle_catalog_delete(...)` and full sync reconciliation:
-     - Products present in the DB but not returned by the Catalog API are scheduled
-       for deletion via `sync_queue`.
+```text
+Square detects a catalog/inventory/order change
+        ↓
+Sends webhook POST to: /webhooks/square/{event_type}
+        ↓
+System verifies HMAC SHA256 signature
+(computed over notification_url + raw body using square_webhook_secret)
+        ↓
+Adapter dispatches to the correct handler based on event type
+        ↓
+Handler processes the event (see event types below)
+        ↓
+Valid products upserted in Supabase
+        ↓
+sync_queue entries created → sync_worker updates ESL labels
+```
 
-#### API‑driven full / initial sync
+**Supported webhook events (examples):**
 
-The adapter also exposes an API for initial or ad‑hoc full sync of all catalog items:
+| Event | What Triggers It | What The System Does |
+| --- | --- | --- |
+| `catalog.version.updated` | Any product change in Square | Fetches and syncs updated catalog item(s) |
+| `inventory.count.updated` | Inventory quantity changes | Logs the event (extension point) |
+| `order.created` | New order placed | Logs order details for future use |
+| `order.updated` | Existing order modified | Logs order details for future use |
 
-- `sync_all_products_from_square(merchant_id, access_token, store_mapping_id, base_url)`:
-  - Uses `httpx.AsyncClient` to call Square Catalog API `GET /v2/catalog/list?types=ITEM`
-    with cursor‑based pagination.
-  - Collects all items, logging pages and item counts.
-  - Builds a cache of measurement units via `_fetch_measurement_units(...)`.
-  - For each catalog item:
-    - Builds a `SquareCatalogObject`.
-    - Converts to `NormalizedProduct` variations via `SquareTransformer`.
-    - Validates using `validate_normalized_product`.
-    - Creates/updates `Product` rows with multi‑tenant isolation by `source_store_id=merchant_id`.
-    - For valid products:
-      - Checks for existing Hipoink mappings using
-        `get_hipoink_product_by_product_id(product_id, store_mapping_id)`.
-      - Enqueues `sync_queue` entries with `operation="create"` if not already synced.
-  - Returns detailed statistics (`total_items`, `products_created`, `products_updated`,
-    `queued_for_sync`, `errors`).
+##### Catalog Update — Hybrid Strategy
 
-### Key components
+For `catalog.version.updated`, the system uses a smart two-path approach:
 
-- `adapter.py`
-  - `SquareIntegrationAdapter(BaseIntegrationAdapter)`:
-    - `get_name()` → `"square"`.
-    - `verify_signature(payload, signature, headers, request_url=None)`:
-      - Implements Square’s HMAC specification over `(notification_url + payload)`.
-      - Auto‑corrects `http://` to `https://` to handle SSL termination.
-    - `extract_store_id(headers, payload)`:
-      - Returns a merchant or location ID via the `SquareTransformer`.
-    - `transform_product(raw_data)`:
-      - Extracts `catalog_object` from webhook payload and transforms it via
-        `SquareTransformer.extract_variations_from_catalog_object(...)`.
-    - `transform_inventory(raw_data)`:
-      - Currently returns `None` (inventory sync is not primary focus).
-    - `get_supported_events()`:
-      - Lists all recognized webhook event types.
-    - `handle_webhook(...)`:
-      - Dispatches to `_handle_catalog_update`, `_handle_inventory_update`,
-        and `_handle_order_event`.
-    - `_ensure_valid_token(store_mapping)`:
-      - Uses `SquareTokenRefreshService` to refresh expiring tokens based on
-        metadata (`square_expires_at`), updating the store mapping before use.
-    - `_get_square_credentials(store_mapping)`:
-      - Resolves merchant ID and a valid access token from metadata, with logging
-        and no global token fallback.
-    - `sync_all_products_from_square(...)`:
-      - Implements paginated full sync, measurement unit lookup, and
-        `sync_queue` enqueueing.
-    - `update_catalog_object_price(object_id, price, access_token)`:
-      - Fetches the existing catalog variation object.
-      - Updates `item_variation_data.price_money` and saves it via
-        `POST /v2/catalog/object` with an idempotency key.
+```text
+Webhook received for catalog.version.updated
+        ↓
+Does the webhook include a specific catalog_object?
+        ↓
+  YES → Optimized path:
+    Fetch only the specific changed item from Square API
+    Normalize and sync just that item
+        ↓
+  NO (or fetch fails) → Fallback path:
+    Perform a full catalog sync
+    Reconcile deletes (items in DB but not in Square)
+```
 
-- `api_client.py`
-  - The Square integration uses `httpx.AsyncClient` directly inside the adapter for REST calls;
-    there is no separate Square API client module. Token management is delegated to
-    `SquareTokenRefreshService`.
+This keeps single-item changes fast while ensuring a correct, reconciled catalog when
+Square sends aggregate updates or when the optimized path fails.
 
-### Webhook and auth endpoints
+---
 
-- **Webhooks**
-  - Handled generically via `app/routers/webhooks.py`:
-    - `POST /webhooks/square/{event_type:path}`
-  - The router:
-    - Verifies `x-square-hmacsha256-signature` is present.
-    - Passes `request.url` into `verify_signature` for correct HMAC.
+#### 2. Full Catalog Sync (Initial Setup or Ad-Hoc)
 
-- **OAuth and onboarding**
-  - Square OAuth endpoints are defined in `app/routers/square_auth.py`:
-    - `router` under `/auth` for user‑facing OAuth flows.
-    - `api_router` under `/api/auth/square` for backend API usage.
-  - Access tokens and expiry are stored in `store_mappings.metadata` and refreshed
-    via `SquareTokenRefreshService`.
+Used when connecting a new Square store or when a full reconciliation is needed.
 
-### Extending the Square integration
+```text
+sync_all_products_from_square() triggered
+        ↓
+Calls Square Catalog API: GET /v2/catalog/list?types=ITEM
+Paginated with cursor-based pagination
+        ↓
+Builds a cache of measurement units for accurate product normalization
+        ↓
+For each catalog item:
+  → Build SquareCatalogObject
+  → Convert to NormalizedProduct variations (one per variation)
+  → Validate each variation
+  → Upsert Product in Supabase (filtered by source_store_id=merchant_id)
+  → If valid and not yet synced to Hipoink → queue for ESL sync
+        ↓
+Returns: total_items, products_created, products_updated, queued_for_sync, errors
+```
 
-When extending Square behavior:
+The initial full sync is typically triggered right after OAuth completion (via a
+background task), so merchants see products appear quickly without blocking the OAuth
+callback response.
 
-- **Add support for new webhook events**
-  - Append the event type to `get_supported_events()`.
-  - Add a new branch in `handle_webhook(...)` and implement a dedicated handler.
-  - Validate with a Pydantic model (in `square/models.py`) before processing.
-  - Ensure all Supabase queries filter by `source_store_id` (merchant/location ID).
+---
 
-- **Extend product/price sync**
-  - Add fields to `SquareCatalogObject` and the transformer where needed.
-  - Keep responsibility boundaries:
-    - Adapter: orchestration, validation, and calls into Supabase.
-    - Transformer: mapping from Square objects to `NormalizedProduct`.
-    - Workers: Hipoink sync.
+#### 3. Price Updates
 
-- **Be careful with tokens and multi‑tenancy**
-  - Never fall back to a global Square access token.
-  - Always derive the token from the `StoreMapping` that corresponds to the
-    incoming merchant/location.
+When time-based pricing fires for a Square catalog variation:
 
-### Gotchas and troubleshooting
+```text
+update_catalog_object_price(object_id, price, access_token) called
+        ↓
+Fetches the existing catalog variation object from Square
+        ↓
+Updates item_variation_data.price_money with the new amount
+        ↓
+Saves it via POST /v2/catalog/object with an idempotency key
+(idempotency key prevents duplicate updates if the request is retried)
+        ↓
+Local Product row updated in Supabase + sync_queue update → ESL label changes price
+```
 
-- **Signature validation failures**
-  - Ensure `settings.square_webhook_secret` matches the Square Dashboard configuration.
-  - Confirm the webhook URL in Square is the externally visible HTTPS URL
-    (including path); mismatches will break signature verification.
+---
 
-- **Token expiry**
-  - If you see `No access token found` or repeated `401` errors:
-    - Check that the `store_mappings.metadata` for the Square store contains
-      `square_access_token` and `square_expires_at`.
-    - Verify the `token_refresh_scheduler` worker is running and completing without errors.
+### Authentication & Security
 
-- **Unexpected deletes or missing products**
-  - The fallback full sync path reconciles DB products against the current
-    Square Catalog API result and may enqueue delete operations for items no
-    longer present in Square.
-  - When debugging, compare:
-    - `get_products_by_system("square", merchant_id)` against
-    - current items in the Square Catalog UI.
+#### Webhook Signature Verification
+
+Square uses **HMAC SHA256** over the combination of the full notification URL and the raw
+request body.
+
+The system:
+
+1. Extracts `x-square-hmacsha256-signature` from request headers.
+2. Computes HMAC SHA256 over `notification_url + raw_body` using
+   `settings.square_webhook_secret`.
+3. Normalizes `http://` to `https://` in URLs to account for SSL termination (e.g. on
+   Railway).
+4. Compares signatures using `hmac.compare_digest`.
+5. Rejects mismatches with `401 Unauthorized`.
+
+> The webhook URL used for HMAC must **exactly** match the URL configured in the Square
+> Dashboard, including protocol (`https`), host, and path.
+
+#### OAuth Access Tokens
+
+Square uses OAuth 2.0 for API access.
+
+Your flow (`square_auth.py`):
+
+- Initiates OAuth via `/auth/square`, encoding:
+  - `hipoink_store_code`, `store_name`, `timezone` into a base64 JSON `state`.
+- Square redirects back to `/auth/square/callback` with:
+  - `code` (authorization code)
+  - `state` (original onboarding data)
+- Backend exchanges `code` with Square’s `/oauth2/token` endpoint, receiving:
+  - `access_token`, `refresh_token`, `merchant_id`, `expires_at`, etc.
+- Fetches merchant locations via `GET /v2/locations`.
+- Stores everything in a `StoreMapping`:
+  - `source_system = "square"`
+  - `source_store_id = merchant_id`
+  - `metadata` includes tokens, locations, timezone, and install timestamps.
+- Schedules a background **initial product sync** using
+  `SquareIntegrationAdapter.sync_all_products_from_square(...)`.
+
+Tokens are later refreshed by a dedicated worker (`token_refresh_scheduler`) before they
+expire, and are always resolved per merchant.
+
+---
+
+### Key Components
+
+#### `adapter.py` — `SquareIntegrationAdapter`
+
+Orchestrates Square webhook handling and catalog sync:
+
+- `get_name()` → `"square"`.
+- `handle_webhook(...)`:
+  - Parses `integration_name="square"` events routed from the generic webhooks router.
+  - Verifies signatures and dispatches to specific handlers.
+- `verify_signature(...)`:
+  - Validates HMAC SHA256 webhook signatures.
+- `extract_store_id(...)`:
+  - Extracts `merchant_id` (and/or location) from webhook payload or metadata.
+- `sync_all_products_from_square(...)`:
+  - Implements the full catalog sync with pagination and normalization.
+- `update_catalog_object_price(...)`:
+  - Updates variation prices via the Square Catalog API.
+- `_ensure_valid_token(...)`:
+  - Refreshes expiring OAuth tokens before API calls.
+- `_handle_catalog_update(...)` and related helpers:
+  - Implements the hybrid “single-item vs full-sync” update strategy described above.
+
+#### Transformer & Models
+
+- `SquareTransformer`:
+  - Converts raw Square catalog objects into `NormalizedProduct` instances.
+  - Handles multi-variation items (one product row per variation).
+- Models in `square/models.py`:
+  - Strongly typed representations of Square webhook payloads and catalog objects.
+
+---
+
+### Webhook & Auth Endpoints
+
+Key endpoints that involve Square:
+
+| Method | Endpoint | Description |
+| --- | --- | --- |
+| `POST` | `/webhooks/square/{event_type}` | Main Square webhook handler (catalog, inventory, orders) |
+| `GET`  | `/auth/square` | Initiate user-facing Square OAuth flow |
+| `GET`  | `/auth/square/callback` | OAuth callback, exchanges code for tokens and creates store mapping |
+| `GET`  | `/api/auth/square/me` | Returns Square auth + store mapping status for a merchant |
+| `GET`  | `/api/auth/square/locations` | Returns all locations for a Square merchant |
+
+All of these feed into, or derive from, the `store_mappings` table and the shared
+`products → sync_queue → sync_worker` pipeline.
+
+---
+
+### Delete Reconciliation
+
+Square does not always send explicit delete webhooks for every catalog item. The
+integration addresses this by:
+
+1. When a full catalog sync runs (fallback path), it compares:
+   - Products returned by Square Catalog API
+   - Against `products` in Supabase (`source_system="square"`, `source_store_id=merchant_id`)
+2. Any product present in Supabase but **not** in Square’s response is treated as deleted.
+3. Those products are queued in `sync_queue` with `operation="delete"` so the ESL sync
+   worker can remove the labels.
+
+This keeps the ESL view aligned with Square’s source of truth even when explicit delete
+events are missing.
+
+---
+
+### Multi-Tenant Safety
+
+The Square integration is multi-tenant by design:
+
+- Every Supabase query filters by `source_store_id = merchant_id`.
+- OAuth tokens are always read from the specific `StoreMapping` for that merchant.
+- There is **no global Square access token**; if a token is missing for a merchant, the
+  operation fails with a clear error.
+
+---
+
+### Troubleshooting
+
+| Problem | What To Check |
+| --- | --- |
+| Signature validation failures | Confirm `settings.square_webhook_secret` matches the Square Dashboard secret and the webhook URL (including `https://` + full path) matches exactly. |
+| `No locations found` after OAuth | Ensure the Square app has `MERCHANT_PROFILE_READ` and `ITEMS_READ` scopes, and the merchant actually has locations configured. |
+| `No access token found` or repeated 401s | Check `store_mappings.metadata` for `square_access_token` / `square_expires_at`. Verify the token refresh worker is running. |
+| Missing or unexpectedly deleted products | Review full sync logs and Supabase `products` for that `merchant_id`. Full sync may have reconciled and queued deletions. |
+| Price not updating on ESL | Confirm `update_catalog_object_price(...)` is called, `sync_queue` has `update` operations, and the sync worker is running. |
+
+---
+
+### Extending This Integration
+
+#### Adding new webhook event types
+
+1. Add the event to `get_supported_events()` in the adapter.
+2. Extend `handle_webhook(...)` with a new branch to handle that event.
+3. Add or update Pydantic models in `square/models.py`.
+4. Normalize data via `SquareTransformer` and persist via `SupabaseService`.
+
+#### Adding new product fields
+
+1. Update `SquareTransformer` and related catalog models.
+2. Keep field mapping in the transformer and orchestration in the adapter.
+
+#### Important Rules
+
+- Do **not** call Hipoink directly from Square code — always use `sync_queue` and
+  background workers.
+- Always derive credentials and metadata from the `StoreMapping` for the current
+  merchant.
+- Always filter Supabase queries by `source_store_id`.
 

@@ -1,294 +1,291 @@
 ## Workers
 
-### Overview
+### What Is This?
 
-The workers in `app/workers` are responsible for all long‑running background
-processing in the system. They are intentionally separated from the HTTP API to:
+The workers are the **background engine** of the system. While the FastAPI backend handles incoming HTTP requests, the workers run continuously in a separate process and handle everything that happens asynchronously — syncing products to shelf labels, applying scheduled price changes, refreshing OAuth tokens, and polling external systems for updates.
 
-- Process sync and pricing workloads asynchronously and reliably.
-- Protect the Hipoink ESL API from being called directly from routers.
-- Implement retries and backoff without blocking requests.
+Think of the API as the front desk that accepts requests, and the workers as the back office that actually does the heavy lifting.
 
-At runtime, `python -m app.workers` (see `__main__.py`) starts:
-
-- The **ESL sync worker** (`SyncWorker`).
-- The **price scheduler** (`PriceScheduler`).
-- The **Square and Clover token refresh scheduler**.
-- The **Clover polling sync worker**.
-- A lightweight HTTP health server for Railway.
-- Optionally (currently disabled): the **NCR product sync worker**.
-
-All workers interact with Supabase via `SupabaseService` and respect the
-multi‑tenant model based on `store_mappings`.
-
-### Entry point and process model
-
-`app/workers/__main__.py`:
-
-- Defines the module entry point:
-  - `python -m app.workers`
-- On startup:
-  - Configures logging.
-  - Starts a small HTTP server on `PORT` (default `8080`) that serves `200 ok`
-    on `GET /health` for Railway health checks.
-  - Starts all workers concurrently via:
-    - `asyncio.gather(run_worker(), run_price_scheduler(), run_token_refresh_scheduler(), run_clover_sync_worker())`
-    - `run_ncr_sync_worker()` exists but is commented out (temporarily disabled).
-
-The expectation is that this module runs in its own process (or container) next to
-the FastAPI app, so API and worker lifecycles can be managed independently.
-
-### SyncWorker – ESL sync pipeline
-
-File: `sync_worker.py`  
-Class: `SyncWorker`  
-Entry function: `run_worker()`
-
-**Responsibility**
-
-The sync worker is the only component that talks to the Hipoink ESL API. It:
-
-- Polls the Supabase `sync_queue` table for pending items.
-- Fetches the associated `Product` and `StoreMapping`.
-- Translates normalized product data into Hipoink product payloads.
-- Sends create/update/delete requests to Hipoink.
-- Updates `sync_queue` and `sync_log` with status, timing, and error details.
-
-**Data flow**
-
-1. Integrations (Shopify, Square, Clover, NCR) write products to Supabase using
-   their respective adapters:
-   - See:
-     - `app/integrations/shopify/README.md`
-     - `app/integrations/square/README.md`
-     - `app/integrations/clover/README.md`
-     - `app/integrations/ncr/README.md`
-2. When a product is valid and needs to be synced, an entry is added to
-   `sync_queue` via `SupabaseService.add_to_sync_queue(...)`, with:
-   - `product_id`
-   - `store_mapping_id`
-   - `operation` (`create`, `update`, `delete`)
-   - `status="pending"`.
-3. `SyncWorker` periodically fetches a batch of pending items using
-   `get_pending_sync_queue_items(limit=10)` and for each item:
-   - Marks the entry as `"syncing"`.
-   - Loads `Product` and `StoreMapping`.
-   - Builds one or more `HipoinkProductItem` instances based on `normalized_data`.
-   - Calls the appropriate `HipoinkClient` method for the operation.
-   - Records success/failure and updates:
-     - `sync_queue.status` (`succeeded` / `failed`).
-     - `sync_queue.attempts`, timestamps, and error messages.
-     - `sync_log` entries for observability and audit.
-4. Retry logic distinguishes between transient and permanent errors using
-   `TransientError` and `PermanentError` from `app/utils/retry.py`, and respects
-   a maximum retry count with backoff.
-
-In short, queue items follow the lifecycle:
-
-`pending → syncing → succeeded | failed` (with retries up to the configured maximum).
-
-**Notes**
-
-- Routers and integrations must not call `HipoinkClient` directly; they are
-  expected to enqueue work in `sync_queue` and let the worker process it.
-- All Supabase access is via `SupabaseService`.
-
-### PriceScheduler – time‑based pricing
-
-File: `price_scheduler.py`  
-Class: `PriceScheduler`  
-Entry function: `run_price_scheduler()`
-
-**Responsibility**
-
-The price scheduler processes price adjustment schedules and applies price changes
-to both the POS/BOS systems and the Hipoink ESL platform. It:
-
-- Polls Supabase for `PriceAdjustmentSchedule` rows whose `next_trigger_at` is due.
-- Determines store timezones and schedule behavior (one‑off vs recurring).
-- Computes the next trigger time and updates the schedule.
-- Applies price changes across:
-  - Hipoink.
-  - Shopify (via `ShopifyAPIClient`).
-  - Square (via `SquareIntegrationAdapter`).
-  - Clover (via `CloverIntegrationAdapter`).
-  - NCR (via `NCRIntegrationAdapter`).
-
-**Data flow**
-
-1. Schedules are stored in Supabase with references to `store_mappings`, including
-   metadata for repeat rules and time windows. See:
-   - `docs/TIME_BASED_PRICING.md`
-   - `external-tool/README.md` for the external UI.
-2. `PriceScheduler`:
-   - Calls `SupabaseService.get_schedules_due_for_trigger(current_time_utc)` to
-     retrieve schedules whose `next_trigger_at` is in the past.
-   - For each schedule:
-     - Loads the associated `StoreMapping`.
-     - Determines the store timezone via `get_store_timezone(store_mapping)`.
-     - Logs contextual schedule details (name, repeat type, time slots).
-3. Price application is then delegated according to `store_mapping.source_system`:
-   - **Shopify**:
-     - Uses `ShopifyAPIClient` and the schedule’s rules to adjust prices in Shopify,
-       then typically enqueues updates for ESL.
-   - **Square**:
-     - Uses `SquareIntegrationAdapter` (e.g. `update_catalog_object_price`) to
-       update catalog variation prices via the Square API, and updates Supabase
-       products accordingly.
-   - **Clover**:
-     - Uses `CloverIntegrationAdapter.update_item_price(...)` to change BOS prices
-       and mirror them in Supabase.
-   - **NCR**:
-     - Uses `NCRIntegrationAdapter.update_price(...)` or
-       `NCRIntegrationAdapter.pre_schedule_prices(...)` depending on whether
-       immediate or scheduled pricing is being used.
-4. After applying changes, `PriceScheduler`:
-   - Updates the schedule’s next trigger time (or marks it complete for one‑off
-     schedules) using Supabase.
-   - Logs any errors, but continues processing other schedules.
-
-**Notes**
-
-- The scheduler is timezone‑aware via per‑store metadata to avoid applying
-  changes at the wrong local time.
-- Price updates to ESL ultimately go through the `SyncWorker` after products
-  are updated in Supabase.
-
-### TokenRefreshScheduler – Square and Clover OAuth
-
-File: `token_refresh_scheduler.py`  
-Class: `SquareTokenRefreshScheduler`  
-Entry function: `run_token_refresh_scheduler()`
-
-**Responsibility**
-
-The token refresh scheduler ensures that Square and Clover access tokens do not
-expire silently. It:
-
-- Periodically scans active store mappings for Square and Clover.
-- Detects tokens that are expiring soon based on metadata.
-- Uses the integration‑specific token refresh services to obtain fresh tokens.
-- Writes updated tokens back to Supabase via `SupabaseService`.
-
-**Data flow**
-
-1. At a fixed interval (every 24 hours by default), `SquareTokenRefreshScheduler.start()`:
-   - Calls `check_and_refresh_tokens()`, which in turn calls:
-     - `_check_square_tokens()`
-     - `_check_clover_tokens()`
-2. For **Square**:
-   - `_get_square_store_mappings()` fetches active Square `StoreMapping` rows that
-     have a `square_refresh_token` in `metadata`.
-   - `_should_refresh_square_token(...)` decides whether to refresh based on
-     `square_expires_at` using `SquareTokenRefreshService.is_token_expiring_soon(...)`.
-   - When a token needs refresh:
-     - Calls `SquareTokenRefreshService.refresh_token_and_update(store_mapping)`,
-       which performs the actual OAuth refresh and updates Supabase.
-3. For **Clover**:
-   - `_get_clover_store_mappings()` fetches active Clover `StoreMapping` rows that
-     have a `clover_refresh_token` in `metadata`.
-   - `_should_refresh_clover_token(...)` decides based on
-     `clover_access_token_expiration` using
-     `CloverTokenRefreshService.is_token_expiring_soon(...)`.
-   - When a token needs refresh:
-     - Calls `CloverTokenRefreshService.refresh_token_and_update(store_mapping)`.
-
-**Notes**
-
-- Day‑to‑day token usage in the adapters (`_ensure_valid_token` in both Square and
-  Clover) relies on the tokens stored by this scheduler.
-- The scheduler logs counts of refreshed, failed, and skipped mappings for
-  observability.
-
-### CloverSyncWorker – Clover polling sync
-
-File: `clover_sync_worker.py`  
-Class: `CloverSyncWorker`  
-Entry function: `run_clover_sync_worker()`
-
-**Responsibility**
-
-The Clover sync worker runs a polling loop over all active Clover store mappings
-and delegates sync work to `CloverIntegrationAdapter`. It:
-
-- Periodically finds active Clover store mappings with tokens.
-- Calls `CloverIntegrationAdapter.sync_products_via_polling(...)` per merchant.
-- Logs items processed, deleted, and any per‑item errors.
-
-**Data flow**
-
-1. On each interval (default 300 seconds, configurable via
-   `settings.clover_sync_interval_seconds`), `CloverSyncWorker`:
-   - Uses `SupabaseService.get_store_mappings_by_source_system("clover")`.
-   - Filters out inactive mappings or those without tokens.
-2. For each merchant mapping:
-   - Calls `adapter.sync_products_via_polling(store_mapping)`, which:
-     - Reads last sync timestamps and poll counters from metadata.
-     - Fetches items changed since the last sync via `CloverAPIClient`.
-     - Upserts `Product` rows and queues `sync_queue` operations for create/update.
-     - Performs ghost‑item cleanup and queues deletes.
-3. Logs per‑merchant results for visibility.
-
-**Notes**
-
-- This worker is tightly coupled with the behavior described in
-  `app/integrations/clover/README.md` and should be kept in sync with any
-  changes made there.
-
-### NCRSyncWorker – NCR product discovery (disabled)
-
-File: `ncr_sync_worker.py`  
-Class: `NCRSyncWorker`  
-Entry function: `run_ncr_sync_worker()` (import commented out in `__main__.py`)
-
-**Responsibility**
-
-The NCR sync worker is designed to poll the NCR PRO Catalog API to discover
-products created directly in NCR POS (e.g. via MART) and align them with the
-Supabase `products` table. It is currently **disabled** in production by
-commenting out its import and usage in `__main__.py`.
-
-**Data flow (when enabled)**
-
-1. At a fixed interval (default 60 seconds), it:
-   - Fetches all NCR store mappings via `get_store_mappings_by_source_system("ncr")`.
-   - For each store mapping:
-     - Builds an `NCRAPIClient` using `ncr_base_url`, `ncr_shared_key`,
-       `ncr_secret_key`, `ncr_organization`, `ncr_enterprise_unit` from metadata.
-     - Calls `fetch_all_ncr_items(...)` to list items via the NCR API.
-2. For each NCR item:
-   - Transforms it into a `NormalizedProduct` via `NCRIntegrationAdapter.transform_product(...)`.
-   - Fetches the current effective price via `NCRAPIClient.get_item_price(...)`
-     (where available) and updates the normalized price.
-   - Compares against existing `Product` rows in Supabase for that `source_store_id`.
-   - Creates or updates `Product` rows with `source_system="ncr"`.
-   - Enqueues `sync_queue` entries for new/changed products so ESL tags are created/updated.
-
-**Notes**
-
-- This worker is intentionally disabled to reduce load and complexity until NCR
-  discovery is required. Any future enablement should:
-  - Re‑enable `run_ncr_sync_worker()` in `__main__.py`.
-  - Re‑validate HMAC configuration and rate limits for the NCR API.
-  - Ensure Supabase and ESL capacity is sufficient for the resulting sync volume.
-
-### Running workers locally
-
-- To run all workers locally:
+All workers live in `app/workers/` and are started together with a single command:
 
 ```bash
 python -m app.workers
 ```
 
-- Environment expectations:
-  - Database and Supabase credentials configured in `app/config.py`.
-  - Hipoink credentials configured for `HipoinkClient`.
-  - Integration‑specific settings (Shopify, Square, Clover, NCR) present in
-    environment variables and store mappings.
+---
 
-When developing or debugging:
+### What Does It Do?
 
-- Use logs produced by `structlog` to trace per‑product and per‑schedule behavior.
-- Inspect `sync_queue`, `sync_log`, `products`, `price_adjustments`, and
-  `store_mappings` in Supabase to understand the state of the pipeline.
+| Worker | File | What It Does |
+|---|---|---|
+| **SyncWorker** | `sync_worker.py` | The only component that talks to Hipoink ESL. Processes the sync queue and pushes product changes to shelf labels |
+| **PriceScheduler** | `price_scheduler.py` | Fires time-based pricing events — applies price changes to BOS systems (Shopify, Square, Clover, NCR) and ESL labels on schedule |
+| **TokenRefreshScheduler** | `token_refresh_scheduler.py` | Proactively refreshes Square and Clover OAuth tokens before they expire |
+| **CloverSyncWorker** | `clover_sync_worker.py` | Polls Clover for product changes on a regular interval as a safety net alongside webhooks |
+| **NCRSyncWorker** | `ncr_sync_worker.py` | ⚠️ Currently **disabled**. Polls NCR for product discovery (see below) |
+| **Health Server** | `__main__.py` | Lightweight HTTP server on `/health` so Railway knows the worker process is alive |
 
+---
+
+### Why Are Workers Separate?
+
+The workers are intentionally separated from the HTTP API for three reasons:
+
+1. **Reliability** — long-running sync tasks and retries don't block or slow down API responses
+2. **Protection** — the Hipoink ESL API is only ever called from the sync worker, never directly from routers or adapters
+3. **Scalability** — the worker process can be scaled or restarted independently of the API
+
+---
+
+### Entry Point — `__main__.py`
+
+This is what runs when you do `python -m app.workers`. It:
+
+1. Configures structured logging
+2. Starts a minimal HTTP health server on `PORT` (default `8080`) that responds `200 ok` to any `GET /health` — this is required by Railway to confirm the worker is running
+3. Runs all workers concurrently using `asyncio.gather()`
+
+```python
+await asyncio.gather(
+    run_worker(),                  # ESL sync
+    run_price_scheduler(),         # Price scheduling
+    run_token_refresh_scheduler(), # OAuth token refresh
+    run_clover_sync_worker(),      # Clover polling
+    # run_ncr_sync_worker(),       # Disabled for now
+)
+```
+
+The worker process is designed to run alongside the FastAPI app as a separate Railway service, so both can be managed and scaled independently.
+
+---
+
+### SyncWorker — ESL Sync Pipeline
+
+**File:** `sync_worker.py` | **Class:** `SyncWorker` | **Entry:** `run_worker()`
+
+#### What It Does
+
+The SyncWorker is the **only component in the entire system that calls the Hipoink ESL API**. Everything else (adapters, routers, the price scheduler) writes to the `sync_queue` table in Supabase, and the SyncWorker picks up those entries and pushes them to Hipoink.
+
+This design means:
+- No part of the system accidentally bypasses the queue
+- All ESL updates are logged and retried automatically
+- The Hipoink API is never overloaded by direct calls from multiple places
+
+#### How It Works
+
+```text
+Integration adapter receives product change
+        ↓
+Writes to Supabase: products table + sync_queue (status="pending")
+        ↓
+SyncWorker polls sync_queue for pending items (batch of 10)
+        ↓
+For each item:
+  Marks status as "syncing"
+  Loads Product and StoreMapping from Supabase
+  Builds HipoinkProductItem from normalized_data
+        ↓
+  Calls HipoinkClient:
+    operation="create" → create product on ESL label
+    operation="update" → update product on ESL label
+    operation="delete" → remove product from ESL label
+        ↓
+  On success: status="succeeded", logs timing
+  On failure: status="failed", logs error, schedules retry
+        ↓
+Updates sync_log for full audit trail
+```
+
+#### Queue Item Lifecycle
+
+```text
+pending → syncing → succeeded
+                 ↘ failed (retried up to max attempts)
+```
+
+Retries distinguish between:
+- **Transient errors** (network timeout, temporary API failure) → retried with backoff
+- **Permanent errors** (bad data, invalid product) → marked failed immediately, no retry
+
+#### Important Rule
+
+> Routers and integration adapters must **never** call `HipoinkClient` directly. They must write to `sync_queue` and let the SyncWorker handle it.
+
+---
+
+### PriceScheduler — Time-Based Pricing
+
+**File:** `price_scheduler.py` | **Class:** `PriceScheduler` | **Entry:** `run_price_scheduler()`
+
+#### What It Does
+
+The PriceScheduler watches for price adjustment schedules that are due to fire and applies the price changes across all connected systems — both the BOS (Back Office System) and the ESL labels.
+
+#### How It Works
+
+```text
+PriceScheduler runs every 60 seconds
+        ↓
+Queries Supabase for schedules where next_trigger_at <= now (UTC)
+        ↓
+For each due schedule:
+  Loads the associated StoreMapping
+  Determines store timezone from metadata
+  Logs schedule context (name, repeat type, time slots)
+        ↓
+Delegates price update based on store_mapping.source_system:
+        ↓
+  Shopify  → ShopifyAPIClient (updates Shopify prices + queues ESL update)
+  Square   → SquareIntegrationAdapter.update_catalog_object_price()
+  Clover   → CloverIntegrationAdapter.update_item_price()
+  NCR      → NCRIntegrationAdapter.update_price() or pre_schedule_prices()
+        ↓
+Updates schedule:
+  - Recurring: recalculates next_trigger_at
+  - One-off: marks as complete
+        ↓
+Logs errors per schedule but continues processing others
+```
+
+#### Timezone Awareness
+
+Every schedule fires at the correct **local store time**, not UTC. The store's timezone is stored in `store_mappings.metadata` and used to determine when a schedule should fire. If no timezone is set, it defaults to UTC.
+
+#### ESL Updates
+
+Price updates to ESL labels don't happen directly from the scheduler. Instead:
+1. The scheduler updates the product price in Supabase
+2. That update triggers a `sync_queue` entry
+3. The SyncWorker picks it up and pushes the new price to the ESL label
+
+For more details on schedule structure and repeat types, see `docs/TIME_BASED_PRICING.md`.
+
+---
+
+### TokenRefreshScheduler — OAuth Token Management
+
+**File:** `token_refresh_scheduler.py` | **Class:** `SquareTokenRefreshScheduler` | **Entry:** `run_token_refresh_scheduler()`
+
+#### What It Does
+
+Square and Clover OAuth access tokens expire. If they expire silently, product syncs and price updates will start failing with auth errors. The TokenRefreshScheduler proactively refreshes tokens before they expire so everything keeps working without intervention.
+
+#### How It Works
+
+```text
+Runs every 24 hours
+        ↓
+Checks all active Square store mappings:
+  Reads square_expires_at from metadata
+  If expiring soon → calls SquareTokenRefreshService.refresh_token_and_update()
+  Writes new tokens back to Supabase
+        ↓
+Checks all active Clover store mappings:
+  Reads clover_access_token_expiration from metadata
+  If expiring soon → calls CloverTokenRefreshService.refresh_token_and_update()
+  Writes new tokens back to Supabase
+        ↓
+Logs: refreshed count, failed count, skipped count
+```
+
+The adapters themselves (`_ensure_valid_token()` in both Square and Clover) rely on the fresh tokens stored by this scheduler. The scheduler is the proactive layer; the adapter check is the last-minute safety net.
+
+---
+
+### CloverSyncWorker — Clover Polling
+
+**File:** `clover_sync_worker.py` | **Class:** `CloverSyncWorker` | **Entry:** `run_clover_sync_worker()`
+
+#### What It Does
+
+Clover webhooks handle real-time events, but webhooks can occasionally be missed or delayed. The CloverSyncWorker polls Clover on a regular schedule to ensure eventual consistency — it catches anything the webhooks missed.
+
+#### How It Works
+
+```text
+Runs every 300 seconds (5 minutes) by default
+(configurable via settings.clover_sync_interval_seconds)
+        ↓
+Fetches all active Clover store mappings from Supabase
+Filters out mappings with no tokens
+        ↓
+For each merchant:
+  Calls CloverIntegrationAdapter.sync_products_via_polling(store_mapping)
+  Which:
+    - Reads last sync timestamp from metadata
+    - Fetches items modified since then
+    - Upserts products in Supabase
+    - Queues sync_queue operations for ESL
+    - Every 10 polls: runs ghost-item cleanup
+        ↓
+Logs: items processed, deleted, errors per merchant
+```
+
+For full details on what `sync_products_via_polling` does, see `app/integrations/clover/README.md`.
+
+---
+
+### NCRSyncWorker — NCR Product Discovery (Currently Disabled)
+
+**File:** `ncr_sync_worker.py` | **Class:** `NCRSyncWorker` | **Entry:** `run_ncr_sync_worker()`
+
+> ⚠️ **This worker is currently disabled.** Its import is commented out in `__main__.py`.
+
+#### What It Does (When Enabled)
+
+Discovers products that were created directly in NCR POS and syncs them into Supabase so they can be pushed to ESL labels.
+
+#### How It Would Work
+
+```text
+Runs every 60 seconds
+        ↓
+Fetches all NCR store mappings from Supabase
+        ↓
+For each store:
+  Builds NCRAPIClient using credentials from store metadata
+  Calls fetch_all_ncr_items() to list all items via NCR API
+        ↓
+For each item:
+  Transforms to NormalizedProduct via NCRIntegrationAdapter.transform_product() 
+  Fetches current price via NCRAPIClient.get_item_price()
+  Compares against existing Product rows in Supabase
+  Creates or updates Product rows
+  Enqueues sync_queue entries for new/changed products
+```
+
+#### How to Re-Enable
+
+1. Uncomment `run_ncr_sync_worker()` in `__main__.py`
+2. Re-validate HMAC configuration and NCR API rate limits
+3. Confirm Supabase and ESL capacity can handle the resulting sync volume
+
+---
+
+### Running Workers Locally
+
+```bash
+python -m app.workers
+```
+
+#### Environment Requirements
+
+| Category | What's Needed |
+|---|---|
+| Database | Supabase credentials (`SUPABASE_URL`, `SUPABASE_SERVICE_KEY`) |
+| ESL | Hipoink credentials for `HipoinkClient` |
+| Shopify | Shopify settings + store mappings in Supabase |
+| Square | Square OAuth tokens in store mappings |
+| Clover | Clover OAuth tokens + `CLOVER_TOKEN_ENCRYPTION_KEY` |
+| NCR | NCR credentials in store mapping metadata |
+
+#### Debugging Tips
+
+- Use `structlog` output to trace per-product and per-schedule behavior
+- Inspect these Supabase tables to understand pipeline state:
+  - `sync_queue` — pending/failed/succeeded sync items
+  - `sync_log` — full audit trail of all sync operations
+  - `products` — normalized product data and validation status
+  - `price_adjustment_schedules` — schedule state and next trigger times
+  - `store_mappings` — per-store credentials, metadata, and timezone

@@ -13,6 +13,10 @@ import httpx
 import structlog
 
 from app.config import settings
+from app.integrations.clover.token_encryption import (
+    decrypt_tokens_from_storage,
+    encrypt_tokens_for_storage,
+)
 from app.models.database import StoreMapping
 from app.services.slack_service import get_slack_service
 from app.services.supabase_service import SupabaseService
@@ -66,29 +70,46 @@ def _update_store_mapping_metadata_sync(
     supabase_service: SupabaseService,
 ) -> StoreMapping | None:
     """
-    Re-fetch current metadata, merge token fields, write back.
+    Atomically merge token fields into store_mappings (single DB update).
+    Uses merge_store_mapping_metadata RPC when available; falls back to read-merge-write.
     Run via asyncio.to_thread to avoid blocking the event loop.
     """
     try:
-        row = (
-            supabase_service.client.table("store_mappings")
-            .select("metadata")
-            .eq("id", str(store_mapping_id))
-            .execute()
-        )
-        if not row.data or len(row.data) == 0:
-            return None
-        current = (row.data[0].get("metadata") or {}).copy()
-        current.update(token_updates)
-        supabase_service.client.table("store_mappings").update({"metadata": current}).eq(
-            "id", str(store_mapping_id)
-        ).execute()
+        supabase_service.merge_store_mapping_metadata(store_mapping_id, token_updates)
         return supabase_service.get_store_mapping_by_id(store_mapping_id)
-    except Exception as e:
+    except Exception as rpc_err:
+        err_msg = str(rpc_err).lower()
+        if "function" in err_msg and "does not exist" in err_msg:
+            logger.debug(
+                "merge_store_mapping_metadata RPC not found, using read-merge-write",
+                store_mapping_id=str(store_mapping_id),
+            )
+            try:
+                row = (
+                    supabase_service.client.table("store_mappings")
+                    .select("metadata")
+                    .eq("id", str(store_mapping_id))
+                    .execute()
+                )
+                if not row.data or len(row.data) == 0:
+                    return None
+                current = (row.data[0].get("metadata") or {}).copy()
+                current.update(token_updates)
+                supabase_service.client.table("store_mappings").update({"metadata": current}).eq(
+                    "id", str(store_mapping_id)
+                ).execute()
+                return supabase_service.get_store_mapping_by_id(store_mapping_id)
+            except Exception as e:
+                logger.error(
+                    "DB update failed in Clover token refresh",
+                    store_mapping_id=str(store_mapping_id),
+                    error=str(e),
+                )
+                return None
         logger.error(
             "DB update failed in Clover token refresh",
             store_mapping_id=str(store_mapping_id),
-            error=str(e),
+            error=str(rpc_err),
         )
         return None
 
@@ -156,14 +177,15 @@ class CloverTokenRefreshService:
             return False, None
 
         # Logging for debugging (per Claude Code review)
+        decrypted = decrypt_tokens_from_storage(fresh_mapping.metadata)
         logger.debug(
             "Re-fetched store mapping for refresh",
             store_mapping_id=str(store_mapping.id),
             merchant_id=store_mapping.source_store_id,
-            has_refresh_token=bool(fresh_mapping.metadata.get("clover_refresh_token")),
+            has_refresh_token=bool(decrypted.get("clover_refresh_token")),
         )
 
-        refresh_token = fresh_mapping.metadata.get("clover_refresh_token")
+        refresh_token = decrypted.get("clover_refresh_token")
         if not refresh_token:
             logger.error(
                 "No Clover refresh token in fresh store mapping",
@@ -195,7 +217,7 @@ class CloverTokenRefreshService:
                     logger.error(
                         "Clover token refresh failed",
                         status_code=response.status_code,
-                        response_text=response.text,
+                        response_text=response.text[:100] if response.text else "",
                         store_mapping_id=str(store_mapping.id),
                         merchant_id=store_mapping.source_store_id,
                     )
@@ -288,6 +310,28 @@ class CloverTokenRefreshService:
                 )
                 return False, None
 
+            # Rate-limit: do not call Clover if we attempted refresh too recently
+            min_interval = getattr(settings, "clover_refresh_min_interval_seconds", 30)
+            last_attempt = (fresh_mapping.metadata or {}).get("clover_last_refresh_attempt_at")
+            if last_attempt is not None:
+                try:
+                    ts = float(last_attempt) if isinstance(last_attempt, (int, float)) else None
+                    if ts is None and isinstance(last_attempt, str):
+                        from datetime import datetime
+
+                        dt = datetime.fromisoformat(last_attempt.replace("Z", "+00:00"))
+                        ts = dt.timestamp()
+                    if ts is not None and (time.time() - ts) < min_interval:
+                        logger.debug(
+                            "Clover refresh skipped, within min interval",
+                            merchant_id=merchant_id,
+                            store_mapping_id=str(store_mapping.id),
+                            seconds_since_last=time.time() - ts,
+                        )
+                        return False, None
+                except (TypeError, ValueError):
+                    pass
+
             # Use fresh mapping for refresh attempts
             for attempt in range(1, MAX_REFRESH_ATTEMPTS + 1):
                 success, new_token_data = await self.refresh_token(fresh_mapping)
@@ -322,7 +366,16 @@ class CloverTokenRefreshService:
                     store_mapping_id=str(store_mapping.id),
                     attempts=MAX_REFRESH_ATTEMPTS,
                 )
-                # Ensure fresh_mapping is not None before using it
+                # Persist last attempt time so we don't hammer Clover on next request
+                if fresh_mapping and fresh_mapping.id:
+                    try:
+                        await asyncio.to_thread(
+                            self.supabase_service.merge_store_mapping_metadata,
+                            fresh_mapping.id,
+                            {"clover_last_refresh_attempt_at": time.time()},
+                        )
+                    except Exception:
+                        pass
                 alert_mapping = fresh_mapping if fresh_mapping else store_mapping
                 await self._send_refresh_failure_alert(
                     alert_mapping, last_error or "All refresh attempts failed"
@@ -345,7 +398,9 @@ class CloverTokenRefreshService:
                 "clover_refresh_token": new_token_data["refresh_token"],
                 "clover_access_token_expiration": new_token_data.get("access_token_expiration"),
                 "clover_refresh_token_expiration": new_token_data.get("refresh_token_expiration"),
+                "clover_last_refresh_attempt_at": time.time(),
             }
+            token_updates = encrypt_tokens_for_storage(token_updates)
 
             try:
                 updated = await asyncio.to_thread(
