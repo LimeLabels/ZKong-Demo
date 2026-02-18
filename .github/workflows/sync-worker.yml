@@ -7,9 +7,6 @@ on:
   schedule:
     - cron: "*/3 * * * *"
   workflow_dispatch:
-  push:
-    branches:
-      - feature/sync-worker-github-actions
 
 concurrency:
   group: sync-worker
