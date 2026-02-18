@@ -16,9 +16,9 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from app.utils.logger import configure_logging
 from app.workers.clover_sync_worker import run_clover_sync_worker
 from app.workers.price_scheduler import run_price_scheduler
-from app.workers.sync_worker import run_worker
 from app.workers.token_refresh_scheduler import run_token_refresh_scheduler
 
+# SyncWorker runs via GitHub Actions (scripts/run_sync_once.py), not here.
 # from app.workers.ncr_sync_worker import run_ncr_sync_worker  # Temporarily disabled
 
 
@@ -43,9 +43,8 @@ def _run_health_server():
 
 
 async def run_all_workers():
-    """Run all workers concurrently."""
+    """Run all workers concurrently. SyncWorker runs via GitHub Actions."""
     await asyncio.gather(
-        run_worker(),  # ESL sync worker
         run_price_scheduler(),  # Price schedule worker
         run_token_refresh_scheduler(),  # Token refresh scheduler
         run_clover_sync_worker(),  # Clover polling sync

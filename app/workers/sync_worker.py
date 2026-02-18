@@ -1,9 +1,11 @@
 """
 Background worker that processes sync queue items.
-Polls Supabase sync_queue, transforms data to Hipoink format, and syncs to Hipoink ESL API.
+Transforms data to Hipoink format and syncs to Hipoink ESL API.
+
+Runs as a single-pass script via GitHub Actions (scripts/run_sync_once.py).
+No longer runs as a long-lived process on Railway.
 """
 
-import asyncio
 import time
 
 import structlog
@@ -25,6 +27,7 @@ logger = structlog.get_logger()
 class SyncWorker:
     """
     Worker that processes sync queue and syncs products to Hipoink ESL system.
+    Designed for single-pass execution (e.g. GitHub Actions cron).
     """
 
     def __init__(self):
@@ -33,29 +36,12 @@ class SyncWorker:
         self.hipoink_client = HipoinkClient(
             client_id=getattr(settings, "hipoink_client_id", "default")
         )
-        self.running = False
 
-    async def start(self):
-        """Start the sync worker loop."""
-        self.running = True
-        logger.info("Sync worker started")
-
-        while self.running:
-            try:
-                await self.process_sync_queue()
-            except Exception as e:
-                logger.error("Error in sync worker loop", error=str(e))
-
-            # Wait before next poll
-            await asyncio.sleep(settings.sync_worker_interval_seconds)
-
-    async def stop(self):
-        """Stop the sync worker."""
-        self.running = False
+    async def close(self) -> None:
+        """Release resources (HTTP client)."""
         await self.hipoink_client.close()
-        logger.info("Sync worker stopped")
 
-    async def process_sync_queue(self):
+    async def process_sync_queue(self) -> None:
         """
         Process pending items in sync queue.
         Fetches items with status 'pending' and processes them.
@@ -583,17 +569,3 @@ class SyncWorker:
                 error=str(e),
             )
             raise
-
-
-async def run_worker():
-    """
-    Main entry point for running the sync worker.
-    Creates a SyncWorker instance and starts it.
-    """
-    worker = SyncWorker()
-    try:
-        await worker.start()
-    except KeyboardInterrupt:
-        logger.info("Received interrupt signal, shutting down worker")
-    finally:
-        await worker.stop()

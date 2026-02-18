@@ -18,7 +18,7 @@ python -m app.workers
 
 | Worker | File | What It Does |
 |---|---|---|
-| **SyncWorker** | `sync_worker.py` | The only component that talks to Hipoink ESL. Processes the sync queue and pushes product changes to shelf labels |
+| **SyncWorker** | `sync_worker.py` | The only component that talks to Hipoink ESL. Processes the sync queue and pushes product changes to shelf labels. **Runs via GitHub Actions** (`.github/workflows/sync-worker.yml`), not in the `python -m app.workers` process |
 | **PriceScheduler** | `price_scheduler.py` | Fires time-based pricing events — applies price changes to BOS systems (Shopify, Square, Clover, NCR) and ESL labels on schedule |
 | **TokenRefreshScheduler** | `token_refresh_scheduler.py` | Proactively refreshes Square and Clover OAuth tokens before they expire |
 | **CloverSyncWorker** | `clover_sync_worker.py` | Polls Clover for product changes on a regular interval as a safety net alongside webhooks |
@@ -47,12 +47,12 @@ This is what runs when you do `python -m app.workers`. It:
 
 ```python
 await asyncio.gather(
-    run_worker(),                  # ESL sync
     run_price_scheduler(),         # Price scheduling
     run_token_refresh_scheduler(), # OAuth token refresh
     run_clover_sync_worker(),      # Clover polling
     # run_ncr_sync_worker(),       # Disabled for now
 )
+# SyncWorker runs via GitHub Actions (scripts/run_sync_once.py), not here
 ```
 
 The worker process is designed to run alongside the FastAPI app as a separate Railway service, so both can be managed and scaled independently.
@@ -61,7 +61,7 @@ The worker process is designed to run alongside the FastAPI app as a separate Ra
 
 ### SyncWorker — ESL Sync Pipeline
 
-**File:** `sync_worker.py` | **Class:** `SyncWorker` | **Entry:** `run_worker()`
+**File:** `sync_worker.py` | **Class:** `SyncWorker` | **Entry:** `scripts/run_sync_once.py` (GitHub Actions)
 
 #### What It Does
 
@@ -111,6 +111,17 @@ Retries distinguish between:
 #### Important Rule
 
 > Routers and integration adapters must **never** call `HipoinkClient` directly. They must write to `sync_queue` and let the SyncWorker handle it.
+
+#### GitHub Action (Primary — Replaces Railway)
+
+The sync queue worker runs **only** as a GitHub Action (no longer on Railway):
+
+- **Workflow:** `.github/workflows/sync-worker.yml`
+- **Schedule:** Runs every 3 minutes via cron
+- **Entry point:** `python -m scripts.run_sync_once` (single-pass drain, then exit)
+- **Secrets required:** `SUPABASE_URL`, `SUPABASE_SERVICE_KEY`, `HIPOINK_API_BASE_URL`, `HIPOINK_USERNAME`, `HIPOINK_PASSWORD`, `HIPOINK_API_SECRET`, `HIPOINK_CLIENT_ID`
+
+Add these secrets under **Settings → Secrets and variables → Actions**. The action processes pending items in batches of 10, up to 20 batches per run, then exits.
 
 ---
 
