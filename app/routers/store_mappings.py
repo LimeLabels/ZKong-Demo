@@ -7,7 +7,7 @@ from uuid import UUID
 
 import structlog
 from fastapi import APIRouter, HTTPException, Query, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 
 from app.models.database import StoreMapping
 from app.services.supabase_service import SupabaseService
@@ -82,7 +82,17 @@ class CreateStoreMappingRequest(BaseModel):
     source_store_id: str  # e.g., 'your-shop.myshopify.com'
     hipoink_store_code: str  # Store code for Hipoink API (required)
     is_active: bool = True
+    user_email: str = Field(
+        ..., min_length=1, description="Email of user to associate with mapping (required)"
+    )
     metadata: dict = None
+
+    @field_validator("user_email")
+    @classmethod
+    def user_email_not_whitespace(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("user_email cannot be empty or whitespace")
+        return v.strip()
 
 
 class StoreMappingResponse(BaseModel):
@@ -129,6 +139,7 @@ async def create_store_mapping(request: CreateStoreMappingRequest):
             source_store_id=request.source_store_id,
             hipoink_store_code=request.hipoink_store_code,
             is_active=request.is_active,
+            user_email=request.user_email,
             metadata=request.metadata,
         )
 

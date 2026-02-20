@@ -33,7 +33,7 @@ def make_json_serializable(obj: Any) -> Any:
         return {k: make_json_serializable(v) for k, v in obj.items()}
     elif isinstance(obj, list):
         return [make_json_serializable(item) for item in obj]
-    elif isinstance(obj, (str, int, float, bool, type(None))):
+    elif isinstance(obj, str | int | float | bool | type(None)):
         return obj
     else:
         # Fallback: try to convert to string

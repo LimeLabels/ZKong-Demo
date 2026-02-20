@@ -58,6 +58,7 @@ async def clover_oauth_initiate(
     timezone: str | None = Query(
         None, description="Timezone from onboarding form (e.g., America/New_York)"
     ),
+    user_email: str | None = Query(None, description="User email for store mapping association"),
     state: str | None = Query(None, description="State parameter for CSRF protection (optional)"),
 ):
     """
@@ -82,6 +83,7 @@ async def clover_oauth_initiate(
         "hipoink_store_code": (hipoink_store_code or "").strip(),
         "store_name": (store_name or "").strip(),
         "timezone": (timezone or "").strip(),
+        "user_email": (user_email or "").strip(),
     }
     state_token = base64.urlsafe_b64encode(json.dumps(state_data).encode()).decode()
 
@@ -106,13 +108,13 @@ async def clover_oauth_initiate(
     return RedirectResponse(url=auth_url, status_code=302)
 
 
-def _decode_state(state: str | None) -> tuple[str, str, str]:
+def _decode_state(state: str | None) -> tuple[str, str, str, str]:
     """
-    Decode state query param to (hipoink_store_code, store_name, timezone).
-    Returns ("", "", "") on failure.
+    Decode state query param to (hipoink_store_code, store_name, timezone, user_email).
+    Returns ("", "", "", "") on failure.
     """
     if not state or not state.strip():
-        return "", "", ""
+        return "", "", "", ""
     try:
         decoded = base64.urlsafe_b64decode(state.encode())
         data = json.loads(decoded.decode())
@@ -120,10 +122,11 @@ def _decode_state(state: str | None) -> tuple[str, str, str]:
             (data.get("hipoink_store_code") or "").strip(),
             (data.get("store_name") or "").strip(),
             (data.get("timezone") or "").strip(),
+            (data.get("user_email") or "").strip(),
         )
     except Exception as e:
         logger.warning("Failed to decode Clover OAuth state", error=str(e))
-        return "", "", ""
+        return "", "", "", ""
 
 
 @router.get("/clover/callback")
@@ -148,13 +151,14 @@ async def clover_oauth_callback(
             detail="Missing merchant_id",
         )
 
-    hipoink_store_code, store_name, timezone = _decode_state(state)
+    hipoink_store_code, store_name, timezone, user_email = _decode_state(state)
     logger.info(
         "Clover OAuth callback received",
         merchant_id=merchant_id,
         hipoink_store_code=hipoink_store_code,
         store_name=store_name,
         timezone=timezone,
+        has_user_email=bool(user_email),
     )
 
     if not settings.clover_app_id or not settings.clover_app_secret:
@@ -233,13 +237,16 @@ async def clover_oauth_callback(
     if existing:
         existing_metadata = existing.metadata or {}
         existing_metadata.update(metadata)
-        supabase_service.client.table("store_mappings").update(
-            {
-                "metadata": existing_metadata,
-                "hipoink_store_code": hipoink_store_code or existing.hipoink_store_code,
-                "is_active": True,
-            }
-        ).eq("id", str(existing.id)).execute()
+        update_payload: dict = {
+            "metadata": existing_metadata,
+            "hipoink_store_code": hipoink_store_code or existing.hipoink_store_code,
+            "is_active": True,
+        }
+        if user_email:
+            update_payload["user_email"] = user_email
+        supabase_service.client.table("store_mappings").update(update_payload).eq(
+            "id", str(existing.id)
+        ).execute()
         mapping_id = str(existing.id)
         logger.info(
             "Updated Clover store mapping",
@@ -252,6 +259,7 @@ async def clover_oauth_callback(
             source_store_id=merchant_id,
             hipoink_store_code=hipoink_store_code,
             is_active=True,
+            user_email=user_email or None,
             metadata=metadata,
         )
         created = supabase_service.create_store_mapping(new_mapping)

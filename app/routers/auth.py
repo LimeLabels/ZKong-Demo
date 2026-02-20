@@ -147,6 +147,13 @@ async def connect_store(
     Associates the user with the store mapping in the database.
     """
     user_id = user_data["user_id"]
+    user_email = user_data.get("email")
+    if not user_email or not str(user_email).strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="User email is required to connect a store. Please ensure your account has a verified email.",
+        )
+    user_email = str(user_email).strip()
     store_mapping_id = request.store_mapping_id
 
     try:
@@ -158,16 +165,14 @@ async def connect_store(
                 detail=f"Store mapping not found: {store_mapping_id}",
             )
 
-        # Update store mapping to associate with user
-        # We'll add user_id to metadata or create a separate association
-        # For now, we'll add it to metadata
+        # Update store mapping to associate with user (user_id in metadata, user_email as column)
         metadata = store_mapping.metadata or {}
         metadata["user_id"] = user_id
         metadata["connected_at"] = datetime.utcnow().isoformat()
 
         result = (
             supabase_service.client.table("store_mappings")
-            .update({"metadata": metadata})
+            .update({"metadata": metadata, "user_email": user_email})
             .eq("id", str(store_mapping_id))
             .execute()
         )
@@ -221,7 +226,7 @@ async def disconnect_store(
         # Find store mapping where metadata contains user_id
         user_store_mapping = None
         for item in result.data:
-            mapping = supabase_service.get_store_mapping_by_id(item["id"])
+            mapping = supabase_service.get_store_mapping_by_id(UUID(item["id"]))
             if mapping and mapping.metadata and mapping.metadata.get("user_id") == user_id:
                 user_store_mapping = mapping
                 break
@@ -232,14 +237,14 @@ async def disconnect_store(
                 detail="No store mapping found for this user.",
             )
 
-        # Remove user_id from metadata
+        # Remove user association (metadata + user_email column)
         metadata = user_store_mapping.metadata or {}
         metadata.pop("user_id", None)
         metadata.pop("connected_at", None)
 
         result = (
             supabase_service.client.table("store_mappings")
-            .update({"metadata": metadata})
+            .update({"metadata": metadata, "user_email": None})
             .eq("id", str(user_store_mapping.id))
             .execute()
         )
