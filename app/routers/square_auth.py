@@ -39,6 +39,7 @@ async def square_oauth_initiate(
     timezone: str | None = Query(
         None, description="Timezone from onboarding form (e.g., America/New_York)"
     ),
+    user_email: str | None = Query(None, description="User email for store mapping association"),
     state: str | None = Query(None, description="State parameter for CSRF protection (optional)"),
 ):
     """
@@ -54,13 +55,13 @@ async def square_oauth_initiate(
             detail="Square Application ID not configured",
         )
 
-    # Build state payload (CSRF + onboarding data)
-    # This data will survive the OAuth redirect and come back in the callback
+    # Build state payload (CSRF + onboarding data + user_email for store mapping)
     state_data = {
         "token": state or secrets.token_urlsafe(32),  # CSRF protection token
         "hipoink_store_code": (hipoink_store_code or "").strip(),
         "store_name": (store_name or "").strip(),
         "timezone": (timezone or "").strip(),
+        "user_email": (user_email or "").strip(),
     }
 
     # Encode state as base64 JSON for safe URL transmission
@@ -135,6 +136,7 @@ async def square_oauth_callback(
     hipoink_store_code = ""
     store_name = ""
     timezone = ""
+    user_email = ""
 
     if state:
         try:
@@ -142,11 +144,13 @@ async def square_oauth_callback(
             hipoink_store_code = (state_data.get("hipoink_store_code") or "").strip()
             store_name = (state_data.get("store_name") or "").strip()
             timezone = (state_data.get("timezone") or "").strip()
+            user_email = (state_data.get("user_email") or "").strip()
             logger.info(
                 "Decoded Square OAuth state",
                 hipoink_store_code=hipoink_store_code,
                 store_name=store_name,
                 timezone=timezone,
+                has_user_email=bool(user_email),
             )
         except Exception as e:
             logger.warning("Failed to decode Square state", error=str(e))
@@ -246,14 +250,16 @@ async def square_oauth_callback(
             # Update existing mapping
             existing_metadata = existing_mapping.metadata or {}
             existing_metadata.update(metadata)
-
-            supabase_service.client.table("store_mappings").update(
-                {
-                    "metadata": existing_metadata,
-                    "hipoink_store_code": hipoink_store_code or existing_mapping.hipoink_store_code,
-                    "is_active": True,
-                }
-            ).eq("id", str(existing_mapping.id)).execute()
+            update_payload: dict = {
+                "metadata": existing_metadata,
+                "hipoink_store_code": hipoink_store_code or existing_mapping.hipoink_store_code,
+                "is_active": True,
+            }
+            if user_email:
+                update_payload["user_email"] = user_email
+            supabase_service.client.table("store_mappings").update(update_payload).eq(
+                "id", str(existing_mapping.id)
+            ).execute()
 
             mapping_id = str(existing_mapping.id)
             logger.info(
@@ -271,6 +277,7 @@ async def square_oauth_callback(
                 source_store_id=merchant_id,
                 hipoink_store_code=hipoink_store_code,
                 is_active=True,
+                user_email=user_email or None,
                 metadata=metadata,
             )
 

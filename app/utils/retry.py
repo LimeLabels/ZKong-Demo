@@ -44,7 +44,7 @@ def is_transient_error(exception: Exception) -> bool:
         True if error is transient (retryable), False otherwise
     """
     # Network/connection errors are transient
-    if isinstance(exception, (httpx.ConnectError, httpx.TimeoutException, httpx.NetworkError)):
+    if isinstance(exception, httpx.ConnectError | httpx.TimeoutException | httpx.NetworkError):
         return True
 
     # HTTP 5xx errors are transient

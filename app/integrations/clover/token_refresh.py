@@ -315,7 +315,7 @@ class CloverTokenRefreshService:
             last_attempt = (fresh_mapping.metadata or {}).get("clover_last_refresh_attempt_at")
             if last_attempt is not None:
                 try:
-                    ts = float(last_attempt) if isinstance(last_attempt, (int, float)) else None
+                    ts = float(last_attempt) if isinstance(last_attempt, int | float) else None
                     if ts is None and isinstance(last_attempt, str):
                         from datetime import datetime
 

@@ -101,7 +101,7 @@ class SquareTransformer:
                 amount = cost_money.get("amount")
                 if amount is not None:
                     return float(amount) / 100.0  # Convert cents to dollars
-            elif isinstance(cost_money, (int, float)):
+            elif isinstance(cost_money, int | float):
                 # Direct number (already in cents)
                 return float(cost_money) / 100.0
 
